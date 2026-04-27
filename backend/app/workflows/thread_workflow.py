@@ -8,8 +8,12 @@ class RunThreadWorkflow:
 
     @run
     async def run(self, input: dict) -> dict:
-        from app.activities.llm_activities import call_llm, save_message, get_messages, update_title
-
+        from temporalio import workflow
+        with workflow.unsafe.imports_passed_through():
+            from app.activities.llm_activities import (
+                call_llm, save_message, get_messages, update_title,
+                compact_history, delete_messages_before
+            )
         thread_id = input["thread_id"]
         message = input["message"]
         llm_config = input.get("llm_config", {})
@@ -21,22 +25,107 @@ class RunThreadWorkflow:
             start_to_close_timeout=timedelta(seconds=10),
         )
 
-        # Call LLM with config overrides
-        llm_response = await execute_activity(
-            call_llm,
-            {"messages": chat_history, "llm_config": llm_config},
+        from temporalio.common import RetryPolicy
+
+        # ── Compaction Check ──────────────────────────────────────────
+        # Build a config for the compaction LLM call that doesn't stream
+        compaction_config = {k: v for k, v in llm_config.items() if k != "stream_url"}
+
+        compact_result = await execute_activity(
+            compact_history,
+            {
+                "thread_id": thread_id,
+                "llm_config": compaction_config,
+                "messages": chat_history,
+                "context_window": llm_config.get("context_window", 8192),
+                "compaction_threshold": llm_config.get("compaction_threshold", 0.75),
+                "preserve_recent": llm_config.get("preserve_recent", 10),
+            },
             start_to_close_timeout=timedelta(seconds=120),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
 
-        # Auto-title on first message
-        if len(chat_history) == 1:
+        if compact_result["compacted"]:
+            from temporalio import workflow
+            # Save the compaction summary as a system message in the DB
+            import datetime
+            compacted_at = datetime.datetime.utcnow().isoformat()
+            await execute_activity(
+                save_message,
+                {
+                    "thread_id": thread_id,
+                    "role": "system",
+                    "content": compact_result["summary"],
+                    "metadata": {
+                        "type": "compaction_summary",
+                        "compacted_at": compacted_at,
+                        "original_message_count": compact_result["compacted_count"],
+                    },
+                },
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+            # Delete the now-compacted messages from the DB
+            await execute_activity(
+                delete_messages_before,
+                {
+                    "thread_id": thread_id,
+                    "keep_recent": llm_config.get("preserve_recent", 10),
+                },
+                start_to_close_timeout=timedelta(seconds=15),
+            )
+            # Use the compacted (summarised + recent) message list
+            chat_history = compact_result["messages"]
+
+        # ── Call LLM ─────────────────────────────────────────────────
+        llm_result = await execute_activity(
+            call_llm,
+            {"messages": chat_history, "llm_config": llm_config},
+            start_to_close_timeout=timedelta(seconds=600),
+            retry_policy=RetryPolicy(maximum_attempts=1),
+        )
+
+        llm_response = llm_result["content"]
+        intermediate_messages = llm_result.get("intermediate_messages", [])
+
+        # ── Auto-title ───────────────────────────────────────────────
+        if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
+            # Build context from recent human-readable messages only
+            readable = [m for m in chat_history[-5:] if m.get("content") and m.get("role") in ("user", "assistant")]
+            context = "\n".join([f"{m['role']}: {m['content']}" for m in readable])
+            title_prompt = (
+                "Generate a very short, catchy title for this conversation (max 4 words). "
+                "Reply with ONLY the title, no quotes, no labels. Context:\n" + context
+            )
+
+            title_config = compaction_config.copy()
+
+            title = await execute_activity(
+                call_llm,
+                {"messages": [{"role": "user", "content": title_prompt}], "llm_config": title_config},
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+            title_text = title["content"] if isinstance(title, dict) else title
             await execute_activity(
                 update_title,
-                {"thread_id": thread_id, "title": message[:50]},
+                {"thread_id": thread_id, "title": title_text.strip("\"'").strip()[:50]},
                 start_to_close_timeout=timedelta(seconds=10),
             )
 
-        # Save assistant response
+        # ── Save intermediate tool messages ──────────────────────────
+        for msg in intermediate_messages:
+            await execute_activity(
+                save_message,
+                {
+                    "thread_id": thread_id,
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "metadata": msg.get("metadata"),
+                },
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+
+        # ── Save final assistant response ────────────────────────────
         await execute_activity(
             save_message,
             {"thread_id": thread_id, "role": "assistant", "content": llm_response},

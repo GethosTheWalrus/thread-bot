@@ -1,7 +1,7 @@
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Thread, Message
+from app.models.models import Thread, Message, MCPServer
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
@@ -95,3 +95,65 @@ async def get_message_count(db: AsyncSession, thread_id: UUID) -> int:
         select(func.count(Message.id)).where(Message.thread_id == thread_id)
     )
     return result.scalar_one()
+
+
+async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None) -> MCPServer:
+    server = MCPServer(name=name, image=image, env_vars=env_vars or {})
+    db.add(server)
+    await db.flush()
+    await db.refresh(server)
+    return server
+
+
+async def get_mcp_servers(db: AsyncSession) -> list[MCPServer]:
+    result = await db.execute(
+        select(MCPServer).order_by(MCPServer.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def delete_mcp_server(db: AsyncSession, server_id: UUID) -> bool:
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id)
+    )
+    server = result.scalar_one_or_none()
+    if server:
+        await db.delete(server)
+        await db.flush()
+        return True
+    return False
+
+
+async def toggle_mcp_server(db: AsyncSession, server_id: UUID) -> MCPServer | None:
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id)
+    )
+    server = result.scalar_one_or_none()
+    if server:
+        server.is_active = not server.is_active
+        await db.flush()
+        await db.refresh(server)
+    return server
+
+
+async def update_mcp_server(
+    db: AsyncSession,
+    server_id: UUID,
+    name: str | None = None,
+    image: str | None = None,
+    env_vars: dict | None = None,
+) -> MCPServer | None:
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.id == server_id)
+    )
+    server = result.scalar_one_or_none()
+    if server:
+        if name is not None:
+            server.name = name
+        if image is not None:
+            server.image = image
+        if env_vars is not None:
+            server.env_vars = env_vars
+        await db.flush()
+        await db.refresh(server)
+    return server

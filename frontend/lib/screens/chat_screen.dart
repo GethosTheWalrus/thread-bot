@@ -6,6 +6,7 @@ import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/screens/settings_screen.dart';
+import 'package:threadbot/screens/mcp_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -95,23 +96,92 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     setState(() => _messages.add(optimisticMsg));
     _scrollToBottom();
 
+    // Placeholder for assistant response
+    final assistantMsg = Message(
+      id: 'temp-ast-${DateTime.now().millisecondsSinceEpoch}',
+      threadId: _activeThreadId ?? '',
+      role: 'assistant',
+      content: '',
+      createdAt: DateTime.now(),
+    );
+    setState(() => _messages.add(assistantMsg));
+
     try {
-      final thread = await _api.sendMessage(content, threadId: _activeThreadId);
+      final stream = _api.sendMessageStream(content, threadId: _activeThreadId);
+      
+      String headerBuffer = "";
+      bool headerProcessed = false;
+      DateTime lastUpdate = DateTime.now();
+      String pendingContent = "";
+
+        await for (var chunk in stream) {
+          if (!mounted) break;
+
+          if (!headerProcessed) {
+            headerBuffer += chunk;
+            if (headerBuffer.contains("\n\n")) {
+              final parts = headerBuffer.split("\n\n");
+              final headerPart = parts[0];
+              if (headerPart.startsWith("THREAD_ID:")) {
+                final newId = headerPart.substring(10).trim();
+                if (_activeThreadId == null || _activeThreadId != newId) {
+                  setState(() => _activeThreadId = newId);
+                }
+              }
+              headerProcessed = true;
+              chunk = parts.length > 1 ? parts.sublist(1).join("\n\n") : "";
+            } else {
+              continue;
+            }
+          }
+          
+          if (chunk == "[DONE]") break;
+          if (chunk.startsWith("[ERROR]")) {
+             setState(() => _error = chunk.substring(7));
+             break;
+          }
+          
+          // Remove null heartbeats
+          chunk = chunk.replaceAll("\x00", "");
+
+          if (chunk.isNotEmpty) {
+             pendingContent += chunk;
+             final now = DateTime.now();
+             // Throttle updates to max 30fps (33ms) to prevent UI thread saturation
+             if (now.difference(lastUpdate) > const Duration(milliseconds: 33)) {
+                setState(() {
+                   assistantMsg.content += pendingContent;
+                   pendingContent = "";
+                });
+                _scrollToBottom();
+                lastUpdate = now;
+             }
+          }
+        }
+        
+        // Final update for any remaining content
+        if (mounted && pendingContent.isNotEmpty) {
+           setState(() {
+              assistantMsg.content += pendingContent;
+           });
+           _scrollToBottom();
+        }
 
       if (mounted) {
         setState(() {
-          _activeThreadId = thread.id;
-          _messages = thread.messages;
           _isSending = false;
         });
-        _scrollToBottom();
-        _loadThreads(); // refresh sidebar
+        _loadThreads(); // immediate refresh
+        
+        // Delayed refreshes to catch the background title update
+        Future.delayed(const Duration(seconds: 2), () => _loadThreads());
+        Future.delayed(const Duration(seconds: 5), () => _loadThreads());
       }
     } catch (e) {
       if (mounted) {
         // Remove optimistic message on error
         setState(() {
-          _messages.removeWhere((m) => m.id == optimisticMsg.id);
+          _messages.removeWhere((m) => m.id == optimisticMsg.id || m.id == assistantMsg.id);
           _isSending = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
@@ -150,6 +220,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _deleteAllThreads() async {
+    try {
+      await _api.deleteAllThreads();
+      setState(() { _activeThreadId = null; _messages = []; });
+      _loadThreads();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to clear conversations: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _renameThread(String threadId, String newTitle) async {
     try {
       await _api.renameThread(threadId, newTitle);
@@ -173,6 +257,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         );
       }
     });
+  }
+
+  void _openMCP() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const MCPScreen()),
+    );
   }
 
   void _openSettings() {
@@ -200,6 +290,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               onNewChat: _startNewChat,
               onDelete: _deleteThread,
               onRename: _renameThread,
+              onDeleteAll: _deleteAllThreads,
+              onMCP: _openMCP,
               onSettings: _openSettings,
             ),
 
@@ -241,6 +333,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   },
                   onDelete: _deleteThread,
                   onRename: _renameThread,
+                  onDeleteAll: _deleteAllThreads,
+                  onMCP: () {
+                    Navigator.pop(context);
+                    _openMCP();
+                  },
                   onSettings: () {
                     Navigator.pop(context);
                     _openSettings();

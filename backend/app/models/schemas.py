@@ -70,3 +70,26 @@ class SettingsResponse(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str
+
+
+class MCPServerCreate(BaseModel):
+    name: str
+    image: str
+    env_vars: Optional[dict] = {}
+
+
+class MCPServerResponse(BaseModel):
+    id: UUID
+    name: str
+    image: str
+    env_vars: dict
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MCPTestResponse(BaseModel):
+    success: bool
+    tools: list[str] = []
+    error: Optional[str] = None

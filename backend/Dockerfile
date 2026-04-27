@@ -5,6 +5,9 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    curl \
+    ca-certificates \
+    && curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.7.tgz | tar -xzC /usr/local/bin --strip-components=1 docker/docker \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

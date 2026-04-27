@@ -25,13 +25,13 @@ services:
       start_period: 30s
 
   temporal-ui:
-    image: temporalio/ui:2.22.3
+    image: temporalio/ui:latest
     environment:
-      - TEMPORAL_GRPC_TARGET=temporal:7233
+      - TEMPORAL_ADDRESS=temporal:7233
     depends_on:
       - temporal
     ports:
-      - "8088:8088"
+      - "8080:8080"
     networks:
       - chatbot-network
 
@@ -61,11 +61,10 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
-      - LLM_API_URL=http://host.docker.internal:11434/v1
-      - LLM_API_KEY=ollama
-      - LLM_MODEL=llama3.1
     ports:
       - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,9 +85,8 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
-      - LLM_API_URL=http://host.docker.internal:11434/v1
-      - LLM_API_KEY=ollama
-      - LLM_MODEL=llama3.1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +108,8 @@ services:
       - backend
     networks:
       - chatbot-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres-data:

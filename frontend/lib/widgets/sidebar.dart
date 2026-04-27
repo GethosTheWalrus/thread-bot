@@ -9,6 +9,8 @@ class Sidebar extends StatelessWidget {
   final VoidCallback onNewChat;
   final Function(String) onDelete;
   final Function(String, String) onRename;
+  final VoidCallback onDeleteAll;
+  final VoidCallback onMCP;
   final VoidCallback onSettings;
 
   const Sidebar({
@@ -20,6 +22,8 @@ class Sidebar extends StatelessWidget {
     required this.onNewChat,
     required this.onDelete,
     required this.onRename,
+    required this.onDeleteAll,
+    required this.onMCP,
     required this.onSettings,
   });
 
@@ -114,25 +118,73 @@ class Sidebar extends StatelessWidget {
             ),
             child: Material(
               color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(10),
-                onTap: onSettings,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  child: Row(
-                    children: [
-                      Icon(Icons.tune_rounded, size: 18, color: Colors.white.withValues(alpha: 0.5)),
-                      const SizedBox(width: 10),
-                      Text(
-                        'Settings',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.white.withValues(alpha: 0.5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (threads.isNotEmpty)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => _showClearAllDialog(context),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete_sweep_outlined, size: 18, color: Colors.red.shade400.withValues(alpha: 0.7)),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Clear conversations',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.red.shade400.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
+                    ),
+                  const SizedBox(height: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: onMCP,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          Icon(Icons.terminal_rounded, size: 18, color: const Color(0xFF8B5CF6).withValues(alpha: 0.7)),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'MCP Servers',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFFE4E4E7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: onSettings,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          Icon(Icons.tune_rounded, size: 18, color: Colors.white.withValues(alpha: 0.5)),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Settings',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.white.withValues(alpha: 0.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -227,17 +279,26 @@ class Sidebar extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(
-                  Icons.chat_bubble_outline,
-                  size: 14,
-                  color: isActive
-                      ? const Color(0xFF8B5CF6)
-                      : Colors.white.withValues(alpha: 0.3),
+                SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: thread.title == 'New Thread'
+                      ? const CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
+                        )
+                      : Icon(
+                          Icons.chat_bubble_outline,
+                          size: 14,
+                          color: isActive
+                              ? const Color(0xFF8B5CF6)
+                              : Colors.white.withValues(alpha: 0.3),
+                        ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    thread.title,
+                    thread.title == 'New Thread' ? 'Generating title...' : thread.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -246,11 +307,11 @@ class Sidebar extends StatelessWidget {
                       color: isActive
                           ? const Color(0xFFE4E4E7)
                           : Colors.white.withValues(alpha: 0.6),
+                      fontStyle: thread.title == 'New Thread' ? FontStyle.italic : FontStyle.normal,
                     ),
                   ),
                 ),
-                if (isActive)
-                  PopupMenuButton<String>(
+                PopupMenuButton<String>(
                     icon: Icon(
                       Icons.more_horiz,
                       size: 16,
@@ -356,6 +417,32 @@ class Sidebar extends StatelessWidget {
               Navigator.pop(ctx);
             },
             child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showClearAllDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C26),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear all conversations?'),
+        content: const Text('This will permanently delete all threads and messages.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () {
+              onDeleteAll();
+              Navigator.pop(ctx);
+            },
+            child: const Text('Delete All'),
           ),
         ],
       ),

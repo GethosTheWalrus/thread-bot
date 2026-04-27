@@ -79,37 +79,26 @@ class _ChatInputState extends State<ChatInput> {
                   children: [
                     // Text field
                     Expanded(
-                      child: Focus(
-                        onFocusChange: (_) => setState(() {}),
-                        child: KeyboardListener(
-                          focusNode: FocusNode(),
-                          onKeyEvent: (event) {
-                            if (event is KeyDownEvent &&
-                                event.logicalKey == LogicalKeyboardKey.enter &&
-                                !HardwareKeyboard.instance.isShiftPressed) {
-                              _handleSend();
-                            }
-                          },
-                          child: TextField(
-                            controller: _controller,
-                            focusNode: _focusNode,
-                            maxLines: 6,
-                            minLines: 1,
-                            style: const TextStyle(
-                              fontSize: 15,
-                              color: Color(0xFFE4E4E7),
-                              height: 1.5,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: 'Message ThreadBot...',
-                              hintStyle: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.25),
-                              ),
-                              border: InputBorder.none,
-                              contentPadding: const EdgeInsets.fromLTRB(20, 14, 8, 14),
-                              filled: false,
-                            ),
+                      child: TextField(
+                        controller: _controller,
+                        focusNode: _focusNode,
+                        maxLines: 6,
+                        minLines: 1,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _handleSend(),
+                        style: const TextStyle(
+                          fontSize: 15,
+                          color: Color(0xFFE4E4E7),
+                          height: 1.5,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: 'Message ThreadBot...',
+                          hintStyle: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.25),
                           ),
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.fromLTRB(20, 14, 8, 14),
+                          filled: false,
                         ),
                       ),
                     ),

@@ -14,12 +14,15 @@ class Settings(BaseSettings):
     TEMPORAL_TASK_QUEUE: str = "chatbot-task-queue"
 
     # LLM API
-    LLM_API_URL: str = "http://localhost:11434/v1"
+    LLM_API_URL: str = "http://host.docker.internal:11434/v1"
     LLM_API_KEY: str = "ollama"
     LLM_MODEL: str = "llama3.1"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
-    LLM_STREAM_TIMEOUT: int = 120
+    LLM_STREAM_TIMEOUT: int = 600
+    LLM_CONTEXT_WINDOW: int = 8192
+    LLM_COMPACTION_THRESHOLD: float = 0.75
+    LLM_PRESERVE_RECENT: int = 10
 
     # Server
     HOST: str = "0.0.0.0"
@@ -73,4 +76,7 @@ def get_llm_config() -> dict:
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),
         "stream_timeout": get_setting("LLM_STREAM_TIMEOUT"),
+        "context_window": get_setting("LLM_CONTEXT_WINDOW"),
+        "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
+        "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
     }
