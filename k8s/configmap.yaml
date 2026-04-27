@@ -4,15 +4,19 @@ metadata:
   name: threadbot-config
   namespace: threadbot
 data:
-  DATABASE_URL: "postgresql+asyncpg://postgres:postgres@threadbot-postgres:5432/chatbot"
-  TEMPORAL_HOST: "temporal"
+  # Database — external Postgres at 192.168.69.11
+  DATABASE_URL: "postgresql+asyncpg://postgres:postgres@192.168.69.11:5432/threadbot"
+  # Temporal — existing cluster-internal service
+  TEMPORAL_HOST: "temporal-frontend.temporal.svc.cluster.local"
   TEMPORAL_PORT: "7233"
   TEMPORAL_NAMESPACE: "default"
   TEMPORAL_TASK_QUEUE: "chatbot-task-queue"
-  LLM_API_URL: "http://llm-service:8000/v1"
+  # LLM defaults (overridable via Settings UI)
+  LLM_API_URL: "http://192.168.69.11:11434/v1"
   LLM_API_KEY: "ollama"
   LLM_MODEL: "llama3.1"
   LLM_TEMPERATURE: "0.7"
   LLM_MAX_TOKENS: "2048"
+  # Server
   HOST: "0.0.0.0"
   PORT: "8000"
