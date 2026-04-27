@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-backend
+  namespace: threadbot
+  labels:
+    app: threadbot-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: threadbot-backend
+  template:
+    metadata:
+      labels:
+        app: threadbot-backend
+    spec:
+      containers:
+        - name: backend
+          image: threadbot-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: threadbot-config
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: threadbot-backend
+  namespace: threadbot
+spec:
+  selector:
+    app: threadbot-backend
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-worker
+  namespace: threadbot
+  labels:
+    app: threadbot-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: threadbot-worker
+  template:
+    metadata:
+      labels:
+        app: threadbot-worker
+    spec:
+      containers:
+        - name: worker
+          image: threadbot-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: threadbot-config
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-frontend
+  namespace: threadbot
+  labels:
+    app: threadbot-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: threadbot-frontend
+  template:
+    metadata:
+      labels:
+        app: threadbot-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: threadbot-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: threadbot-frontend
+  namespace: threadbot
+spec:
+  selector:
+    app: threadbot-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: threadbot-ingress
+  namespace: threadbot
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+    - host: threadbot.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: threadbot-frontend
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: threadbot-backend
+                port:
+                  number: 80
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: threadbot-backend
+                port:
+                  number: 80
