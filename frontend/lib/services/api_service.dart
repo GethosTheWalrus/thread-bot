@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart'; // For kIsWeb
 
 class ApiService {
   final String baseUrl;
 
-  ApiService({this.baseUrl = 'http://localhost:8000'});
+  ApiService({String? baseUrl})
+      : baseUrl = baseUrl ?? (kIsWeb ? Uri.base.origin : 'http://localhost:8000');
 
   // ── LLM Settings (local storage) ──────────────────────────────────
 
