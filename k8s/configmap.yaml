@@ -20,6 +20,6 @@ data:
   # Server
   HOST: "0.0.0.0"
   PORT: "8000"
-  # Redis — external instance
-  REDIS_URL: "redis://REDIS_HOST:6379"
-  REDIS_DB: "0"
+  # Redis — external Redis instance
+  REDIS_URL: "redis://192.168.69.11:6379"
+  REDIS_DB: "3"
