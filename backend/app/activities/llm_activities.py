@@ -29,7 +29,11 @@ async def call_llm(args: dict) -> dict:
     import json as _json
 
     async def publish(event: dict | str | bytes):
-        """Publish a structured JSON event (or raw sentinel) to Redis."""
+        """Publish a structured JSON event (or raw sentinel) to Redis.
+        
+        Events are both PUBLISHed (for the live SSE connection) and RPUSHed
+        to an events list (for reconnect after page refresh).
+        """
         if redis_client and stream_channel:
             if isinstance(event, dict):
                 data = _json.dumps(event).encode("utf-8")
@@ -37,7 +41,10 @@ async def call_llm(args: dict) -> dict:
                 data = event.encode("utf-8")
             else:
                 data = event
+            events_key = f"events:{stream_channel}"
             await redis_client.publish(stream_channel, data)
+            await redis_client.rpush(events_key, data)
+            await redis_client.expire(events_key, 600)
 
     # ── Inline DB save helper ─────────────────────────────────────────
     async def save_inline(role: str, content: str, metadata: dict | None = None):
@@ -57,8 +64,9 @@ async def call_llm(args: dict) -> dict:
     from app.models.models import MCPServer
     import json
     import asyncio
-    from mcp import ClientSession, StdioServerParameters
+    from mcp import ClientSession
     from mcp.client.stdio import stdio_client
+    from app.mcp_helper import get_mcp_server_params
 
     active_servers = []
     async with AsyncSessionLocal() as db:
@@ -74,16 +82,7 @@ async def call_llm(args: dict) -> dict:
     for server in active_servers:
         print(f"Loading tools from MCP server: {server.name} ({server.image})", flush=True)
         try:
-            params = StdioServerParameters(
-                command="/usr/local/bin/docker",
-                args=[
-                    "run", "-i", "--rm",
-                    "--add-host=host.docker.internal:host-gateway",
-                    *[item for k, v in server.env_vars.items() for item in ["-e", f"{k}={v}"]],
-                    server.image
-                ],
-                env=None
-            )
+            params = get_mcp_server_params(server.image, server.env_vars)
 
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
@@ -93,7 +92,8 @@ async def call_llm(args: dict) -> dict:
                     for tool in tools_result.tools:
                         full_name = f"{server.name}_{tool.name}"
                         mcp_tools_map[full_name] = {
-                            "server_params": params,
+                            "image": server.image,
+                            "env_vars": server.env_vars,
                             "original_name": tool.name,
                             "server_name": server.name
                         }
@@ -191,6 +191,7 @@ async def call_llm(args: dict) -> dict:
                         "type": "tool_call",
                         "content": tool_call_content,
                         "tools": tool_list_for_event,
+                        "tool_calls": message["tool_calls"],
                     })
 
                     for tool_call in message["tool_calls"]:
@@ -202,11 +203,8 @@ async def call_llm(args: dict) -> dict:
                             tool_display = f"{info['server_name']}:{info['original_name']}"
 
                             try:
-                                async with stdio_client(StdioServerParameters(
-                                    command="/usr/local/bin/docker",
-                                    args=info["server_params"].args,
-                                    env=info["server_params"].env
-                                )) as (read, write):
+                                exec_params = get_mcp_server_params(info["image"], info["env_vars"])
+                                async with stdio_client(exec_params) as (read, write):
                                     async with ClientSession(read, write) as mcp_session:
                                         await mcp_session.initialize()
                                         result = await mcp_session.call_tool(info["original_name"], tool_args)
@@ -334,16 +332,25 @@ async def publish_done(args: dict) -> None:
     
     Called by the workflow AFTER all messages are saved to DB,
     so the frontend can safely reload from DB when it receives this.
+    Also buffers [DONE] in the events list and cleans up the generating flag.
     """
     redis_url = args.get("redis_url")
     stream_channel = args.get("stream_channel")
+    thread_id = args.get("thread_id")
     if not redis_url or not stream_channel:
         return
 
     import redis.asyncio as aioredis
     r = aioredis.from_url(redis_url)
     try:
+        events_key = f"events:{stream_channel}"
         await r.publish(stream_channel, b"[DONE]")
+        await r.rpush(events_key, b"[DONE]")
+        # Keep events list for 60s so a reconnecting client can still read it
+        await r.expire(events_key, 60)
+        # Clear the generating flag
+        if thread_id:
+            await r.delete(f"generating:{thread_id}")
     finally:
         await r.close()
 
@@ -362,7 +369,11 @@ async def publish_title(args: dict) -> None:
     r = aioredis.from_url(redis_url)
     try:
         event = json.dumps({"type": "title", "content": title})
-        await r.publish(stream_channel, event.encode("utf-8"))
+        data = event.encode("utf-8")
+        await r.publish(stream_channel, data)
+        events_key = f"events:{stream_channel}"
+        await r.rpush(events_key, data)
+        await r.expire(events_key, 600)
     finally:
         await r.close()
 

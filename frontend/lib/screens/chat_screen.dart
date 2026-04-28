@@ -75,6 +75,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       if (mounted) {
         setState(() { _messages = thread.messages; _isLoadingMessages = false; });
         _scrollToBottom();
+
+        // If this thread is still generating (e.g., page was refreshed mid-response),
+        // reconnect to the in-progress stream.
+        if (thread.isGenerating) {
+          _reconnectToStream(threadId);
+        }
       }
     } catch (e) {
       if (mounted) setState(() { _error = 'Failed to load thread'; _isLoadingMessages = false; });
@@ -93,6 +99,168 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     } catch (_) {
       // Silent — keep temp messages visible if reload fails
+    }
+  }
+
+  /// Reconnect to an in-progress generation stream after page refresh.
+  ///
+  /// Clears non-user/system messages (they'll be rebuilt from the event buffer),
+  /// adds a placeholder assistant message, and processes the replayed stream.
+  Future<void> _reconnectToStream(String threadId) async {
+    if (_isSending) return;
+
+    final tempIds = <String>[];
+
+    // Remove non-user/system messages — the stream will replay tool_call, tool_result,
+    // thinking, and token events from the beginning.
+    setState(() {
+      _isSending = true;
+      _messages.removeWhere((m) =>
+          m.role != 'user' && m.role != 'system');
+    });
+
+    // Add a placeholder assistant message for streaming tokens
+    final placeholderId = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
+    tempIds.add(placeholderId);
+    setState(() {
+      _messages.add(Message(
+        id: placeholderId,
+        threadId: threadId,
+        role: 'assistant',
+        content: '',
+        createdAt: DateTime.now(),
+      ));
+    });
+    _scrollToBottom();
+
+    try {
+      final stream = _api.reconnectStream(threadId);
+      await _processStreamChunks(stream, tempIds, skipHeader: true);
+
+      if (mounted) {
+        if (_activeThreadId != null) {
+          await _reloadThreadSilently();
+        }
+        setState(() { _isSending = false; });
+        _loadThreads();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _messages.removeWhere((m) => tempIds.contains(m.id));
+          _isSending = false;
+        });
+        // Silently fail — at least the DB messages are shown
+      }
+    }
+  }
+
+  /// Process a stream of chunks, parsing JSON events and handling them.
+  /// Shared between [_sendMessage] and [_reconnectToStream].
+  ///
+  /// When [skipHeader] is false (default), expects a `THREAD_ID:<id>\n\n` header
+  /// as the first chunk. When true (reconnect), skips header processing.
+  Future<void> _processStreamChunks(
+    Stream<String> stream,
+    List<String> tempIds, {
+    bool skipHeader = false,
+  }) async {
+    String headerBuffer = "";
+    bool headerProcessed = skipHeader;
+    String chunkBuffer = "";
+
+    await for (var chunk in stream) {
+      if (!mounted) break;
+
+      if (!headerProcessed) {
+        headerBuffer += chunk;
+        if (headerBuffer.contains("\n\n")) {
+          final parts = headerBuffer.split("\n\n");
+          final headerPart = parts[0];
+          if (headerPart.startsWith("THREAD_ID:")) {
+            final newId = headerPart.substring(10).trim();
+            if (_activeThreadId == null || _activeThreadId != newId) {
+              setState(() => _activeThreadId = newId);
+            }
+          }
+          headerProcessed = true;
+          chunk = parts.length > 1 ? parts.sublist(1).join("\n\n") : "";
+        } else {
+          continue;
+        }
+      }
+
+      if (chunk == "[DONE]") break;
+      if (chunk.startsWith("[ERROR]")) {
+        setState(() => _error = chunk.substring(7));
+        break;
+      }
+
+      // Remove null heartbeats
+      chunk = chunk.replaceAll("\x00", "");
+      if (chunk.isEmpty) continue;
+
+      // Buffer chunks and try to parse JSON events
+      chunkBuffer += chunk;
+
+      // Try to parse all complete JSON objects from the buffer
+      while (chunkBuffer.isNotEmpty) {
+        // Check for sentinels first
+        if (chunkBuffer.startsWith("[DONE]")) {
+          chunkBuffer = chunkBuffer.substring(6);
+          break;
+        }
+        if (chunkBuffer.startsWith("[ERROR]")) {
+          setState(() => _error = chunkBuffer.substring(7));
+          chunkBuffer = "";
+          break;
+        }
+
+        // Try to find a complete JSON object
+        if (!chunkBuffer.startsWith("{")) {
+          final nextBrace = chunkBuffer.indexOf("{");
+          if (nextBrace == -1) {
+            chunkBuffer = "";
+            break;
+          }
+          chunkBuffer = chunkBuffer.substring(nextBrace);
+        }
+
+        // Try to parse JSON from the start of the buffer
+        Map<String, dynamic>? event;
+        int consumed = 0;
+        try {
+          event = jsonDecode(chunkBuffer) as Map<String, dynamic>;
+          consumed = chunkBuffer.length;
+        } catch (_) {
+          int depth = 0;
+          int? endPos;
+          for (int i = 0; i < chunkBuffer.length; i++) {
+            if (chunkBuffer[i] == '{') depth++;
+            if (chunkBuffer[i] == '}') depth--;
+            if (depth == 0) {
+              endPos = i + 1;
+              break;
+            }
+          }
+          if (endPos != null) {
+            try {
+              event = jsonDecode(chunkBuffer.substring(0, endPos)) as Map<String, dynamic>;
+              consumed = endPos;
+            } catch (_) {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+
+        if (event == null) break;
+        chunkBuffer = chunkBuffer.substring(consumed);
+
+        _handleStreamEvent(event, tempIds);
+        _scrollToBottom();
+      }
     }
   }
 
@@ -131,108 +299,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     try {
       final stream = _api.sendMessageStream(content, threadId: _activeThreadId);
-      
-      String headerBuffer = "";
-      bool headerProcessed = false;
-      // Buffer for incomplete JSON chunks
-      String chunkBuffer = "";
-
-      await for (var chunk in stream) {
-        if (!mounted) break;
-
-        if (!headerProcessed) {
-          headerBuffer += chunk;
-          if (headerBuffer.contains("\n\n")) {
-            final parts = headerBuffer.split("\n\n");
-            final headerPart = parts[0];
-            if (headerPart.startsWith("THREAD_ID:")) {
-              final newId = headerPart.substring(10).trim();
-              if (_activeThreadId == null || _activeThreadId != newId) {
-                setState(() => _activeThreadId = newId);
-              }
-            }
-            headerProcessed = true;
-            chunk = parts.length > 1 ? parts.sublist(1).join("\n\n") : "";
-          } else {
-            continue;
-          }
-        }
-        
-        if (chunk == "[DONE]") break;
-        if (chunk.startsWith("[ERROR]")) {
-           setState(() => _error = chunk.substring(7));
-           break;
-        }
-        
-        // Remove null heartbeats
-        chunk = chunk.replaceAll("\x00", "");
-        if (chunk.isEmpty) continue;
-
-        // Buffer chunks and try to parse JSON events
-        chunkBuffer += chunk;
-        
-        // Try to parse all complete JSON objects from the buffer
-        while (chunkBuffer.isNotEmpty) {
-          // Check for sentinels first
-          if (chunkBuffer.startsWith("[DONE]")) {
-            chunkBuffer = chunkBuffer.substring(6);
-            break;
-          }
-          if (chunkBuffer.startsWith("[ERROR]")) {
-            setState(() => _error = chunkBuffer.substring(7));
-            chunkBuffer = "";
-            break;
-          }
-
-          // Try to find a complete JSON object
-          if (!chunkBuffer.startsWith("{")) {
-            // Skip non-JSON data (shouldn't happen, but be safe)
-            final nextBrace = chunkBuffer.indexOf("{");
-            if (nextBrace == -1) {
-              chunkBuffer = "";
-              break;
-            }
-            chunkBuffer = chunkBuffer.substring(nextBrace);
-          }
-
-          // Try to parse JSON from the start of the buffer
-          Map<String, dynamic>? event;
-          int consumed = 0;
-          try {
-            event = jsonDecode(chunkBuffer) as Map<String, dynamic>;
-            consumed = chunkBuffer.length;
-          } catch (_) {
-            // May be incomplete JSON — try to find the boundary
-            // Look for }{ which indicates two concatenated objects
-            int depth = 0;
-            int? endPos;
-            for (int i = 0; i < chunkBuffer.length; i++) {
-              if (chunkBuffer[i] == '{') depth++;
-              if (chunkBuffer[i] == '}') depth--;
-              if (depth == 0) {
-                endPos = i + 1;
-                break;
-              }
-            }
-            if (endPos != null) {
-              try {
-                event = jsonDecode(chunkBuffer.substring(0, endPos)) as Map<String, dynamic>;
-                consumed = endPos;
-              } catch (_) {
-                break; // Wait for more data
-              }
-            } else {
-              break; // Incomplete — wait for more data
-            }
-          }
-
-          if (event == null) break;
-          chunkBuffer = chunkBuffer.substring(consumed);
-
-          _handleStreamEvent(event, tempIds);
-          _scrollToBottom();
-        }
-      }
+      await _processStreamChunks(stream, tempIds);
 
       // [DONE] received — DB is guaranteed to have all messages (including
       // the final assistant response). Do one clean reload.
@@ -296,6 +363,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'tool_call':
         final id = 'temp-tc-${DateTime.now().millisecondsSinceEpoch}';
         tempIds.add(id);
+        final toolCalls = event['tool_calls'] as List<dynamic>?;
         setState(() {
           final placeholderIdx = _messages.indexWhere(
             (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
@@ -306,6 +374,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             role: 'tool_call',
             content: content,
             createdAt: DateTime.now(),
+            metadata: toolCalls != null ? {'tool_calls': toolCalls} : null,
           );
           if (placeholderIdx >= 0) {
             _messages.insert(placeholderIdx, msg);

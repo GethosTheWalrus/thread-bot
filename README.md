@@ -8,12 +8,12 @@ It features a responsive Flutter web interface, an asynchronous FastAPI backend,
 
 - **Thread-Based Conversations**: Organize chats into threads with automatic title generation that updates the sidebar in real time.
 - **MCP Tool Support**: Integrate with any MCP-compatible tool server via Docker sidecars. Tool calls and results are rendered as interactive chips with per-tool status indicators.
-- **Token-by-Token Streaming**: LLM responses stream to the UI token by token via Redis pub/sub, with progressive markdown rendering.
+- **Token-by-Token Streaming**: LLM responses stream to the UI token by token via Redis pub/sub, with progressive markdown rendering. Stream reconnect after page refresh replays buffered events seamlessly.
 - **Advanced Memory**: 
     - **Tool Persistence**: Every tool call and result is saved to the database and replayed to the LLM across turns.
     - **Conversational Compaction**: Automated, token-aware summarization of older history to manage context window limits.
 - **Agent Loop**: Multi-step tool execution with thinking blocks, capped at configurable max iterations. The LLM can chain multiple tool calls before producing a final response.
-- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations, and rich markdown support.
+- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations with loading spinners, expandable tool input/output blocks, and rich markdown support.
 
 ## Quick Start (Docker Compose)
 
@@ -59,7 +59,7 @@ graph TD
     W <-->|Read/Write| DB
     W <-->|HTTP / SSE| LLM[LLM API]
     W <-.->|Publish Events| R
-    W <-->|Docker Exec| MCP[MCP Tool Containers]
+    W <-->|Docker / kubectl| MCP[MCP Tool Containers]
 ```
 
 ### Core Components
@@ -69,19 +69,29 @@ graph TD
 | **Frontend** (Flutter) | SPA with token streaming, markdown rendering, tool call UI, and MCP server management |
 | **Backend** (FastAPI) | Gateway between frontend and Temporal. Subscribes to Redis and relays streaming events to the frontend via `StreamingResponse` |
 | **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with tool execution, token streaming, auto-title generation |
-| **Redis** | Pub/sub broker bridging worker → backend for real-time streaming. Required because worker and backend are separate processes |
+| **Redis** | Pub/sub broker bridging worker -> backend for real-time streaming. Also buffers events in Redis lists for stream reconnect after page refresh |
 | **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), and MCP server configs |
 | **Temporal** | Orchestrates workflows with retry policies and fault tolerance |
-| **MCP Sidecars** | Ephemeral Docker containers providing tools (filesystem, APIs, databases) to the LLM |
+| **MCP Sidecars** | Ephemeral containers providing tools (filesystem, APIs, databases) to the LLM. Uses Docker locally and `kubectl run` pods in Kubernetes |
 
 ### Streaming Flow
 
-1. User sends a message → backend saves it to DB, subscribes to a Redis channel, starts the Temporal workflow
-2. Worker runs the agent loop: non-streaming LLM calls during tool iterations, publishing `thinking`, `tool_call`, and `tool_result` events to Redis
-3. Final LLM call uses `stream: true` — each SSE token is published to Redis as `{"type":"token","content":"..."}`
+1. User sends a message -> backend saves it to DB, subscribes to a Redis channel, sets generating flag in Redis, starts the Temporal workflow
+2. Worker runs the agent loop: non-streaming LLM calls during tool iterations, publishing `thinking`, `tool_call`, and `tool_result` events to Redis (both pub/sub and an event buffer list)
+3. Final LLM call uses `stream: true` -- each SSE token is published to Redis as `{"type":"token","content":"..."}`
 4. Backend relays all Redis events to the frontend via chunked HTTP response
 5. Frontend appends tokens to a placeholder message, rendering markdown progressively
 6. After saving, the worker publishes `title` and `[DONE]` events. The sidebar updates instantly with the generated title
+
+### Stream Reconnect
+
+If the user refreshes the page mid-response, the frontend detects the thread is still generating (`is_generating` field in the thread response) and reconnects:
+
+1. Frontend loads persisted messages from the DB
+2. Connects to `GET /api/threads/{id}/stream` which polls the Redis event buffer list
+3. All buffered events replay from the beginning, rebuilding thinking/tool_call/tool_result bubbles and streaming tokens
+4. New events continue to arrive via polling until `[DONE]`
+5. Standard silent DB reload finalizes the view
 
 ## Configuration
 

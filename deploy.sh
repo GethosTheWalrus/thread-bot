@@ -57,6 +57,7 @@ docker buildx build \
 # 5. Update and deploy to k8s
 echo -e "\n${BLUE}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/rbac.yaml
 kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml
 
 # Since we use :latest, we should rollout restart to force nodes to pull the latest images

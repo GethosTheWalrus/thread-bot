@@ -138,6 +138,7 @@ class RunThreadWorkflow:
             {
                 "redis_url": llm_config.get("redis_url"),
                 "stream_channel": llm_config.get("stream_channel"),
+                "thread_id": thread_id,
             },
             start_to_close_timeout=timedelta(seconds=5),
             retry_policy=RetryPolicy(maximum_attempts=2),
