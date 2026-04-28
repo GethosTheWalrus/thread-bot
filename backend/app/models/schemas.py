@@ -41,6 +41,7 @@ class ThreadResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     messages: list[MessageResponse] = []
+    is_generating: bool = False
 
     model_config = {"from_attributes": True}
 

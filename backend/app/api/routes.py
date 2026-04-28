@@ -58,7 +58,7 @@ def _build_message_response(m) -> MessageResponse:
     )
 
 
-def _build_thread_response(thread, messages=None) -> ThreadResponse:
+def _build_thread_response(thread, messages=None, is_generating=False) -> ThreadResponse:
     msgs = messages or []
     return ThreadResponse(
         id=thread.id,
@@ -67,6 +67,7 @@ def _build_thread_response(thread, messages=None) -> ThreadResponse:
         created_at=thread.created_at,
         updated_at=thread.updated_at,
         messages=[_build_message_response(m) for m in msgs],
+        is_generating=is_generating,
     )
 
 
@@ -143,6 +144,9 @@ async def chat_endpoint(
     r = aioredis.from_url(redis_url)
     pubsub = r.pubsub()
     await pubsub.subscribe(channel)
+
+    # Mark this thread as actively generating so reconnect works after page refresh
+    await r.set(f"generating:{thread_id}", channel, ex=600)
 
     try:
         await temporal_client.start_workflow(
@@ -239,7 +243,85 @@ async def get_thread_endpoint(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    return _build_thread_response(thread, thread.messages)
+    # Check if this thread is actively generating
+    import redis.asyncio as aioredis
+    redis_url = get_redis_url()
+    r = aioredis.from_url(redis_url)
+    try:
+        channel = await r.get(f"generating:{thread_id}")
+        is_generating = channel is not None
+    finally:
+        await r.close()
+
+    return _build_thread_response(thread, thread.messages, is_generating=is_generating)
+
+
+@router.get("/threads/{thread_id}/stream")
+async def reconnect_stream_endpoint(
+    thread_id: UUID,
+):
+    """Reconnect to an in-progress generation stream.
+    
+    Uses the Redis event buffer (list) to replay all events from the beginning,
+    then polls for new events until [DONE]. This allows the frontend to resume
+    streaming after a page refresh without losing any events.
+    
+    Returns 204 if the thread is not currently generating.
+    """
+    import asyncio
+    import redis.asyncio as aioredis
+    from fastapi.responses import StreamingResponse, Response
+
+    redis_url = get_redis_url()
+    r = aioredis.from_url(redis_url)
+
+    try:
+        channel = await r.get(f"generating:{thread_id}")
+    except Exception:
+        await r.close()
+        return Response(status_code=204)
+
+    if not channel:
+        await r.close()
+        return Response(status_code=204)
+
+    # Decode channel name (Redis returns bytes)
+    if isinstance(channel, bytes):
+        channel = channel.decode("utf-8")
+
+    events_key = f"events:{channel}"
+
+    async def stream_generator():
+        try:
+            cursor = 0
+            while True:
+                # Get all events from cursor position onward
+                events = await r.lrange(events_key, cursor, -1)
+                if events:
+                    for event_data in events:
+                        if event_data == b"[DONE]":
+                            return
+                        if event_data.startswith(b"[ERROR]"):
+                            yield event_data
+                            return
+                        yield event_data
+                    cursor += len(events)
+                else:
+                    # No new events — send heartbeat and wait
+                    yield b"\x00"
+                    await asyncio.sleep(0.2)
+        finally:
+            await r.close()
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/threads/{thread_id}/replies", response_model=list[ThreadListItem])
@@ -399,8 +481,9 @@ async def update_mcp_server_endpoint(
 @router.post("/mcp/{server_id}/test", response_model=MCPTestResponse)
 async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(get_db)):
     from app.models.models import MCPServer
-    from mcp import ClientSession, StdioServerParameters
+    from mcp import ClientSession
     from mcp.client.stdio import stdio_client
+    from app.mcp_helper import get_mcp_server_params
     import json
 
     result = await db.execute(select(MCPServer).where(MCPServer.id == server_id))
@@ -408,18 +491,7 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    params = StdioServerParameters(
-        command="/usr/local/bin/docker",
-        args=[
-            "run",
-            "-i",
-            "--rm",
-            "--add-host=host.docker.internal:host-gateway",
-            *[item for k, v in server.env_vars.items() for item in ["-e", f"{k}={v}"]],
-            server.image,
-        ],
-        env=None,
-    )
+    params = get_mcp_server_params(server.image, server.env_vars)
 
     try:
         async with stdio_client(params) as (read, write):
