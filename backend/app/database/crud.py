@@ -1,7 +1,7 @@
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Thread, Message, MCPServer
+from app.models.models import Thread, Message, MCPServer, Setting
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
@@ -100,9 +100,29 @@ async def get_message_count(db: AsyncSession, thread_id: UUID) -> int:
 async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None) -> MCPServer:
     server = MCPServer(name=name, image=image, env_vars=env_vars or {})
     db.add(server)
-    await db.flush()
-    await db.refresh(server)
+        await db.flush()
+        await db.refresh(server)
     return server
+
+
+# ── Settings ────────────────────────────────────────────────────────
+
+
+async def get_all_settings(db: AsyncSession) -> dict[str, str]:
+    result = await db.execute(select(Setting))
+    rows = result.scalars().all()
+    return {row.key: row.value for row in rows}
+
+
+async def upsert_settings(db: AsyncSession, settings: dict[str, str]) -> None:
+    for key, value in settings.items():
+        result = await db.execute(select(Setting).where(Setting.key == key))
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.value = str(value)
+        else:
+            db.add(Setting(key=key, value=str(value)))
+    await db.flush()
 
 
 async def get_mcp_servers(db: AsyncSession) -> list[MCPServer]:

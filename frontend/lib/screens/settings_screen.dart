@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:threadbot/services/api_service.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -29,39 +28,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _loadSettings() async {
     setState(() => _isLoading = true);
     try {
-      final prefs = await SharedPreferences.getInstance();
-
-      final localApiUrl = prefs.getString('llm_api_url');
-      final localModel = prefs.getString('llm_model');
-
-      _apiKeyController.text = prefs.getString('llm_api_key') ?? '';
+      final settings = await ApiService().getSettings();
+      _apiUrlController.text = settings['llm_api_url'] as String? ?? '';
+      _modelController.text = settings['llm_model'] as String? ?? '';
+      // API key is not returned for security; leave blank unless user types a new one
+      _apiKeyController.text = '';
       _contextWindowController.text =
-          (prefs.getInt('llm_context_window') ?? 8192).toString();
+          (settings['llm_context_window'] ?? 8192).toString();
       _preserveRecentController.text =
-          (prefs.getInt('llm_preserve_recent') ?? 10).toString();
+          (settings['llm_preserve_recent'] ?? 10).toString();
       _compactionThreshold =
-          prefs.getDouble('llm_compaction_threshold') ?? 0.75;
-
-      if (localApiUrl != null && localApiUrl.isNotEmpty && localModel != null && localModel.isNotEmpty) {
-        _apiUrlController.text = localApiUrl;
-        _modelController.text = localModel;
-      } else {
-        try {
-          final settings = await ApiService().getSettings();
-          _apiUrlController.text = settings['llm_api_url'] as String? ?? '';
-          _modelController.text = settings['llm_model'] as String? ?? '';
-          _contextWindowController.text =
-              (settings['llm_context_window'] ?? 8192).toString();
-          _preserveRecentController.text =
-              (settings['llm_preserve_recent'] ?? 10).toString();
-          _compactionThreshold =
-              (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
-        } catch (_) {
-          _apiUrlController.text = '';
-          _modelController.text = 'llama3.1';
-        }
-      }
-    } catch (_) {}
+          (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
+    } catch (_) {
+      _apiUrlController.text = '';
+      _modelController.text = 'llama3.1';
+      _contextWindowController.text = '8192';
+      _preserveRecentController.text = '10';
+    }
 
     if (mounted) setState(() => _isLoading = false);
   }
@@ -69,42 +52,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveSettings() async {
     setState(() => _isSaving = true);
     try {
-      final prefs = await SharedPreferences.getInstance();
       final api = ApiService();
-
-      await api.saveSettings(
-        apiUrl: _apiUrlController.text,
-        apiKey: _apiKeyController.text,
-        model: _modelController.text,
-      );
 
       final contextWindow = int.tryParse(_contextWindowController.text) ?? 8192;
       final preserveRecent = int.tryParse(_preserveRecentController.text) ?? 10;
 
-      await prefs.setInt('llm_context_window', contextWindow);
-      await prefs.setDouble('llm_compaction_threshold', _compactionThreshold);
-      await prefs.setInt('llm_preserve_recent', preserveRecent);
+      // Build the settings payload — only include API key if user entered one
+      final payload = <String, dynamic>{
+        'llm_api_url': _apiUrlController.text,
+        'llm_model': _modelController.text,
+        'llm_context_window': contextWindow,
+        'llm_compaction_threshold': _compactionThreshold,
+        'llm_preserve_recent': preserveRecent,
+      };
+      if (_apiKeyController.text.isNotEmpty) {
+        payload['llm_api_key'] = _apiKeyController.text;
+      }
 
-      await api.sendSettingsToBackend(
-        apiUrl: _apiUrlController.text,
-        apiKey: _apiKeyController.text,
-        model: _modelController.text,
-      );
-
-      // Also send context management settings to backend
-      try {
-        await api.updateContextSettings(
-          contextWindow: contextWindow,
-          compactionThreshold: _compactionThreshold,
-          preserveRecent: preserveRecent,
-        );
-      } catch (_) {}
+      await api.saveSettingsToBackend(payload);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('Settings saved'),
             backgroundColor: const Color(0xFF16161E),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save settings: $e'),
+            backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
@@ -189,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           _buildField(
                             controller: _apiKeyController,
                             label: 'API Key',
-                            hint: 'Leave blank for Ollama',
+                            hint: 'Leave blank to keep current key',
                             icon: Icons.key_rounded,
                             obscure: true,
                           ),
