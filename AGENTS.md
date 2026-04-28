@@ -9,9 +9,9 @@ backend/                    # Python/FastAPI + Temporal worker
     worker.py               # Temporal worker: registers RunThreadWorkflow + 8 activities
     workflows/thread_workflow.py  # Orchestrator: get_messages → compact_history → call_llm → save_message → auto-title → publish_done
     api/routes.py           # REST endpoints at /api/* (threads, chat, settings, stream reconnect); Redis pub/sub streaming
-    models/models.py        # SQLAlchemy: Thread (self-referencing FK) + Message (JSONB metadata_) + MCPServer
+    models/models.py        # SQLAlchemy: Thread (self-referencing FK) + Message (JSONB metadata_) + MCPServer + Setting (key-value)
     models/schemas.py       # Pydantic v2 schemas (ThreadResponse includes is_generating)
-    config.py               # Singleton Settings + update_settings() for runtime overrides; REDIS_URL, REDIS_DB
+    config.py               # Singleton Settings + update_settings() for runtime overrides + load_settings_from_db(); REDIS_URL, REDIS_DB
     database/               # Async SQLAlchemy engine, session factory, get_db dependency, CRUD
     activities/llm_activities.py  # Temporal activities (lazy DB imports inside functions)
     mcp_helper.py           # Auto-detect Docker vs K8s, build StdioServerParameters for MCP containers
@@ -19,17 +19,17 @@ backend/                    # Python/FastAPI + Temporal worker
 frontend/                   # Flutter web app (dark theme, Material 3)
   lib/
     main.dart               # App entry — MaterialApp with ThreadBotApp
-    services/api_service.dart       # API calls + SharedPreferences for LLM config + reconnectStream
+    services/api_service.dart       # API calls + reconnectStream
     models/message.dart     # Message model (mutable content for streaming)
     models/thread.dart      # Thread (with isGenerating) + ThreadListItem models (mutable title for live updates)
     screens/chat_screen.dart  # Main chat: structured JSON event parsing, token streaming, placeholder management, stream reconnect
     screens/                # HomeScreen, ThreadListScreen, ThreadDetailScreen, SettingsScreen, MCPScreen
     widgets/chat_message_list.dart  # Message rendering: ChatBubble, ToolCallBubble, ToolCallChip (loading spinner, expandable I/O), ThinkingBubble, skeleton shimmer
     widgets/                # Sidebar, ChatInput, ThreadTreeView
-  pubspec.yaml              # flutter_lints, http, shared_preferences, flutter_markdown
+  pubspec.yaml              # flutter_lints, http, flutter_markdown
 docker/
   Dockerfile.frontend       # Two-stage: ubuntu+Flutter SDK clone → nginx:alpine, inline nginx config (includes /api/ proxy)
-  init/01-init.sql          # Auto-init: threads + messages tables with CASCADE FKs
+  init/01-init.sql          # Auto-init: threads + messages + settings tables with CASCADE FKs
 k8s/                        # Production: namespace, configmap, rbac, deployments (backend x2, worker x1, frontend x2), services, ingress
 ```
 
@@ -43,7 +43,7 @@ k8s/                        # Production: namespace, configmap, rbac, deployment
 - **Tool Persistence**: `tool_call` and `tool_result` are distinct roles in the DB. `get_messages` activity MUST reconstruct the OpenAI-compatible format (`assistant` role with `tool_calls` array and `tool` role for results) to maintain LLM context. `thinking` role is display-only and skipped during reconstruction.
 - **Context Compaction**: When history exceeds a threshold, `compact_history` triggers. It summarizes older messages into a `system` message and deletes the originals. This keeps the prompt size manageable.
 - **Auto-title**: Runs before `publish_done` so the title event arrives while the stream is still open. Publishes `{"type":"title","content":"..."}` to Redis so the sidebar updates instantly. No polling required.
-- **Config**: Runtime-overridable via `update_settings()` — LLM config, MCP servers, and compaction limits can be changed via UI.
+- **Config**: Settings are persisted in a `settings` key-value table in PostgreSQL. On startup, `load_settings_from_db()` loads all rows into the in-memory `_overrides` dict. The `PATCH /api/settings` endpoint writes to both `_overrides` and the DB. Env vars (configmap) serve as defaults; DB values take precedence. The frontend no longer stores settings in SharedPreferences — it loads from and saves to the backend API exclusively.
 - **Frontend state**: Per-screen StatefulWidget with local state + `ApiService`. No singleton provider, no `provider` package. Each screen creates its own `ApiService()` instance and manages state via `setState()`.
 - **DB**: Async SQLAlchemy 2.0 with `asyncpg`. `expire_on_commit=False`, `autoflush=False`. Always use explicit queries or `selectinload` — lazy loading after commit raises `MissingGreenlet`.
 - **Temporal SDK v1.8+**: Workflows must be classes decorated with `@defn`, with `@run` method. Activities use `@activity.defn`. DB imports must be inside function bodies (Temporal sandbox blocks SQLAlchemy imports at module level).
@@ -115,7 +115,7 @@ curl http://localhost:8088                   # Temporal UI
 - **Per-chip tool pulse** — Tool call pulse animation is per-chip (on `_ToolCallChip`), not per-bubble. A chip stops pulsing immediately when its result arrives. Each chip shows a loading spinner while waiting for its result. The bubble-level `_ToolCallBubble` has no animation.
 - **Tool call `isLoading` detection** — `hasAssistantAfter` checks for assistant messages with non-empty content. The empty placeholder (`temp-ast-*` with empty content) is excluded so `isLoading` correctly evaluates to `true` during streaming.
 - **Stream reconnect in frontend** — `_processStreamChunks` is a shared method used by both `_sendMessage` (live) and `_reconnectToStream` (page refresh). On reconnect, non-user/system messages are cleared from the list before replaying events from the buffer. The `skipHeader` flag skips `THREAD_ID:` parsing for reconnect (no header in reconnect stream).
-- **Ollama URL** — Default is `host.docker.internal:11434` (Docker internal). Workers need network access to the Ollama instance. Configure via Settings screen. Ollama must be installed and running on the host machine for chat to work.
+- **Ollama URL** — Default is `host.docker.internal:11434` (Docker internal). Workers need network access to the Ollama instance. Configure via Settings screen (persisted to DB). Ollama must be installed and running on the host machine for chat to work.
 - **K8s ingress** — Routes `/api` and `/health` to backend, `/` to frontend. Backend Service port is 80 (target 8000).
 - **MCP infrastructure auto-detection** — `mcp_helper.py` checks for `/var/run/secrets/kubernetes.io/serviceaccount/token` to decide between Docker (`docker run -i`) and Kubernetes (`kubectl run --rm -i --quiet`). In K8s, full `os.environ` must be passed to `StdioServerParameters` so kubectl can find the API server.
 - **MCP pod name collision** — `mcp_tools_map` stores `image`/`env_vars` instead of pre-built `StdioServerParameters`. Fresh params with unique pod names are generated per tool execution via `get_mcp_server_params()`.
