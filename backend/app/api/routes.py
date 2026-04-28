@@ -13,6 +13,7 @@ from app.database.crud import (
     delete_mcp_server,
     toggle_mcp_server,
     update_mcp_server,
+    upsert_settings,
 )
 from app.models.models import Thread, Message
 from app.models.schemas import (
@@ -94,14 +95,8 @@ async def chat_endpoint(
 
     settings = get_settings()
 
-    # Construct full LLM config to pass as workflow input
+    # LLM config comes entirely from server-side settings (env + DB overrides)
     llm_config = get_llm_config().copy()
-    if request.llm_api_url:
-        llm_config["api_url"] = request.llm_api_url
-    if request.llm_api_key:
-        llm_config["api_key"] = request.llm_api_key
-    if request.llm_model:
-        llm_config["model"] = request.llm_model
 
     # Create thread and user message in a committed session so workflow can see them
     async with AsyncSessionLocal() as setup_db:
@@ -403,7 +398,10 @@ async def get_settings_endpoint():
 
 
 @router.patch("/settings")
-async def update_settings_endpoint(request: dict):
+async def update_settings_endpoint(
+    request: dict,
+    db: AsyncSession = Depends(get_db),
+):
     valid_keys = {
         "llm_api_url": "llm_api_url",
         "llm_api_key": "llm_api_key",
@@ -418,6 +416,8 @@ async def update_settings_endpoint(request: dict):
     updates = {valid_keys[k]: v for k, v in request.items() if k in valid_keys}
     if updates:
         update_settings(**updates)
+        # Persist to DB so values survive restarts
+        await upsert_settings(db, {k: str(v) for k, v in updates.items()})
 
     config = get_llm_config()
     return {
