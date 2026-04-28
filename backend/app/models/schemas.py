@@ -18,9 +18,6 @@ class ChatRequest(BaseModel):
     content: str = Field(..., description="User message content")
     thread_id: Optional[str] = Field(None, description="Existing thread ID to continue conversation")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
-    llm_api_url: Optional[str] = Field(None, description="Override LLM API URL")
-    llm_api_key: Optional[str] = Field(None, description="Override LLM API Key")
-    llm_model: Optional[str] = Field(None, description="Override LLM model")
 
 
 class MessageResponse(BaseModel):

@@ -71,6 +71,38 @@ def update_settings(**kwargs) -> None:
         _overrides[key.lower()] = value
 
 
+async def load_settings_from_db() -> None:
+    """Load persisted settings from DB into the override dict.
+
+    Called once during app startup so that DB-stored values take precedence
+    over environment variables / Pydantic defaults.
+    """
+    from app.database import AsyncSessionLocal
+    from app.database.crud import get_all_settings
+
+    async with AsyncSessionLocal() as db:
+        rows = await get_all_settings(db)
+
+    # Map DB keys (stored lowercase) into the override dict.
+    # Coerce numeric types back from their string representation.
+    _type_map = {
+        "llm_temperature": float,
+        "llm_max_tokens": int,
+        "llm_stream_timeout": int,
+        "llm_context_window": int,
+        "llm_compaction_threshold": float,
+        "llm_preserve_recent": int,
+    }
+    for key, value in rows.items():
+        coerce = _type_map.get(key)
+        if coerce:
+            try:
+                value = coerce(value)
+            except (ValueError, TypeError):
+                pass
+        _overrides[key] = value
+
+
 def get_llm_config() -> dict:
     """Get current LLM config with overrides applied."""
     return {
