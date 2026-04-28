@@ -121,6 +121,34 @@ class ApiService {
     }
   }
 
+  /// Reconnect to an in-progress generation stream after page refresh.
+  /// The backend replays all buffered events from the beginning.
+  /// If the thread is not generating (204), the stream completes immediately.
+  Stream<String> reconnectStream(String threadId) {
+    return _reconnectStreamImpl(threadId);
+  }
+
+  Stream<String> _reconnectStreamImpl(String threadId) async* {
+    final request = http.Request('GET', Uri.parse('$baseUrl/api/threads/$threadId/stream'));
+
+    final client = http.Client();
+    try {
+      final response = await client.send(request);
+      if (response.statusCode == 204) {
+        // Not generating — no stream to reconnect to
+        return;
+      }
+      if (response.statusCode != 200) {
+        throw Exception('Failed to reconnect: ${response.statusCode}');
+      }
+      await for (final chunk in response.stream.transform(utf8.decoder)) {
+        yield chunk;
+      }
+    } finally {
+      client.close();
+    }
+  }
+
   Future<Thread> createThread({String title = 'New Thread'}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/threads'),

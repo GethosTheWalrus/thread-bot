@@ -45,7 +45,10 @@ class ChatMessageList extends StatelessWidget {
     final assistantPreItems = <int, List<_PreAssistantItem>>{};
 
     for (var i = 0; i < messages.length; i++) {
-      if (messages[i].isAssistant) {
+      // Only claim preceding items for assistant messages with actual content.
+      // The empty placeholder (temp-ast-* with empty content) should NOT claim
+      // tool_calls — they need to render standalone with loading spinners.
+      if (messages[i].isAssistant && messages[i].content.isNotEmpty) {
         final items = <_PreAssistantItem>[];
         // Walk backwards from the assistant message to collect preceding tool_call/thinking
         for (var j = i - 1; j >= 0; j--) {
@@ -94,7 +97,9 @@ class ChatMessageList extends StatelessWidget {
         }
         // Unclaimed tool_call (no assistant message follows — still in progress)
         if (msg.isToolCall) {
-          final hasAssistantAfter = messages.skip(index + 1).any((m) => m.isAssistant);
+          final hasAssistantAfter = messages.skip(index + 1).any(
+            (m) => m.isAssistant && m.content.isNotEmpty,
+          );
           return _ToolCallBubble(
             message: msg,
             isLoading: isSending && !hasAssistantAfter,
@@ -232,6 +237,9 @@ class _ToolCallBubbleState extends State<_ToolCallBubble> {
   }
 
   Widget _buildToolList(List<String> tools) {
+    // Extract per-tool arguments from metadata
+    final toolCalls = widget.message.metadata?['tool_calls'] as List<dynamic>?;
+
     // Determine per-chip loading: a chip is loading if the overall bubble
     // is loading AND this specific chip doesn't have a result yet.
     return Column(
@@ -241,12 +249,22 @@ class _ToolCallBubbleState extends State<_ToolCallBubble> {
         final succeeded = result != null && !_isError(result.content);
         final failed = result != null && _isError(result.content);
         final chipLoading = widget.isLoading && result == null;
+
+        // Extract arguments for this specific tool call
+        String? toolInput;
+        if (toolCalls != null && i < toolCalls.length) {
+          final tc = toolCalls[i] as Map<String, dynamic>?;
+          final fn = tc?['function'] as Map<String, dynamic>?;
+          toolInput = fn?['arguments'] as String?;
+        }
+
         return _ToolCallChip(
           tool: tools[i],
           isLoading: chipLoading,
           succeeded: succeeded,
           failed: failed,
           result: result,
+          toolInput: toolInput,
         );
       }),
     );
@@ -260,6 +278,7 @@ class _ToolCallChip extends StatefulWidget {
   final bool succeeded;
   final bool failed;
   final Message? result;
+  final String? toolInput;
 
   const _ToolCallChip({
     required this.tool,
@@ -267,6 +286,7 @@ class _ToolCallChip extends StatefulWidget {
     this.succeeded = false,
     this.failed = false,
     this.result,
+    this.toolInput,
   });
 
   @override
@@ -311,6 +331,8 @@ class _ToolCallChipState extends State<_ToolCallChip>
 
   @override
   Widget build(BuildContext context) {
+    final hasExpandableContent = widget.toolInput != null || widget.result != null;
+
     Widget chip = Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Column(
@@ -318,7 +340,7 @@ class _ToolCallChipState extends State<_ToolCallChip>
         children: [
           // ── Chip row ───────────────────────────────────────────────
           GestureDetector(
-            onTap: widget.result != null
+            onTap: hasExpandableContent
                 ? () => setState(() => _expanded = !_expanded)
                 : null,
             child: Container(
@@ -346,7 +368,17 @@ class _ToolCallChipState extends State<_ToolCallChip>
                     ),
                   ),
                   // Status icon
-                  if (widget.succeeded || widget.failed) ...[
+                  if (widget.isLoading && !widget.succeeded && !widget.failed) ...[
+                    const SizedBox(width: 6),
+                    SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: const Color(0xFF8B5CF6).withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ] else if (widget.succeeded || widget.failed) ...[
                     const SizedBox(width: 6),
                     Icon(
                       widget.succeeded ? Icons.check_circle_rounded : Icons.cancel_rounded,
@@ -356,8 +388,8 @@ class _ToolCallChipState extends State<_ToolCallChip>
                           : const Color(0xFFEF4444),
                     ),
                   ],
-                  // Expand/collapse chevron when result exists
-                  if (widget.result != null) ...[
+                  // Expand/collapse chevron when expandable content exists
+                  if (hasExpandableContent) ...[
                     const SizedBox(width: 4),
                     Icon(
                       _expanded ? Icons.expand_less : Icons.expand_more,
@@ -370,11 +402,27 @@ class _ToolCallChipState extends State<_ToolCallChip>
             ),
           ),
 
-          // ── Collapsible result block ───────────────────────────────
-          if (_expanded && widget.result != null)
+          // ── Collapsible input + result block ───────────────────────
+          if (_expanded && hasExpandableContent)
             Padding(
               padding: const EdgeInsets.only(top: 2, left: 4),
-              child: _CollapsibleResultBlock(content: widget.result!.content),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (widget.toolInput != null)
+                    _CollapsibleResultBlock(
+                      content: widget.toolInput!,
+                      label: 'input',
+                    ),
+                  if (widget.toolInput != null && widget.result != null)
+                    const SizedBox(height: 4),
+                  if (widget.result != null)
+                    _CollapsibleResultBlock(
+                      content: widget.result!.content,
+                      label: 'output',
+                    ),
+                ],
+              ),
             ),
         ],
       ),
@@ -395,10 +443,11 @@ class _ToolCallChipState extends State<_ToolCallChip>
   }
 }
 
-/// Formatted code block for tool result content (JSON or plain text).
+/// Formatted code block for tool input/result content (JSON or plain text).
 class _CollapsibleResultBlock extends StatelessWidget {
   final String content;
-  const _CollapsibleResultBlock({required this.content});
+  final String label;
+  const _CollapsibleResultBlock({required this.content, this.label = 'output'});
 
   String _format(String raw) {
     try {
@@ -452,7 +501,7 @@ class _CollapsibleResultBlock extends StatelessWidget {
                 ),
                 const SizedBox(width: 5),
                 Text(
-                  isJson ? 'json' : 'output',
+                  isJson ? '$label (json)' : label,
                   style: const TextStyle(
                     fontSize: 10,
                     color: Color(0xFF71717A),
@@ -928,6 +977,8 @@ class _InlineToolCallGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tools = _parseToolCalls(group.message.content);
+    final toolCalls = group.message.metadata?['tool_calls'] as List<dynamic>?;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
       child: Column(
@@ -936,11 +987,20 @@ class _InlineToolCallGroup extends StatelessWidget {
           final result = i < group.results.length ? group.results[i] : null;
           final succeeded = result != null && !_isError(result.content);
           final failed = result != null && _isError(result.content);
+
+          String? toolInput;
+          if (toolCalls != null && i < toolCalls.length) {
+            final tc = toolCalls[i] as Map<String, dynamic>?;
+            final fn = tc?['function'] as Map<String, dynamic>?;
+            toolInput = fn?['arguments'] as String?;
+          }
+
           return _ToolCallChip(
             tool: tools[i],
             succeeded: succeeded,
             failed: failed,
             result: result,
+            toolInput: toolInput,
           );
         }),
       ),
