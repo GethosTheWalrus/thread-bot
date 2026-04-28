@@ -34,6 +34,13 @@ class Message(Base):
     thread = relationship("Thread", back_populates="messages")
 
 
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String(255), primary_key=True)
+    value = Column(Text, nullable=False)
+
+
 class MCPServer(Base):
     __tablename__ = "mcp_servers"
 

@@ -2,7 +2,6 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
 
 class ApiService {
@@ -10,54 +9,6 @@ class ApiService {
 
   ApiService({String? baseUrl})
       : baseUrl = baseUrl ?? (kIsWeb ? Uri.base.origin : 'http://localhost:8000');
-
-  // ── LLM Settings (local storage) ──────────────────────────────────
-
-  Future<String?> getLlmApiUrl() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('llm_api_url');
-  }
-
-  Future<String?> getLlmApiKey() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('llm_api_key');
-  }
-
-  Future<String?> getLlmModel() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('llm_model');
-  }
-
-  Future<void> saveSettings({
-    required String apiUrl,
-    required String apiKey,
-    required String model,
-  }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('llm_api_url', apiUrl);
-    await prefs.setString('llm_api_key', apiKey);
-    await prefs.setString('llm_model', model);
-  }
-
-  Future<void> sendSettingsToBackend({
-    required String apiUrl,
-    required String apiKey,
-    required String model,
-  }) async {
-    try {
-      await http.patch(
-        Uri.parse('$baseUrl/api/settings'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'llm_api_url': apiUrl,
-          'llm_api_key': apiKey,
-          'llm_model': model,
-        }),
-      );
-    } catch (_) {
-      // Backend might be unreachable — local storage still has the values
-    }
-  }
 
   // ── Threads ───────────────────────────────────────────────────────
 
@@ -89,18 +40,12 @@ class ApiService {
 
   /// Send a message. If threadId is provided, appends to that thread.
   /// Otherwise creates a new thread.
+  /// LLM config is managed server-side — no need to send it per request.
   Stream<String> sendMessageStream(String content, {String? threadId}) async* {
-    final llmApiUrl = await getLlmApiUrl();
-    final llmApiKey = await getLlmApiKey();
-    final llmModel = await getLlmModel();
-
     final body = <String, dynamic>{
       'content': content,
     };
 
-    if (llmApiUrl != null && llmApiUrl.isNotEmpty) body['llm_api_url'] = llmApiUrl;
-    if (llmApiKey != null && llmApiKey.isNotEmpty) body['llm_api_key'] = llmApiKey;
-    if (llmModel != null && llmModel.isNotEmpty) body['llm_model'] = llmModel;
     if (threadId != null) body['thread_id'] = threadId;
 
     final request = http.Request('POST', Uri.parse('$baseUrl/api/chat'));
@@ -195,6 +140,8 @@ class ApiService {
     throw Exception('Failed to rename thread: ${response.statusCode}');
   }
 
+  // ── Settings ──────────────────────────────────────────────────────
+
   Future<Map<String, dynamic>> getSettings() async {
     final response = await http.get(
       Uri.parse('$baseUrl/api/settings'),
@@ -204,6 +151,18 @@ class ApiService {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
     throw Exception('Failed to load settings: ${response.statusCode}');
+  }
+
+  Future<void> saveSettingsToBackend(Map<String, dynamic> settings) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/api/settings'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(settings),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save settings: ${response.statusCode}');
+    }
   }
 
   // ── MCP Servers ───────────────────────────────────────────────────
@@ -288,21 +247,5 @@ class ApiService {
       return MCPServer.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
     }
     throw Exception('Failed to update MCP server: ${response.statusCode}');
-  }
-
-  Future<void> updateContextSettings({
-    required int contextWindow,
-    required double compactionThreshold,
-    required int preserveRecent,
-  }) async {
-    await http.patch(
-      Uri.parse('$baseUrl/api/settings'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'llm_context_window': contextWindow,
-        'llm_compaction_threshold': compactionThreshold,
-        'llm_preserve_recent': preserveRecent,
-      }),
-    );
   }
 }
