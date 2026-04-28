@@ -1,59 +1,111 @@
 # ThreadBot
 
-ThreadBot is a premium, thread-based AI chatbot powered by **Temporal** for robust workflow orchestration and **Model Context Protocol (MCP)** for extensible tool support.
+ThreadBot is a thread-based AI chatbot powered by **Temporal** for robust workflow orchestration and **Model Context Protocol (MCP)** for extensible tool support.
 
-It features a modern, responsive Flutter web interface, an asynchronous FastAPI backend, and a context-aware memory system that automatically compacts conversation history to stay within LLM token limits.
+It features a responsive Flutter web interface, an asynchronous FastAPI backend, real-time token streaming via Redis pub/sub, and a context-aware memory system that automatically compacts conversation history to stay within LLM token limits.
 
 ## Key Features
 
-- **Thread-Based Conversations**: Organize your chats into threads with automatic title generation.
-- **MCP Tool Support**: Integrate with any MCP-compatible tool server via Docker sidecars.
+- **Thread-Based Conversations**: Organize chats into threads with automatic title generation that updates the sidebar in real time.
+- **MCP Tool Support**: Integrate with any MCP-compatible tool server via Docker sidecars. Tool calls and results are rendered as interactive chips with per-tool status indicators.
+- **Token-by-Token Streaming**: LLM responses stream to the UI token by token via Redis pub/sub, with progressive markdown rendering.
 - **Advanced Memory**: 
-    - **Tool Persistence**: Every tool call and result is saved to the database and replayed to the LLM.
+    - **Tool Persistence**: Every tool call and result is saved to the database and replayed to the LLM across turns.
     - **Conversational Compaction**: Automated, token-aware summarization of older history to manage context window limits.
-- **Real-time Streaming**: Instant token display via SSE (Server-Sent Events) and Temporal-backed streaming.
-- **Premium UI**: Dark-themed, Material 3 design with smooth animations and rich markdown support.
+- **Agent Loop**: Multi-step tool execution with thinking blocks, capped at configurable max iterations. The LLM can chain multiple tool calls before producing a final response.
+- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations, and rich markdown support.
 
-## Deployment
+## Quick Start (Docker Compose)
 
-ThreadBot is fully containerized and supports local deployment via Docker Compose as well as production-ready Kubernetes deployments.
+```bash
+# Start all 7 services: postgres, temporal, temporal-ui, redis, backend, worker, frontend
+docker compose up --build
+
+# Access the app
+open http://localhost:3000        # Frontend
+open http://localhost:8080        # Temporal UI
+curl http://localhost:8000/health # Backend health check
+```
+
+Requires Docker with Compose v2. Ollama must be installed and running on the host for LLM inference (`http://host.docker.internal:11434`).
+
+## Kubernetes Deployment
+
+ThreadBot assumes Postgres, Temporal, and Redis are external services in production. The interactive deploy script handles configuration and multi-arch image builds:
+
+```bash
+./deploy.sh
+```
+
+The script prompts for:
+- Container registry prefix and image pull secret
+- PostgreSQL connection details
+- Temporal host, port, namespace, and task queue
+- Redis host, port, and DB number
+- LLM API URL, key, and model
+
+It generates `k8s/configmap.yaml`, builds multi-arch images (amd64 + arm64), pushes to your registry, and applies all Kubernetes manifests.
 
 ## Architecture
-
-ThreadBot leverages Temporal to ensure that long-running tool executions and LLM calls are reliable, even in the event of network failures or restarts.
 
 ```mermaid
 graph TD
     User([User]) <-->|Flutter Web| FE[Frontend]
-    FE <-->|REST / SSE| BE[FastAPI Backend]
-    BE <-->|Async| DB[(PostgreSQL)]
+    FE <-->|REST / Streaming| BE[FastAPI Backend]
+    BE <-->|Read/Write| DB[(PostgreSQL)]
     BE <-->|Submit Workflow| T[Temporal Server]
+    BE <-.->|Subscribe| R[(Redis Pub/Sub)]
     T <-->|Dispatch Tasks| W[Python Worker]
     W <-->|Read/Write| DB
-    W <-->|HTTP| LLM[LLM API]
+    W <-->|HTTP / SSE| LLM[LLM API]
+    W <-.->|Publish Events| R
     W <-->|Docker Exec| MCP[MCP Tool Containers]
-    
-    subgraph "Memory Management"
-        W -->|Check Tokens| W
-        W -->|Summarize| LLM
-        W -->|Clean Up| DB
-    end
 ```
 
 ### Core Components
-- **Frontend (Flutter)**: A state-of-the-art SPA that handles message streaming, markdown rendering, and MCP server management.
-- **Backend (FastAPI)**: Acts as a thin gateway between the frontend and the Temporal engine.
-- **Temporal Worker**: The "brain" of the system. It executes the `RunThreadWorkflow` which handles discovery, tool execution, and context management.
-- **MCP Sidecars**: Ephemeral Docker containers that provide specialized tools (e.g., filesystem access, database queries, API integrations) to the LLM.
+
+| Component | Role |
+|-----------|------|
+| **Frontend** (Flutter) | SPA with token streaming, markdown rendering, tool call UI, and MCP server management |
+| **Backend** (FastAPI) | Gateway between frontend and Temporal. Subscribes to Redis and relays streaming events to the frontend via `StreamingResponse` |
+| **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with tool execution, token streaming, auto-title generation |
+| **Redis** | Pub/sub broker bridging worker → backend for real-time streaming. Required because worker and backend are separate processes |
+| **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), and MCP server configs |
+| **Temporal** | Orchestrates workflows with retry policies and fault tolerance |
+| **MCP Sidecars** | Ephemeral Docker containers providing tools (filesystem, APIs, databases) to the LLM |
+
+### Streaming Flow
+
+1. User sends a message → backend saves it to DB, subscribes to a Redis channel, starts the Temporal workflow
+2. Worker runs the agent loop: non-streaming LLM calls during tool iterations, publishing `thinking`, `tool_call`, and `tool_result` events to Redis
+3. Final LLM call uses `stream: true` — each SSE token is published to Redis as `{"type":"token","content":"..."}`
+4. Backend relays all Redis events to the frontend via chunked HTTP response
+5. Frontend appends tokens to a placeholder message, rendering markdown progressively
+6. After saving, the worker publishes `title` and `[DONE]` events. The sidebar updates instantly with the generated title
 
 ## Configuration
 
 ThreadBot can be configured via the Settings screen in the UI:
-1. **LLM Config**: Set your API URL, Model Name, and API Key (supports Ollama by default at `host.docker.internal:11434`).
-2. **Context Management**: Configure the Context Window size, Compaction Threshold, and how many recent messages to keep uncompacted.
-3. **MCP Servers**: Add and manage tool servers by specifying their Docker image and environment variables.
+
+1. **LLM Config**: API URL, model name, API key, temperature, max tokens (supports Ollama by default)
+2. **Context Management**: Context window size, compaction threshold, number of recent messages to preserve
+3. **MCP Servers**: Add and manage tool servers by specifying their Docker image and environment variables
 
 ## Development
+
+```bash
+# Backend (local)
+cd backend && pip install -r requirements.txt
+uvicorn app.main:app --reload
+
+# Frontend (local Flutter)
+cd frontend && flutter pub get
+flutter build web --release
+
+# View logs
+docker compose logs -f worker    # Workflow execution
+docker compose logs -f backend   # API server
+```
 
 For detailed developer instructions, architectural deep-dives, and coding rules, see:
 - **[DESIGN.md](./DESIGN.md)**: Full architectural specification and sequence diagrams.
