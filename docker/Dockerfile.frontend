@@ -31,7 +31,12 @@ FROM nginx:alpine
 RUN rm /etc/nginx/conf.d/default.conf
 
 # Inline nginx config for SPA routing
-RUN printf 'server {\n    listen 80;\n    server_name _;\n    root /usr/share/nginx/html;\n    index index.html;\n    gzip on;\n    gzip_types text/plain application/json application/javascript text/css;\n    gzip_min_length 1000;\n    location /api/ {\n        proxy_pass http://backend:8000;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n    }\n    location /health {\n        proxy_pass http://backend:8000;\n        proxy_set_header Host $host;\n    }\n    location / {\n        try_files $uri $uri/ /index.html;\n    }\n    location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {\n        expires 1y;\n        add_header Cache-Control "public, immutable";\n    }\n}\n' > /etc/nginx/conf.d/default.conf
+# In Docker Compose, this nginx proxies /api/ to the backend container.
+# In K8s, the threadbot-proxy handles /api/ routing and these blocks
+# are never reached. Using a variable in proxy_pass defers DNS resolution
+# to request time so nginx doesn't crash at startup if 'backend' is
+# unresolvable. Docker's embedded DNS is at 127.0.0.11.
+RUN printf 'resolver 127.0.0.11 valid=30s ipv6=off;\n\nserver {\n    listen 80;\n    server_name _;\n    root /usr/share/nginx/html;\n    index index.html;\n    gzip on;\n    gzip_types text/plain application/json application/javascript text/css;\n    gzip_min_length 1000;\n    location /api/ {\n        set $backend_api http://backend:8000;\n        proxy_pass $backend_api;\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n    }\n    location /health {\n        set $backend_health http://backend:8000;\n        proxy_pass $backend_health;\n        proxy_set_header Host $host;\n    }\n    location / {\n        try_files $uri $uri/ /index.html;\n    }\n    location ~* \\.(js|css|png|jpg|jpeg|gif|ico|svg|woff2?)$ {\n        expires 1y;\n        add_header Cache-Control "public, immutable";\n    }\n}\n' > /etc/nginx/conf.d/default.conf
 
 COPY --from=builder /app/build/web /usr/share/nginx/html
 
