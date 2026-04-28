@@ -31,6 +31,7 @@ class Message {
   bool get isToolCall => role == 'tool_call';
   bool get isToolResult => role == 'tool_result';
   bool get isSystem => role == 'system';
+  bool get isThinking => role == 'thinking';
   bool get isCompactionSummary =>
       role == 'system' && metadata?['type'] == 'compaction_summary';
 }

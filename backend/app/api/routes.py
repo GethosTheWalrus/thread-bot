@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.config import get_settings, get_llm_config, update_settings
+from app.config import get_settings, get_llm_config, get_redis_url, update_settings
 from temporalio.client import Client as TemporalClient
 from app.workflows.thread_workflow import RunThreadWorkflow
 
@@ -128,13 +128,21 @@ async def chat_endpoint(
     from temporalio.client import WorkflowFailureError
 
     run_id = f"thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
-    llm_config["stream_url"] = f"http://backend:8000/api/internal/stream/{run_id}"
+    channel = f"stream:{run_id}"
 
-    # We must ensure the global queue exists
-    if not hasattr(fastapi_request.app.state, "stream_queues"):
-        fastapi_request.app.state.stream_queues = {}
-    
-    fastapi_request.app.state.stream_queues[run_id] = asyncio.Queue()
+    # Pass redis_url so the worker activity can publish directly to Redis
+    redis_url = get_redis_url()
+    llm_config["redis_url"] = redis_url
+    llm_config["stream_channel"] = channel
+
+    # Subscribe to Redis BEFORE starting the workflow to avoid race condition.
+    # Redis pub/sub doesn't buffer — if the worker publishes before we subscribe,
+    # those messages (including [DONE]) are lost and the stream hangs forever.
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(redis_url)
+    pubsub = r.pubsub()
+    await pubsub.subscribe(channel)
 
     try:
         await temporal_client.start_workflow(
@@ -146,55 +154,56 @@ async def chat_endpoint(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        if run_id in fastapi_request.app.state.stream_queues:
-            del fastapi_request.app.state.stream_queues[run_id]
+        await pubsub.unsubscribe(channel)
+        await pubsub.close()
+        await r.close()
         raise HTTPException(status_code=502, detail=f"Failed to start workflow: {str(e)}")
 
     async def stream_generator():
         try:
             # Yield the thread_id as the first chunk so the frontend knows the new thread ID
             yield f"THREAD_ID:{thread_id}\n\n".encode("utf-8")
-            
+
             while True:
                 try:
-                    # Wait for a chunk with a timeout to allow sending heartbeats
-                    chunk = await asyncio.wait_for(
-                        fastapi_request.app.state.stream_queues[run_id].get(),
-                        timeout=5.0
+                    msg = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        timeout=5.0,
                     )
-                    
-                    if chunk == b"[DONE]":
+                    if msg is None:
+                        # No message yet — send heartbeat to keep connection alive
+                        yield b"\x00"
+                        continue
+
+                    data = msg["data"]
+                    if isinstance(data, str):
+                        data = data.encode("utf-8")
+
+                    if data == b"[DONE]":
                         break
-                    if chunk.startswith(b"[ERROR]"):
-                        yield chunk
+                    if data.startswith(b"[ERROR]"):
+                        yield data
                         break
-                    yield chunk
+                    yield data
                 except asyncio.TimeoutError:
-                    # Send a null heartbeat to keep the connection alive
                     yield b"\x00"
                 except Exception as e:
                     yield f"[ERROR] Stream interrupted: {str(e)}".encode("utf-8")
                     break
         finally:
-            if run_id in fastapi_request.app.state.stream_queues:
-                del fastapi_request.app.state.stream_queues[run_id]
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+            await r.close()
 
     return StreamingResponse(
-        stream_generator(), 
+        stream_generator(),
         media_type="application/octet-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable Nginx buffering
+            "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
-        }
+        },
     )
-
-@router.post("/internal/stream/{run_id}")
-async def internal_stream(run_id: str, request: Request):
-    if hasattr(request.app.state, "stream_queues") and run_id in request.app.state.stream_queues:
-        body = await request.body()
-        await request.app.state.stream_queues[run_id].put(body)
-    return {"ok": True}
 
 
 @router.get("/threads", response_model=ThreadListResponse)

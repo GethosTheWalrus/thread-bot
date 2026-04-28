@@ -4,7 +4,8 @@ from app.config import get_settings
 from app.workflows.thread_workflow import RunThreadWorkflow
 from app.activities.llm_activities import (
     call_llm, save_message, get_messages, update_title,
-    compact_history, delete_messages_before,
+    compact_history, delete_messages_before, publish_done,
+    publish_title,
 )
 
 
@@ -29,6 +30,8 @@ async def run_worker():
             update_title,
             compact_history,
             delete_messages_before,
+            publish_done,
+            publish_title,
         ],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )

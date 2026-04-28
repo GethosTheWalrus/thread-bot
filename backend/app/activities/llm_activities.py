@@ -1,4 +1,3 @@
-import aiohttp
 from temporalio.activity import defn
 
 
@@ -6,13 +5,51 @@ from temporalio.activity import defn
 async def call_llm(args: dict) -> dict:
     """Call the OpenAI-compatible LLM API with MCP tool support.
     
+    Saves intermediate messages (thinking, tool_call, tool_result) to the DB
+    inline as they happen. Publishes structured JSON events to Redis so the
+    frontend can render each step in real time.
+
     Returns a dict with:
         content: str  — final assistant response text
-        intermediate_messages: list[dict]  — tool_call / tool_result rows to persist
     """
+    import aiohttp
+
     messages = args.get("messages", [])
     config = args.get("llm_config", {})
-    stream_url = config.get("stream_url")
+    thread_id = args.get("thread_id")
+    redis_url = config.get("redis_url")
+    stream_channel = config.get("stream_channel")
+
+    # ── Redis publisher setup ─────────────────────────────────────────
+    redis_client = None
+    if redis_url and stream_channel:
+        import redis.asyncio as aioredis
+        redis_client = aioredis.from_url(redis_url)
+
+    import json as _json
+
+    async def publish(event: dict | str | bytes):
+        """Publish a structured JSON event (or raw sentinel) to Redis."""
+        if redis_client and stream_channel:
+            if isinstance(event, dict):
+                data = _json.dumps(event).encode("utf-8")
+            elif isinstance(event, str):
+                data = event.encode("utf-8")
+            else:
+                data = event
+            await redis_client.publish(stream_channel, data)
+
+    # ── Inline DB save helper ─────────────────────────────────────────
+    async def save_inline(role: str, content: str, metadata: dict | None = None):
+        """Persist a message to the DB immediately (non-blocking to workflow)."""
+        if not thread_id:
+            return
+        from uuid import UUID
+        from app.database import AsyncSessionLocal
+        from app.database.crud import add_message
+        async with AsyncSessionLocal() as db:
+            await add_message(db, UUID(thread_id), role, content, metadata=metadata)
+            await db.commit()
 
     # ── MCP Tool Setup ────────────────────────────────────────────────
     from sqlalchemy import select
@@ -82,11 +119,27 @@ async def call_llm(args: dict) -> dict:
 
     current_messages = list(messages)
     full_response_content = ""
-    # Intermediate messages to be persisted to the DB
-    intermediate_messages = []
+    max_iterations = config.get("max_iterations", 25)
+    iteration = 0
+    used_tools = False
+
+    # Inject a system message when tools are available to encourage multi-step use
+    if openai_tools and (not current_messages or current_messages[0].get("role") != "system"):
+        current_messages.insert(0, {
+            "role": "system",
+            "content": (
+                "You are a helpful assistant with access to tools. "
+                "Use tools as many times as needed to thoroughly answer the user's question. "
+                "Think step by step: gather information, verify it, and refine your answer "
+                "before providing a final response. You may call multiple tools in sequence."
+            ),
+        })
 
     async with aiohttp.ClientSession() as session:
-        while True:
+        while iteration < max_iterations:
+            iteration += 1
+            print(f"[agent-loop] iteration {iteration}/{max_iterations} | messages={len(current_messages)}", flush=True)
+
             payload = {
                 "model": config["model"],
                 "messages": current_messages,
@@ -101,8 +154,7 @@ async def call_llm(args: dict) -> dict:
             async with session.post(api_url, headers=headers, json=payload, timeout=timeout) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    if stream_url:
-                        await session.post(stream_url, data=f"[ERROR] {resp.status}: {error_text}".encode('utf-8'))
+                    await publish(f"[ERROR] {resp.status}: {error_text}")
                     raise RuntimeError(f"LLM API error {resp.status}: {error_text}")
 
                 data = await resp.json()
@@ -111,21 +163,34 @@ async def call_llm(args: dict) -> dict:
 
                 # Handle Tool Calls
                 if message.get("tool_calls"):
+                    used_tools = True
+                    print(f"[agent-loop] LLM requested {len(message['tool_calls'])} tool call(s)", flush=True)
+                    # If the LLM also returned content alongside tool_calls, that's "thinking"
+                    thinking_content = message.get("content")
+                    if thinking_content:
+                        await save_inline("thinking", thinking_content)
+                        await publish({"type": "thinking", "content": thinking_content})
+
                     current_messages.append(message)
 
                     # Build a human-readable description of what's being called
                     call_descriptions = []
+                    tool_list_for_event = []
                     for tc in message["tool_calls"]:
                         info = mcp_tools_map.get(tc["function"]["name"], {})
-                        call_descriptions.append(
-                            f"{info.get('server_name', '?')}:{info.get('original_name', tc['function']['name'])}"
-                        )
+                        desc = f"{info.get('server_name', '?')}:{info.get('original_name', tc['function']['name'])}"
+                        call_descriptions.append(desc)
+                        tool_list_for_event.append(desc)
 
-                    # Record the tool_call turn for persistence
-                    intermediate_messages.append({
-                        "role": "tool_call",
-                        "content": "Calling " + ", ".join(call_descriptions),
-                        "metadata": {"tool_calls": message["tool_calls"]}
+                    tool_call_content = "Calling " + ", ".join(call_descriptions)
+                    tool_call_metadata = {"tool_calls": message["tool_calls"]}
+
+                    # Save tool_call to DB inline
+                    await save_inline("tool_call", tool_call_content, metadata=tool_call_metadata)
+                    await publish({
+                        "type": "tool_call",
+                        "content": tool_call_content,
+                        "tools": tool_list_for_event,
                     })
 
                     for tool_call in message["tool_calls"]:
@@ -134,11 +199,7 @@ async def call_llm(args: dict) -> dict:
 
                         if tool_name in mcp_tools_map:
                             info = mcp_tools_map[tool_name]
-                            if stream_url:
-                                await session.post(
-                                    stream_url,
-                                    data=f"🔧 Executing {info['server_name']}:{info['original_name']}...\n".encode('utf-8')
-                                )
+                            tool_display = f"{info['server_name']}:{info['original_name']}"
 
                             try:
                                 async with stdio_client(StdioServerParameters(
@@ -157,14 +218,16 @@ async def call_llm(args: dict) -> dict:
                                             "name": tool_name,
                                             "content": result_text
                                         })
-                                        # Record tool result for persistence
-                                        intermediate_messages.append({
-                                            "role": "tool_result",
+                                        result_meta = {
+                                            "tool_call_id": tool_call["id"],
+                                            "tool_name": tool_name,
+                                        }
+                                        await save_inline("tool_result", result_text, metadata=result_meta)
+                                        await publish({
+                                            "type": "tool_result",
+                                            "tool": tool_display,
                                             "content": result_text,
-                                            "metadata": {
-                                                "tool_call_id": tool_call["id"],
-                                                "tool_name": tool_name
-                                            }
+                                            "success": True,
                                         })
                             except Exception as e:
                                 error_content = f"Error executing tool: {str(e)}"
@@ -174,13 +237,16 @@ async def call_llm(args: dict) -> dict:
                                     "name": tool_name,
                                     "content": error_content
                                 })
-                                intermediate_messages.append({
-                                    "role": "tool_result",
+                                result_meta = {
+                                    "tool_call_id": tool_call["id"],
+                                    "tool_name": tool_name,
+                                }
+                                await save_inline("tool_result", error_content, metadata=result_meta)
+                                await publish({
+                                    "type": "tool_result",
+                                    "tool": tool_display,
                                     "content": error_content,
-                                    "metadata": {
-                                        "tool_call_id": tool_call["id"],
-                                        "tool_name": tool_name
-                                    }
+                                    "success": False,
                                 })
                         else:
                             not_found = "Tool not found"
@@ -190,27 +256,115 @@ async def call_llm(args: dict) -> dict:
                                 "name": tool_name,
                                 "content": not_found
                             })
-                            intermediate_messages.append({
-                                "role": "tool_result",
+                            result_meta = {
+                                "tool_call_id": tool_call["id"],
+                                "tool_name": tool_name,
+                            }
+                            await save_inline("tool_result", not_found, metadata=result_meta)
+                            await publish({
+                                "type": "tool_result",
+                                "tool": tool_name,
                                 "content": not_found,
-                                "metadata": {
-                                    "tool_call_id": tool_call["id"],
-                                    "tool_name": tool_name
-                                }
+                                "success": False,
                             })
                     continue  # Loop back to LLM with tool results
 
-                # Final response
-                full_response_content = message.get("content", "")
-                if stream_url:
-                    await session.post(stream_url, data=full_response_content.encode('utf-8'))
-                    await session.post(stream_url, data=b"[DONE]")
+                # Final response — re-issue with streaming for token-by-token output
+                print(
+                    f"[agent-loop] completed after {iteration} iteration(s) | "
+                    f"used_tools={used_tools} | streaming final response",
+                    flush=True,
+                )
+
+                # Re-issue the same call with stream:true to get token-by-token output
+                stream_payload = dict(payload, stream=True)
+                full_response_content = ""
+                async with session.post(api_url, headers=headers, json=stream_payload, timeout=timeout) as stream_resp:
+                    if stream_resp.status != 200:
+                        # Fall back to the non-streaming response we already have
+                        full_response_content = message.get("content", "")
+                        await publish({"type": "text", "content": full_response_content})
+                        break
+
+                    buffer = ""
+                    async for raw_chunk in stream_resp.content.iter_any():
+                        buffer += raw_chunk.decode("utf-8", errors="replace")
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            if not line or not line.startswith("data: "):
+                                continue
+                            data_str = line[len("data: "):]
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk_data = _json.loads(data_str)
+                                delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                                token = delta.get("content")
+                                if token:
+                                    full_response_content += token
+                                    await publish({"type": "token", "content": token})
+                            except (ValueError, KeyError, IndexError):
+                                continue
                 break
+        else:
+            # Safety exit — max iterations reached
+            print(
+                f"[agent-loop] WARNING: max iterations ({max_iterations}) reached, "
+                f"forcing final response",
+                flush=True,
+            )
+            if not full_response_content:
+                full_response_content = "(Agent reached maximum iteration limit.)"
+            await publish({"type": "text", "content": full_response_content})
+
+    if redis_client:
+        await redis_client.close()
 
     return {
         "content": full_response_content,
-        "intermediate_messages": intermediate_messages,
+        "used_tools": used_tools,
+        "iterations": iteration,
     }
+
+
+@defn
+async def publish_done(args: dict) -> None:
+    """Publish [DONE] sentinel to Redis stream channel.
+    
+    Called by the workflow AFTER all messages are saved to DB,
+    so the frontend can safely reload from DB when it receives this.
+    """
+    redis_url = args.get("redis_url")
+    stream_channel = args.get("stream_channel")
+    if not redis_url or not stream_channel:
+        return
+
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(redis_url)
+    try:
+        await r.publish(stream_channel, b"[DONE]")
+    finally:
+        await r.close()
+
+
+@defn
+async def publish_title(args: dict) -> None:
+    """Publish a title event to Redis so the frontend sidebar updates in real-time."""
+    import json
+    redis_url = args.get("redis_url")
+    stream_channel = args.get("stream_channel")
+    title = args.get("title", "")
+    if not redis_url or not stream_channel:
+        return
+
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(redis_url)
+    try:
+        event = json.dumps({"type": "title", "content": title})
+        await r.publish(stream_channel, event.encode("utf-8"))
+    finally:
+        await r.close()
 
 
 @defn
@@ -241,6 +395,9 @@ async def get_messages(thread_id: str) -> list[dict]:
 
     result = []
     for m in messages:
+        # Skip thinking messages — they're display-only, not part of LLM context
+        if m.role == "thinking":
+            continue
         if m.role == "tool_call":
             # Reconstruct as assistant message with tool_calls for the LLM
             meta = m.metadata_ or {}

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
@@ -80,6 +81,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  /// Silently reload messages from DB without showing a loading spinner.
+  /// Called after [DONE] when all messages are guaranteed persisted.
+  Future<void> _reloadThreadSilently() async {
+    if (_activeThreadId == null) return;
+    try {
+      final thread = await _api.getThread(_activeThreadId!);
+      if (mounted) {
+        setState(() { _messages = thread.messages; });
+        _scrollToBottom();
+      }
+    } catch (_) {
+      // Silent — keep temp messages visible if reload fails
+    }
+  }
+
   Future<void> _sendMessage(String content) async {
     if (_isSending) return;
 
@@ -96,92 +112,144 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     setState(() => _messages.add(optimisticMsg));
     _scrollToBottom();
 
-    // Placeholder for assistant response
-    final assistantMsg = Message(
-      id: 'temp-ast-${DateTime.now().millisecondsSinceEpoch}',
-      threadId: _activeThreadId ?? '',
-      role: 'assistant',
-      content: '',
-      createdAt: DateTime.now(),
-    );
-    setState(() => _messages.add(assistantMsg));
+    // Track temporary message IDs for cleanup on reload
+    final tempIds = <String>[optimisticMsg.id];
+
+    // Add a placeholder assistant message so the loading shimmer appears immediately
+    final placeholderId = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
+    tempIds.add(placeholderId);
+    setState(() {
+      _messages.add(Message(
+        id: placeholderId,
+        threadId: _activeThreadId ?? '',
+        role: 'assistant',
+        content: '',
+        createdAt: DateTime.now(),
+      ));
+    });
+    _scrollToBottom();
 
     try {
       final stream = _api.sendMessageStream(content, threadId: _activeThreadId);
       
       String headerBuffer = "";
       bool headerProcessed = false;
-      DateTime lastUpdate = DateTime.now();
-      String pendingContent = "";
+      // Buffer for incomplete JSON chunks
+      String chunkBuffer = "";
 
-        await for (var chunk in stream) {
-          if (!mounted) break;
+      await for (var chunk in stream) {
+        if (!mounted) break;
 
-          if (!headerProcessed) {
-            headerBuffer += chunk;
-            if (headerBuffer.contains("\n\n")) {
-              final parts = headerBuffer.split("\n\n");
-              final headerPart = parts[0];
-              if (headerPart.startsWith("THREAD_ID:")) {
-                final newId = headerPart.substring(10).trim();
-                if (_activeThreadId == null || _activeThreadId != newId) {
-                  setState(() => _activeThreadId = newId);
-                }
+        if (!headerProcessed) {
+          headerBuffer += chunk;
+          if (headerBuffer.contains("\n\n")) {
+            final parts = headerBuffer.split("\n\n");
+            final headerPart = parts[0];
+            if (headerPart.startsWith("THREAD_ID:")) {
+              final newId = headerPart.substring(10).trim();
+              if (_activeThreadId == null || _activeThreadId != newId) {
+                setState(() => _activeThreadId = newId);
               }
-              headerProcessed = true;
-              chunk = parts.length > 1 ? parts.sublist(1).join("\n\n") : "";
-            } else {
-              continue;
             }
-          }
-          
-          if (chunk == "[DONE]") break;
-          if (chunk.startsWith("[ERROR]")) {
-             setState(() => _error = chunk.substring(7));
-             break;
-          }
-          
-          // Remove null heartbeats
-          chunk = chunk.replaceAll("\x00", "");
-
-          if (chunk.isNotEmpty) {
-             pendingContent += chunk;
-             final now = DateTime.now();
-             // Throttle updates to max 30fps (33ms) to prevent UI thread saturation
-             if (now.difference(lastUpdate) > const Duration(milliseconds: 33)) {
-                setState(() {
-                   assistantMsg.content += pendingContent;
-                   pendingContent = "";
-                });
-                _scrollToBottom();
-                lastUpdate = now;
-             }
+            headerProcessed = true;
+            chunk = parts.length > 1 ? parts.sublist(1).join("\n\n") : "";
+          } else {
+            continue;
           }
         }
         
-        // Final update for any remaining content
-        if (mounted && pendingContent.isNotEmpty) {
-           setState(() {
-              assistantMsg.content += pendingContent;
-           });
-           _scrollToBottom();
+        if (chunk == "[DONE]") break;
+        if (chunk.startsWith("[ERROR]")) {
+           setState(() => _error = chunk.substring(7));
+           break;
         }
+        
+        // Remove null heartbeats
+        chunk = chunk.replaceAll("\x00", "");
+        if (chunk.isEmpty) continue;
 
+        // Buffer chunks and try to parse JSON events
+        chunkBuffer += chunk;
+        
+        // Try to parse all complete JSON objects from the buffer
+        while (chunkBuffer.isNotEmpty) {
+          // Check for sentinels first
+          if (chunkBuffer.startsWith("[DONE]")) {
+            chunkBuffer = chunkBuffer.substring(6);
+            break;
+          }
+          if (chunkBuffer.startsWith("[ERROR]")) {
+            setState(() => _error = chunkBuffer.substring(7));
+            chunkBuffer = "";
+            break;
+          }
+
+          // Try to find a complete JSON object
+          if (!chunkBuffer.startsWith("{")) {
+            // Skip non-JSON data (shouldn't happen, but be safe)
+            final nextBrace = chunkBuffer.indexOf("{");
+            if (nextBrace == -1) {
+              chunkBuffer = "";
+              break;
+            }
+            chunkBuffer = chunkBuffer.substring(nextBrace);
+          }
+
+          // Try to parse JSON from the start of the buffer
+          Map<String, dynamic>? event;
+          int consumed = 0;
+          try {
+            event = jsonDecode(chunkBuffer) as Map<String, dynamic>;
+            consumed = chunkBuffer.length;
+          } catch (_) {
+            // May be incomplete JSON — try to find the boundary
+            // Look for }{ which indicates two concatenated objects
+            int depth = 0;
+            int? endPos;
+            for (int i = 0; i < chunkBuffer.length; i++) {
+              if (chunkBuffer[i] == '{') depth++;
+              if (chunkBuffer[i] == '}') depth--;
+              if (depth == 0) {
+                endPos = i + 1;
+                break;
+              }
+            }
+            if (endPos != null) {
+              try {
+                event = jsonDecode(chunkBuffer.substring(0, endPos)) as Map<String, dynamic>;
+                consumed = endPos;
+              } catch (_) {
+                break; // Wait for more data
+              }
+            } else {
+              break; // Incomplete — wait for more data
+            }
+          }
+
+          if (event == null) break;
+          chunkBuffer = chunkBuffer.substring(consumed);
+
+          _handleStreamEvent(event, tempIds);
+          _scrollToBottom();
+        }
+      }
+
+      // [DONE] received — DB is guaranteed to have all messages (including
+      // the final assistant response). Do one clean reload.
       if (mounted) {
+        if (_activeThreadId != null) {
+          await _reloadThreadSilently();
+        }
         setState(() {
           _isSending = false;
         });
-        _loadThreads(); // immediate refresh
-        
-        // Delayed refreshes to catch the background title update
-        Future.delayed(const Duration(seconds: 2), () => _loadThreads());
-        Future.delayed(const Duration(seconds: 5), () => _loadThreads());
+        _loadThreads();
       }
     } catch (e) {
       if (mounted) {
-        // Remove optimistic message on error
+        // Remove all temporary messages on error
         setState(() {
-          _messages.removeWhere((m) => m.id == optimisticMsg.id || m.id == assistantMsg.id);
+          _messages.removeWhere((m) => tempIds.contains(m.id));
           _isSending = false;
         });
         ScaffoldMessenger.of(context).showSnackBar(
@@ -193,6 +261,134 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           ),
         );
       }
+    }
+  }
+
+  /// Handle a single structured JSON event from the stream.
+  void _handleStreamEvent(Map<String, dynamic> event, List<String> tempIds) {
+    final type = event['type'] as String?;
+    final content = event['content'] as String? ?? '';
+
+    switch (type) {
+      case 'thinking':
+        final id = 'temp-thinking-${DateTime.now().millisecondsSinceEpoch}';
+        tempIds.add(id);
+        setState(() {
+          // Insert before the placeholder assistant message so order is preserved
+          final placeholderIdx = _messages.indexWhere(
+            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
+          );
+          final msg = Message(
+            id: id,
+            threadId: _activeThreadId ?? '',
+            role: 'thinking',
+            content: content,
+            createdAt: DateTime.now(),
+          );
+          if (placeholderIdx >= 0) {
+            _messages.insert(placeholderIdx, msg);
+          } else {
+            _messages.add(msg);
+          }
+        });
+        break;
+
+      case 'tool_call':
+        final id = 'temp-tc-${DateTime.now().millisecondsSinceEpoch}';
+        tempIds.add(id);
+        setState(() {
+          final placeholderIdx = _messages.indexWhere(
+            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
+          );
+          final msg = Message(
+            id: id,
+            threadId: _activeThreadId ?? '',
+            role: 'tool_call',
+            content: content,
+            createdAt: DateTime.now(),
+          );
+          if (placeholderIdx >= 0) {
+            _messages.insert(placeholderIdx, msg);
+          } else {
+            _messages.add(msg);
+          }
+        });
+        break;
+
+      case 'tool_result':
+        final tool = event['tool'] as String? ?? 'Tool';
+        final success = event['success'] as bool? ?? true;
+        final id = 'temp-tr-${DateTime.now().millisecondsSinceEpoch}';
+        tempIds.add(id);
+        setState(() {
+          final placeholderIdx = _messages.indexWhere(
+            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
+          );
+          final msg = Message(
+            id: id,
+            threadId: _activeThreadId ?? '',
+            role: 'tool_result',
+            content: content,
+            createdAt: DateTime.now(),
+            metadata: {
+              'tool_name': tool,
+              'success': success,
+            },
+          );
+          if (placeholderIdx >= 0) {
+            _messages.insert(placeholderIdx, msg);
+          } else {
+            _messages.add(msg);
+          }
+        });
+        break;
+
+      case 'token':
+        // Streaming token — append to the placeholder assistant message
+        setState(() {
+          final placeholder = _messages.where(
+            (m) => m.id.startsWith('temp-ast-'),
+          ).firstOrNull;
+          if (placeholder != null) {
+            placeholder.content += content;
+          }
+        });
+        break;
+
+      case 'text':
+        // Full text fallback (max-iterations safety, or non-streaming path)
+        setState(() {
+          final placeholder = _messages.where(
+            (m) => m.id.startsWith('temp-ast-'),
+          ).firstOrNull;
+          if (placeholder != null) {
+            // Only replace if streaming hasn't already filled it
+            if (placeholder.content.isEmpty) {
+              placeholder.content = content;
+            }
+          } else {
+            final id = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
+            tempIds.add(id);
+            _messages.add(Message(
+              id: id,
+              threadId: _activeThreadId ?? '',
+              role: 'assistant',
+              content: content,
+              createdAt: DateTime.now(),
+            ));
+          }
+        });
+        break;
+
+      case 'title':
+        // Update the thread title in the sidebar immediately
+        setState(() {
+          final thread = _threads.where((t) => t.id == _activeThreadId).firstOrNull;
+          if (thread != null) {
+            thread.title = content;
+          }
+        });
+        break;
     }
   }
 

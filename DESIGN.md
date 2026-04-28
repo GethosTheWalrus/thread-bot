@@ -7,24 +7,27 @@ This document provides a comprehensive overview of the ThreadBot system architec
 ThreadBot is a ChatGPT-like application that uses **Temporal** for orchestrating long-running LLM generation and database interactions. It consists of:
 
 1.  **Frontend**: A Flutter Web application with a responsive, premium UI.
-2.  **Backend API**: A FastAPI service that handles HTTP requests from the frontend and submits workflows to Temporal.
+2.  **Backend API**: A FastAPI service that handles HTTP requests from the frontend and relays streaming events from Redis.
 3.  **Temporal Worker**: A Python worker process that executes the actual workflows and activities.
 4.  **Database**: PostgreSQL for storing threads, messages, and MCP server configurations.
 5.  **Temporal Server**: The orchestration engine.
-6.  **MCP Tool Servers**: Ephemeral Docker containers that provide tools to the LLM via the Model Context Protocol.
+6.  **Redis**: Pub/sub message broker bridging the worker and backend for real-time streaming.
+7.  **MCP Tool Servers**: Ephemeral Docker containers that provide tools to the LLM via the Model Context Protocol.
 
-    User([User]) -->|Interact| Frontend[Flutter Web Frontend]
-    Frontend -->|HTTP/REST| Backend[FastAPI Backend]
-    Backend -->|Read/Write| DB[(PostgreSQL)]
-    Backend -->|Submit Workflow| Temporal[Temporal Server]
-    Temporal -->|Dispatch Task| Worker[Python Temporal Worker]
-    Worker -->|Read/Write| DB
-    Worker -->|HTTP| LLM[LLM API e.g. Ollama]
-    Worker -->|Docker Exec| MCP[MCP Tool Containers]
-    MCP -->|Tools| Worker
+```
+    User → Frontend (Flutter Web)
+    Frontend → Backend (FastAPI) via HTTP/REST
+    Backend → PostgreSQL (Read/Write)
+    Backend → Temporal Server (Submit Workflow)
+    Backend ← Redis Pub/Sub (Subscribe to stream events)
+    Temporal Server → Worker (Dispatch Task)
+    Worker → PostgreSQL (Read/Write)
+    Worker → LLM API (HTTP, streaming SSE)
+    Worker → Redis Pub/Sub (Publish stream events)
+    Worker → MCP Tool Containers (Docker exec)
 ```
 
-The entire stack is containerized using Docker Compose.
+The entire stack is containerized using Docker Compose (7 services: postgres, temporal, temporal-ui, redis, backend, worker, frontend).
 
 ---
 
@@ -36,45 +39,52 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 - Uses Pydantic v2 `BaseSettings`.
 - Because Pydantic v2 models are frozen by default, runtime overrides (e.g., from the settings UI) are stored in a separate `_overrides` dictionary.
 - Always use `get_setting("KEY")` or `get_llm_config()` rather than accessing the `Settings` object directly to ensure overrides are respected.
+- `REDIS_URL` and `REDIS_DB` are configurable via environment variables. `get_redis_url()` returns the full connection string.
 
 ### Database (`app/database/`, `app/models/`)
 - Uses **SQLAlchemy 2.0** with `asyncpg` for asynchronous database access.
 - `expire_on_commit=False` and `autoflush=False` are set on the `async_sessionmaker`.
 - **Models**:
     - `Thread`: Represents a conversation. Has a `parent_id` for branching (though the current UI focuses on linear threads).
-    - `Message`: Belongs to a Thread. Contains `role` (user/assistant), `content`, and `metadata_` (JSONB).
+    - `Message`: Belongs to a Thread. Contains `role` (user/assistant/thinking/tool_call/tool_result/system), `content`, and `metadata_` (JSONB).
+    - `MCPServer`: Stores MCP server configurations (image, env vars, active status).
 - **CRUD**: Located in `app/database/crud.py`. All functions are asynchronous and expect an `AsyncSession`. Note that the `Message` model's metadata column is named `metadata_` to avoid conflicts with SQLAlchemy's internal `metadata` attribute.
 
 ### API Routes (`app/api/routes.py`)
 - Standard REST endpoints for managing threads, messages, and settings.
 - The `POST /api/chat` endpoint is the core of the application:
     1. It creates the user's message in the database in an isolated transaction.
-    2. It submits a Temporal workflow (`RunThreadWorkflow.run`) asynchronously using `start_workflow`.
-    3. It immediately returns a `StreamingResponse` to the frontend, pulling from an `asyncio.Queue` that is fed by the worker in real-time.
+    2. It subscribes to a per-request Redis pub/sub channel **before** starting the workflow (critical to avoid race conditions — Redis pub/sub doesn't buffer).
+    3. It submits a Temporal workflow (`RunThreadWorkflow.run`) asynchronously using `start_workflow`.
+    4. It returns a `StreamingResponse` that relays events from Redis to the frontend. Events are structured JSON. `[DONE]` and `[ERROR]` are plain string sentinels.
 
 ### Temporal Workflows & Activities (`app/workflows/`, `app/activities/`)
-- **Workflow** (`RunThreadWorkflow`): Orchestrates the chat process.
-    - Gets chat history (reconstructing OpenAI-compatible format from persisted tool messages).
-    - Checks for Conversational Compaction (summarizes history if nearing context limits).
-    - Calls the LLM (with discovery and execution of MCP tools).
-    - Updates the thread title (if it's the first message or periodic update).
-    - Saves all intermediate tool messages (calls and results).
-    - Saves the final assistant's response.
-- **Activities**:
-    - `call_llm`: Makes an HTTP request to the LLM API, streams tokens, and handles the MCP tool interaction loop. Returns a structured dictionary containing the final content and all intermediate tool interactions.
+- **Workflow** (`RunThreadWorkflow`): Orchestrates the chat process in this order:
+    1. `get_messages` — fetch chat history, reconstructing OpenAI-compatible format
+    2. `compact_history` — token-aware compaction check and summarization
+    3. `call_llm` — LLM interaction loop with MCP tool support and real-time streaming
+    4. `save_message` — persist final assistant response
+    5. Auto-title — generate thread title (first exchange, then every 5th message)
+    6. `publish_title` — send title to frontend via Redis
+    7. `publish_done` — send `[DONE]` sentinel to close the stream
+- **Activities** (8 registered):
+    - `call_llm`: Agent loop with MCP tool support. Non-streaming calls during tool iterations (need full `tool_calls` JSON). Re-issues the final call with `stream: true` and publishes each SSE token to Redis as `{"type":"token","content":"..."}`. Saves intermediate messages (thinking, tool_call, tool_result) to DB inline as they happen.
     - `compact_history`: Estimates tokens in history and uses the LLM to generate a summary of older messages if a threshold is exceeded.
     - `delete_messages_before`: Cleans up the database by removing messages that have been compacted into a summary.
     - `save_message`, `get_messages`, `update_title`: Interact with the database.
+    - `publish_done`: Publishes `[DONE]` sentinel to Redis.
+    - `publish_title`: Publishes `{"type":"title","content":"..."}` to Redis.
 - **Crucial Rules**:
-    1. **Explicit Workflow Inputs**: All configuration required by a workflow (such as LLM URLs, model names, and API keys) MUST be provided explicitly as workflow input arguments. Activities should NOT rely on environment variables.
+    1. **Explicit Workflow Inputs**: All configuration required by a workflow (such as LLM URLs, model names, API keys, Redis URL, and stream channel) MUST be provided explicitly as workflow input arguments. Activities should NOT rely on environment variables.
     2. **Temporal Sandbox**: Because Temporal executes activities in an isolated sandbox, database imports must happen inside the activity function bodies, not at the module level.
 
 ### MCP & Tool Orchestration
 ThreadBot supports extending the LLM with custom tools via the Model Context Protocol (MCP).
 - **Discovery**: The `call_llm` activity queries all active `MCPServer` entries in the database. For each server, it uses a temporary `stdio_client` connection to a `docker run -i` process to fetch tool definitions.
-- **Networking**: Tool containers are launched with `--add-host=host.docker.internal:host-gateway` to allow them to reach services on the host machine.
+- **Networking**: Tool containers are launched with `--add-host=host.docker.internal:host-gateway` to allow them to reach services on the host machine. They are NOT added to the Docker Compose network.
 - **Execution**: If the LLM requests a tool call, the worker launches the corresponding Docker container, executes the tool, and feeds the result back into the LLM context.
-- **Persistence**: Unlike standard tool loops, ThreadBot persists every `tool_call` and `tool_result` to the database as unique message roles. This ensures the LLM retains "tool memory" across turns and allowed for visual reconstruction in the UI.
+- **Persistence**: Unlike standard tool loops, ThreadBot persists every `tool_call` and `tool_result` to the database as unique message roles. This ensures the LLM retains "tool memory" across turns and allows for visual reconstruction in the UI.
+- **Agent Loop**: Capped at `max_iterations` (default 25). A system prompt is injected when tools are available to encourage multi-step tool use.
 - **Infrastructure Requirements**: The `backend` and `worker` containers must have the `docker` CLI installed and `/var/run/docker.sock` mounted from the host.
 
 ### Conversational Compaction & Memory
@@ -86,110 +96,184 @@ To manage large conversations and stay within LLM context limits, ThreadBot impl
 
 ---
 
-## 2. Frontend Architecture (Flutter)
+## 2. Real-Time Streaming Architecture
+
+Streaming is the core UX feature. Here's why Redis pub/sub is used and how it works:
+
+### Why Redis is Required
+The Temporal worker (where `call_llm` executes) and the backend (where the HTTP streaming response lives) are **separate processes/containers**. Temporal workflows/activities don't support streaming results back to the caller — they return values only when complete. Redis pub/sub bridges this gap with minimal overhead.
+
+### Event Flow
+```
+LLM API --SSE tokens--> Worker (call_llm activity)
+                            |
+                            | publish() to Redis channel
+                            v
+                    Redis Pub/Sub Channel
+                            |
+                            | subscribe (before workflow starts)
+                            v
+                    Backend (StreamingResponse)
+                            |
+                            | HTTP chunked response
+                            v
+                    Frontend (chat_screen.dart)
+```
+
+### Structured JSON Events
+All events are JSON objects published to a per-request Redis channel:
+
+| Type | Payload | When |
+|------|---------|------|
+| `thinking` | `{"type":"thinking","content":"..."}` | LLM returns content alongside tool_calls |
+| `tool_call` | `{"type":"tool_call","content":"Calling ...","tools":["..."]}` | LLM requests tool execution |
+| `tool_result` | `{"type":"tool_result","tool":"...","content":"...","success":bool}` | Tool execution completes |
+| `token` | `{"type":"token","content":"<chunk>"}` | Each SSE token from the final streaming LLM call |
+| `title` | `{"type":"title","content":"..."}` | Auto-generated thread title |
+| `text` | `{"type":"text","content":"..."}` | Fallback for non-streaming responses |
+| `[DONE]` | Plain string sentinel | Stream complete, safe to reload from DB |
+| `[ERROR]` | Plain string sentinel | Error occurred |
+
+### Token Streaming Details
+- During the agent loop, tool iterations use **non-streaming** calls to get the full `tool_calls` JSON structure in one response.
+- When the final iteration returns text-only (no tool calls), the activity re-issues the same request with `stream: true`.
+- SSE `data:` lines are parsed, `choices[0].delta.content` tokens are extracted and published individually to Redis.
+- If the streaming call fails, the activity falls back to the non-streaming response already received.
+- The frontend appends each token to a placeholder assistant message, and the markdown renderer progressively displays the growing text.
+
+---
+
+## 3. Frontend Architecture (Flutter)
 
 The frontend is a Flutter Web application designed to look and feel like a premium AI chat interface.
 
 ### State Management
 - State is managed locally within `StatefulWidget`s (e.g., `ChatScreen`).
 - No global state management libraries (like Provider or Riverpod) are used to keep the architecture simple and avoid issues with Dart's tree-shaking.
+- `Message.content` and `ThreadListItem.title` are mutable fields to support in-place streaming updates without object replacement.
 
 ### API Communication (`lib/services/api_service.dart`)
 - Handles all HTTP communication with the FastAPI backend.
 - Manages LLM settings persistence using `shared_preferences`. It reads from local storage and falls back to backend defaults.
 
 ### UI Components (`lib/screens/`, `lib/widgets/`)
-- `ChatScreen`: The main layout containing the sidebar and the chat area. Handles message sending, optimistic UI updates, and loading states.
-- `Sidebar`: Displays a date-grouped list of threads and handles thread selection, creation, renaming, and deletion.
+- `ChatScreen`: The main layout containing the sidebar and the chat area. Handles message sending, structured JSON event parsing, token streaming, and placeholder management.
+- `Sidebar`: Displays a date-grouped list of threads. Shows "Generating title..." with a spinner for threads titled "New Thread", updates instantly when a `title` event arrives.
 - `ChatMessageList`: Renders the conversation using `flutter_markdown`. It uses a routing system to display different message roles:
     - **User/Assistant**: Standard chat bubbles with distinct, color-coded, uppercase labels ("YOU" / "THREADBOT").
-    - **Tool Call**: Styled purple chips showing the server and tool name being invoked.
-    - **Tool Result**: Collapsible monospace code blocks for raw tool output.
+    - **Thinking**: Collapsible amber blocks (inline within assistant bubbles, or standalone during streaming).
+    - **Tool Call**: Styled purple chips showing the server and tool name. Each chip has its own pulse animation that stops when its result arrives.
+    - **Tool Result**: Collapsible monospace code blocks for raw tool output, with green check / red X status icons.
     - **Compaction Summary**: Subtle divider labels indicating that earlier messages have been summarized.
+    - **Skeleton Shimmer**: Paragraph-sized animated gradient bars shown while waiting for the first token.
 - `ChatInput`: A custom input field that handles multi-line text and "Enter to send" behavior.
+
+### Placeholder & Streaming Flow
+1. User sends a message → frontend creates a `temp-ast-*` placeholder assistant message (empty content, shows skeleton shimmer under THREADBOT header).
+2. Intermediate events (thinking, tool_call, tool_result) are inserted **before** the placeholder in the message list.
+3. `token` events append content to the placeholder progressively — shimmer disappears on first token.
+4. `title` events update the sidebar thread title in-place.
+5. On `[DONE]`, a silent DB reload replaces all temp messages with persisted ones.
 
 ---
 
-## 3. Data Flow: Sending a Message
+## 4. Data Flow: Sending a Message
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant F as Frontend (Flutter)
     participant B as Backend (FastAPI)
+    participant R as Redis
     participant DB as PostgreSQL
     participant T as Temporal Server
     participant W as Temporal Worker
     participant L as LLM API
     participant MCP as MCP Tool Containers
-    
+
     U->>F: Type message & Send
-    F->>F: Optimistic UI Update
-    F->>B: POST /api/chat (Stream request)
+    F->>F: Optimistic UI (add user msg + placeholder)
+    F->>B: POST /api/chat (streaming request)
     B->>DB: Save user message & commit
+    B->>R: Subscribe to stream channel
     B->>T: Start RunThreadWorkflow (async)
-    B-->>F: Open Stream Connection
+    B-->>F: Open StreamingResponse
+
     T->>W: Dispatch Workflow Task
-    W->>W: Discover active MCP tools (Docker)
-    W->>W: Execute get_messages activity (w/ Tool Logic)
-    W->>DB: Fetch chat history
-    W->>W: Execute compact_history (Token Check)
+    W->>DB: get_messages (fetch history)
+    W->>W: compact_history (token check)
     opt Compaction Triggered
         W->>L: Summarize older messages
-        W->>DB: Save Summary & Delete old messages
+        W->>DB: Save summary & delete old messages
     end
-    W->>W: Execute call_llm activity
-    loop LLM Interaction Loop
-        W->>L: POST /chat/completions (Stream)
-        L-->>W: Tool Call Request
-        W->>W: Start MCP sidecar (Docker run)
-        W->>MCP: Execute Tool
-        MCP-->>W: Tool Result
-        W->>W: Feed result back to LLM context
+
+    W->>W: call_llm activity begins
+    W->>W: Discover active MCP tools (Docker)
+
+    loop Agent Loop (non-streaming)
+        W->>L: POST /chat/completions
+        L-->>W: Response with tool_calls
+        W->>R: publish thinking event
+        W->>DB: save_inline thinking
+        W->>R: publish tool_call event
+        W->>DB: save_inline tool_call
+        W->>MCP: Execute tool (Docker run)
+        MCP-->>W: Tool result
+        W->>R: publish tool_result event
+        W->>DB: save_inline tool_result
     end
-    L-->>W: Final content tokens
-    W->>B: POST /api/internal/stream/{run_id}
-    B-->>F: Yield token to UI
-    W->>W: Execute save_message (Save Tool Interactions)
-    W->>DB: Save Tool Calls + Results
-    W->>W: Execute save_message (Final)
-    W->>DB: Save assistant response
-    W-->>T: Return workflow result
-    F->>B: Fetch final thread state
-    B-->>F: Thread response
+
+    Note over W,L: Final call — re-issue with stream:true
+    W->>L: POST /chat/completions (stream:true)
+    loop Token Streaming
+        L-->>W: SSE data chunk
+        W->>R: publish token event
+        R-->>B: relay event
+        B-->>F: yield token chunk
+        F->>F: append token to placeholder
+    end
+
+    W->>DB: save_message (final assistant response)
+    W->>L: Generate title (non-streaming)
+    W->>DB: update_title
+    W->>R: publish title event
+    R-->>B: relay title
+    B-->>F: yield title event
+    F->>F: update sidebar title
+
+    W->>R: publish [DONE]
+    R-->>B: relay [DONE]
+    B-->>F: close stream
+    F->>B: Silent reload from DB
 ```
 
 1.  **User action**: The user types a message and presses Enter in `ChatInput`.
-2.  **Frontend Optimistic Update**: `ChatScreen` immediately adds the user's message to the local list and scrolls to the bottom.
-3.  **API Request**: `ApiService.sendMessageStream` sends a `POST /api/chat` request containing the content and any LLM config overrides.
-4.  **Backend Setup**: `chat_endpoint` in FastAPI creates the message in the database, starts `RunThreadWorkflow` asynchronously, and immediately opens a `StreamingResponse` to the client.
-5.  **Temporal Orchestration & Title Gen**:
-    - Worker executes `get_messages` activity.
-    - If it's a new thread, it executes a separate LLM call to generate a very short, strict title.
-6.  **Streaming Phase**:
-    - Worker executes `call_llm` activity (making the HTTP stream call to Ollama).
-    - As each token arrives, the worker POSTs it to the FastAPI internal proxy endpoint.
-    - FastAPI yields the token through the open `StreamingResponse` connection.
-    - The Flutter UI receives the chunks and updates the interface in real-time.
-7.  **Finalization**: The worker executes `save_message` activity to store the full LLM's response. The frontend makes a final fetch to get the updated database IDs and the generated title.
+2.  **Frontend Optimistic Update**: `ChatScreen` immediately adds the user's message and a placeholder assistant message (empty content, shows skeleton shimmer) to the local list and scrolls to the bottom.
+3.  **API Request**: `ApiService.sendMessageStream` sends a `POST /api/chat` request containing the content and any LLM config overrides (including `redis_url` and `stream_channel`).
+4.  **Backend Setup**: `chat_endpoint` creates the message in DB, subscribes to the Redis channel, starts the workflow, and opens a `StreamingResponse` that relays Redis events.
+5.  **Agent Loop**: The worker executes `call_llm` with non-streaming calls during tool iterations. Intermediate messages (thinking, tool_call, tool_result) are saved to DB inline and published to Redis in real-time.
+6.  **Token Streaming**: When the agent loop's final iteration returns text (no tool calls), `call_llm` re-issues the request with `stream: true`. Each SSE token is published to Redis → relayed by backend → appended to the placeholder by the frontend.
+7.  **Title Generation**: After saving the final response, the workflow generates a title, saves it, and publishes a `title` event to Redis so the sidebar updates instantly.
+8.  **Finalization**: `publish_done` sends `[DONE]` to close the stream. The frontend does a silent DB reload to replace temp messages with persisted ones.
 
 ---
 
-
-## 4. Docker & Infrastructure
+## 5. Docker & Infrastructure
 
 - Defined in `docker-compose.yml`.
-- **Services**:
+- **Services** (7):
     - `postgres`: The database.
     - `temporal`: The Temporal server (auto-setup image).
     - `temporal-ui`: The Temporal Web UI.
+    - `redis`: Redis 7 for pub/sub streaming.
     - `backend`: The FastAPI server.
     - `worker`: The Temporal worker process.
-    - `frontend`: Nginx serving the compiled Flutter Web application.
-- **Startup Dependencies**: The `backend` and `worker` services use `depends_on` with `condition: service_healthy` to wait for Postgres and Temporal to be ready. They also have `restart: on-failure` to handle any race conditions during initialization.
+    - `frontend`: Nginx serving the compiled Flutter Web application, with reverse proxy to backend for `/api/` and `/health`.
+- **Startup Dependencies**: The `backend` and `worker` services use `depends_on` with `condition: service_healthy` to wait for Postgres, Temporal, and Redis to be ready. They also have `restart: on-failure` to handle any race conditions during initialization.
 
-## 5. Development Guidelines
+## 6. Development Guidelines
 
 - **Simplicity First**: Avoid over-engineering. If a simple `setState` works in Flutter, use it instead of a complex state management system.
 - **Temporal Sandbox**: Always remember that Temporal activities run in restricted environments. Avoid module-level state and perform lazy imports for database connections.
 - **Config Overrides**: Always use the override-aware helper functions (`get_setting`, `get_llm_config`) in the backend, as Pydantic models are immutable.
+- **Redis is Required**: Redis pub/sub cannot be replaced with in-memory queues because the worker and backend are separate processes. With K8s multi-replica deployments, in-memory approaches fail when the request handler and worker activity land on different pods.

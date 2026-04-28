@@ -42,7 +42,7 @@ class Thread {
 
 class ThreadListItem {
   final String id;
-  final String title;
+  String title;
   final String? parentId;
   final DateTime createdAt;
   final DateTime updatedAt;

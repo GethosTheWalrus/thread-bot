@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     LLM_COMPACTION_THRESHOLD: float = 0.75
     LLM_PRESERVE_RECENT: int = 10
 
+    # Redis
+    REDIS_URL: str = "redis://redis:6379"
+    REDIS_DB: int = 0
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -80,3 +84,15 @@ def get_llm_config() -> dict:
         "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
         "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
     }
+
+
+def get_redis_url() -> str:
+    """Build the effective Redis URL, appending REDIS_DB if not already in the URL."""
+    url = get_setting("REDIS_URL")
+    db = get_setting("REDIS_DB")
+    # If the URL already has a path (db number), use it as-is
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.path and parsed.path not in ("", "/"):
+        return url
+    return f"{url.rstrip('/')}/{db}"

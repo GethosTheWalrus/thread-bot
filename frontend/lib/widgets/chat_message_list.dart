@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
@@ -17,6 +18,61 @@ class ChatMessageList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Pre-compute which tool_result indices are claimed by a tool_call group
+    // so we can hide them from the top-level list (they render inside the call bubble).
+    final claimedResultIndices = <int>{};
+    final toolCallResults = <int, List<Message>>{};
+
+    for (var i = 0; i < messages.length; i++) {
+      if (messages[i].isToolCall) {
+        final results = <Message>[];
+        for (var j = i + 1; j < messages.length; j++) {
+          if (messages[j].isToolResult) {
+            results.add(messages[j]);
+            claimedResultIndices.add(j);
+          } else {
+            break;
+          }
+        }
+        toolCallResults[i] = results;
+      }
+    }
+
+    // Pre-compute which tool_call and thinking indices are claimed by a following assistant message
+    // so they render inside the assistant bubble under "THREADBOT".
+    final claimedToolCallIndices = <int>{};
+    final claimedThinkingIndices = <int>{};
+    final assistantPreItems = <int, List<_PreAssistantItem>>{};
+
+    for (var i = 0; i < messages.length; i++) {
+      if (messages[i].isAssistant) {
+        final items = <_PreAssistantItem>[];
+        // Walk backwards from the assistant message to collect preceding tool_call/thinking
+        for (var j = i - 1; j >= 0; j--) {
+          if (messages[j].isToolCall) {
+            claimedToolCallIndices.add(j);
+            items.insert(0, _PreAssistantItem(
+              toolCallGroup: _ToolCallGroup(
+                message: messages[j],
+                results: toolCallResults[j] ?? [],
+              ),
+            ));
+          } else if (messages[j].isThinking) {
+            claimedThinkingIndices.add(j);
+            items.insert(0, _PreAssistantItem(thinking: messages[j]));
+          } else if (messages[j].isToolResult && claimedResultIndices.contains(j)) {
+            // Skip — already claimed by a tool_call
+            continue;
+          } else {
+            break;
+          }
+        }
+        if (items.isNotEmpty) {
+          assistantPreItems[i] = items;
+        }
+      }
+    }
+
     return ListView.builder(
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 24),
@@ -24,10 +80,38 @@ class ChatMessageList extends StatelessWidget {
       itemBuilder: (context, index) {
         final msg = messages[index];
         if (msg.isCompactionSummary) return _CompactionDivider(message: msg);
-        if (msg.isToolCall) return _ToolCallBubble(message: msg);
+        // Hide thinking messages claimed by an assistant message
+        if (msg.isThinking && claimedThinkingIndices.contains(index)) {
+          return const SizedBox.shrink();
+        }
+        // Unclaimed thinking (still streaming, no assistant response yet)
+        if (msg.isThinking) {
+          return _ThinkingBubble(message: msg);
+        }
+        // Hide tool_calls claimed by an assistant message
+        if (msg.isToolCall && claimedToolCallIndices.contains(index)) {
+          return const SizedBox.shrink();
+        }
+        // Unclaimed tool_call (no assistant message follows — still in progress)
+        if (msg.isToolCall) {
+          final hasAssistantAfter = messages.skip(index + 1).any((m) => m.isAssistant);
+          return _ToolCallBubble(
+            message: msg,
+            isLoading: isSending && !hasAssistantAfter,
+            results: toolCallResults[index] ?? [],
+          );
+        }
+        // Hide tool_results that are claimed by a tool_call group
+        if (msg.isToolResult && claimedResultIndices.contains(index)) {
+          return const SizedBox.shrink();
+        }
+        // Unclaimed tool_result (shouldn't happen, but render standalone just in case)
         if (msg.isToolResult) return _ToolResultBubble(message: msg);
-        if (msg.isSystem) return const SizedBox.shrink(); // hide other system messages
-        return _ChatBubble(message: msg);
+        if (msg.isSystem) return const SizedBox.shrink();
+        return _ChatBubble(
+          message: msg,
+          preItems: assistantPreItems[index] ?? [],
+        );
       },
     );
   }
@@ -82,42 +166,63 @@ class _CompactionDivider extends StatelessWidget {
 
 // ── Tool Call Bubble ──────────────────────────────────────────────────────────
 
-class _ToolCallBubble extends StatelessWidget {
+class _ToolCallBubble extends StatefulWidget {
   final Message message;
-  const _ToolCallBubble({required this.message});
+  final bool isLoading;
+  final List<Message> results;
+  const _ToolCallBubble({
+    required this.message,
+    this.isLoading = false,
+    this.results = const [],
+  });
+
+  @override
+  State<_ToolCallBubble> createState() => _ToolCallBubbleState();
+}
+
+class _ToolCallBubbleState extends State<_ToolCallBubble> {
+  /// Parse "Calling server1:tool1, server2:tool2" into individual tool names.
+  List<String> _parseToolCalls(String content) {
+    var body = content;
+    if (body.startsWith('Calling ')) {
+      body = body.substring('Calling '.length);
+    }
+    return body
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+  }
+
+  static bool _isError(String content) {
+    if (content.startsWith('Error executing tool:') ||
+        content.startsWith('Error:') ||
+        content == 'Tool not found') {
+      return true;
+    }
+    // Detect JSON error responses like {"error": "...", ...}
+    try {
+      final parsed = jsonDecode(content);
+      if (parsed is Map && parsed.containsKey('error')) return true;
+    } catch (_) {}
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final tools = _parseToolCalls(widget.message.content);
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
       child: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 720),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(width: 48), // align with assistant messages
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(8),
-                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.08),
-                  border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.2)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.build_outlined, size: 14, color: Color(0xFF8B5CF6)),
-                    const SizedBox(width: 8),
-                    Text(
-                      message.content,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF8B5CF6),
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                  ],
-                ),
+              Flexible(
+                child: _buildToolList(tools),
               ),
             ],
           ),
@@ -125,9 +230,258 @@ class _ToolCallBubble extends StatelessWidget {
       ),
     );
   }
+
+  Widget _buildToolList(List<String> tools) {
+    // Determine per-chip loading: a chip is loading if the overall bubble
+    // is loading AND this specific chip doesn't have a result yet.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: List.generate(tools.length, (i) {
+        final result = i < widget.results.length ? widget.results[i] : null;
+        final succeeded = result != null && !_isError(result.content);
+        final failed = result != null && _isError(result.content);
+        final chipLoading = widget.isLoading && result == null;
+        return _ToolCallChip(
+          tool: tools[i],
+          isLoading: chipLoading,
+          succeeded: succeeded,
+          failed: failed,
+          result: result,
+        );
+      }),
+    );
+  }
 }
 
-// ── Tool Result Bubble ────────────────────────────────────────────────────────
+/// Individual tool call chip with status icon and collapsible result.
+class _ToolCallChip extends StatefulWidget {
+  final String tool;
+  final bool isLoading;
+  final bool succeeded;
+  final bool failed;
+  final Message? result;
+
+  const _ToolCallChip({
+    required this.tool,
+    this.isLoading = false,
+    this.succeeded = false,
+    this.failed = false,
+    this.result,
+  });
+
+  @override
+  State<_ToolCallChip> createState() => _ToolCallChipState();
+}
+
+class _ToolCallChipState extends State<_ToolCallChip>
+    with SingleTickerProviderStateMixin {
+  bool _expanded = false;
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    );
+    _pulseAnimation = Tween<double>(begin: 0.45, end: 0.85).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+    if (widget.isLoading) _pulseController.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(_ToolCallChip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isLoading && !_pulseController.isAnimating) {
+      _pulseController.repeat(reverse: true);
+    } else if (!widget.isLoading && _pulseController.isAnimating) {
+      _pulseController.stop();
+      _pulseController.value = 1.0; // full opacity when done
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget chip = Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Chip row ───────────────────────────────────────────────
+          GestureDetector(
+            onTap: widget.result != null
+                ? () => setState(() => _expanded = !_expanded)
+                : null,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                color: const Color(0xFF8B5CF6).withValues(alpha: 0.06),
+                border: Border.all(
+                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.12),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.build_outlined, size: 12, color: Color(0xFF8B5CF6)),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      widget.tool,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF8B5CF6),
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                  // Status icon
+                  if (widget.succeeded || widget.failed) ...[
+                    const SizedBox(width: 6),
+                    Icon(
+                      widget.succeeded ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                      size: 13,
+                      color: widget.succeeded
+                          ? const Color(0xFF22C55E)
+                          : const Color(0xFFEF4444),
+                    ),
+                  ],
+                  // Expand/collapse chevron when result exists
+                  if (widget.result != null) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      _expanded ? Icons.expand_less : Icons.expand_more,
+                      size: 14,
+                      color: const Color(0xFF8B5CF6).withValues(alpha: 0.6),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
+          // ── Collapsible result block ───────────────────────────────
+          if (_expanded && widget.result != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 4),
+              child: _CollapsibleResultBlock(content: widget.result!.content),
+            ),
+        ],
+      ),
+    );
+
+    // Wrap with pulse animation when this chip is still loading
+    if (widget.isLoading) {
+      return AnimatedBuilder(
+        animation: _pulseAnimation,
+        builder: (_, child) => Opacity(
+          opacity: _pulseAnimation.value,
+          child: child,
+        ),
+        child: chip,
+      );
+    }
+    return chip;
+  }
+}
+
+/// Formatted code block for tool result content (JSON or plain text).
+class _CollapsibleResultBlock extends StatelessWidget {
+  final String content;
+  const _CollapsibleResultBlock({required this.content});
+
+  String _format(String raw) {
+    try {
+      final parsed = jsonDecode(raw);
+      return const JsonEncoder.withIndent('  ').convert(parsed);
+    } catch (_) {
+      return raw;
+    }
+  }
+
+  bool _isJson(String raw) {
+    try {
+      jsonDecode(raw);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final formatted = _format(content);
+    final isJson = _isJson(content);
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        color: const Color(0xFF111118),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Language label bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+              color: Colors.white.withValues(alpha: 0.03),
+              border: Border(
+                bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isJson ? Icons.data_object : Icons.terminal_rounded,
+                  size: 11,
+                  color: const Color(0xFF71717A),
+                ),
+                const SizedBox(width: 5),
+                Text(
+                  isJson ? 'json' : 'output',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFF71717A),
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Content
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: SelectableText(
+              formatted,
+              style: const TextStyle(
+                fontSize: 11,
+                fontFamily: 'monospace',
+                color: Color(0xFFA1A1AA),
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Standalone Tool Result Bubble (fallback for unclaimed results) ────────────
 
 class _ToolResultBubble extends StatefulWidget {
   final Message message;
@@ -140,14 +494,9 @@ class _ToolResultBubble extends StatefulWidget {
 class _ToolResultBubbleState extends State<_ToolResultBubble> {
   bool _expanded = false;
 
-  static const int _previewLength = 200;
-
   @override
   Widget build(BuildContext context) {
-    final content = widget.message.content;
     final toolName = widget.message.metadata?['tool_name'] as String? ?? 'Tool';
-    final isLong = content.length > _previewLength;
-    final displayText = _expanded || !isLong ? content : '${content.substring(0, _previewLength)}...';
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
@@ -159,26 +508,20 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
             children: [
               const SizedBox(width: 48),
               Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(8),
-                    color: const Color(0xFF111118),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Header bar
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    GestureDetector(
+                      onTap: () => setState(() => _expanded = !_expanded),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
-                          borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+                          borderRadius: BorderRadius.circular(6),
                           color: Colors.white.withValues(alpha: 0.03),
-                          border: Border(
-                            bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
-                          ),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
                         ),
                         child: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
                             const Icon(Icons.terminal_rounded, size: 12, color: Color(0xFF71717A)),
                             const SizedBox(width: 6),
@@ -186,35 +529,133 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                               toolName,
                               style: const TextStyle(fontSize: 11, color: Color(0xFF71717A)),
                             ),
-                            const Spacer(),
-                            if (isLong)
-                              GestureDetector(
-                                onTap: () => setState(() => _expanded = !_expanded),
-                                child: Text(
-                                  _expanded ? 'Collapse' : 'Expand',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xFF8B5CF6),
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              _expanded ? Icons.expand_less : Icons.expand_more,
+                              size: 14,
+                              color: const Color(0xFF71717A),
+                            ),
                           ],
                         ),
                       ),
-                      // Content
+                    ),
+                    if (_expanded)
                       Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: SelectableText(
-                          displayText,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontFamily: 'monospace',
-                            color: Color(0xFFA1A1AA),
-                            height: 1.5,
+                        padding: const EdgeInsets.only(top: 2),
+                        child: _CollapsibleResultBlock(content: widget.message.content),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Tool Call Group ───────────────────────────────────────────────────────────
+
+class _ToolCallGroup {
+  final Message message;
+  final List<Message> results;
+  const _ToolCallGroup({required this.message, required this.results});
+}
+
+/// A single item (thinking or tool_call group) that precedes an assistant message.
+/// Stored in chronological order so rendering preserves the original sequence.
+class _PreAssistantItem {
+  final Message? thinking;
+  final _ToolCallGroup? toolCallGroup;
+  const _PreAssistantItem({this.thinking, this.toolCallGroup});
+
+  bool get isThinking => thinking != null;
+  bool get isToolCall => toolCallGroup != null;
+}
+
+// ── Thinking Bubble (collapsible, standalone for unclaimed) ───────────────────
+
+class _ThinkingBubble extends StatefulWidget {
+  final Message message;
+  const _ThinkingBubble({required this.message});
+
+  @override
+  State<_ThinkingBubble> createState() => _ThinkingBubbleState();
+}
+
+class _ThinkingBubbleState extends State<_ThinkingBubble> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(width: 48), // align with assistant messages
+              Flexible(
+                child: GestureDetector(
+                  onTap: () => setState(() => _expanded = !_expanded),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          color: const Color(0xFFF59E0B).withValues(alpha: 0.06),
+                          border: Border.all(
+                            color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
                           ),
                         ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.psychology_outlined, size: 12, color: Color(0xFFF59E0B)),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Thinking',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFFF59E0B),
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Icon(
+                              _expanded ? Icons.expand_less : Icons.expand_more,
+                              size: 14,
+                              color: const Color(0xFFF59E0B).withValues(alpha: 0.6),
+                            ),
+                          ],
+                        ),
                       ),
+                      if (_expanded)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(6),
+                              color: const Color(0xFF111118),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                            ),
+                            child: SelectableText(
+                              widget.message.content,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFFA1A1AA),
+                                height: 1.5,
+                              ),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -227,12 +668,96 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
   }
 }
 
+/// Inline thinking block rendered within an assistant bubble.
+class _InlineThinkingBlock extends StatefulWidget {
+  final Message message;
+  const _InlineThinkingBlock({required this.message});
+
+  @override
+  State<_InlineThinkingBlock> createState() => _InlineThinkingBlockState();
+}
+
+class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: GestureDetector(
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                color: const Color(0xFFF59E0B).withValues(alpha: 0.06),
+                border: Border.all(
+                  color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.psychology_outlined, size: 12, color: Color(0xFFF59E0B)),
+                  const SizedBox(width: 6),
+                  const Text(
+                    'Thinking',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFF59E0B),
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 14,
+                    color: const Color(0xFFF59E0B).withValues(alpha: 0.6),
+                  ),
+                ],
+              ),
+            ),
+            if (_expanded)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    color: const Color(0xFF111118),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                  ),
+                  child: SelectableText(
+                    widget.message.content,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFFA1A1AA),
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ── Regular Chat Bubble ───────────────────────────────────────────────────────
 
 class _ChatBubble extends StatelessWidget {
   final Message message;
+  final List<_PreAssistantItem> preItems;
 
-  const _ChatBubble({required this.message});
+  const _ChatBubble({
+    required this.message,
+    this.preItems = const [],
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -298,6 +823,17 @@ class _ChatBubble extends StatelessWidget {
                 .withValues(alpha: 0.9),
           ),
         ),
+        // Render thinking blocks and tool call groups in chronological order
+        if (!isUser && preItems.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          ...preItems.map((item) {
+            if (item.isThinking) {
+              return _InlineThinkingBlock(message: item.thinking!);
+            } else {
+              return _InlineToolCallGroup(group: item.toolCallGroup!);
+            }
+          }),
+        ],
         const SizedBox(height: 6),
         _buildMessageBody(context, isUser),
       ],
@@ -363,6 +899,55 @@ class _ChatBubble extends StatelessWidget {
   }
 }
 
+/// Renders a tool_call group inline within an assistant bubble.
+class _InlineToolCallGroup extends StatelessWidget {
+  final _ToolCallGroup group;
+  const _InlineToolCallGroup({required this.group});
+
+  static List<String> _parseToolCalls(String content) {
+    var body = content;
+    if (body.startsWith('Calling ')) {
+      body = body.substring('Calling '.length);
+    }
+    return body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+  }
+
+  static bool _isError(String content) {
+    if (content.startsWith('Error executing tool:') ||
+        content.startsWith('Error:') ||
+        content == 'Tool not found') {
+      return true;
+    }
+    try {
+      final parsed = jsonDecode(content);
+      if (parsed is Map && parsed.containsKey('error')) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tools = _parseToolCalls(group.message.content);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: List.generate(tools.length, (i) {
+          final result = i < group.results.length ? group.results[i] : null;
+          final succeeded = result != null && !_isError(result.content);
+          final failed = result != null && _isError(result.content);
+          return _ToolCallChip(
+            tool: tools[i],
+            succeeded: succeeded,
+            failed: failed,
+            result: result,
+          );
+        }),
+      ),
+    );
+  }
+}
+
 class _AnimatedMarkdown extends StatefulWidget {
   final String data;
   final MarkdownStyleSheet styleSheet;
@@ -411,59 +996,76 @@ class _TypingDots extends StatefulWidget {
   State<_TypingDots> createState() => _TypingDotsState();
 }
 
-class _TypingDotsState extends State<_TypingDots> with TickerProviderStateMixin {
-  late final List<AnimationController> _controllers;
-  late final List<Animation<double>> _animations;
+class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _shimmer;
 
   @override
   void initState() {
     super.initState();
-    _controllers = List.generate(3, (i) {
-      final controller = AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 600),
-      );
-      Future.delayed(Duration(milliseconds: i * 200), () {
-        if (mounted) controller.repeat(reverse: true);
-      });
-      return controller;
-    });
-    _animations = _controllers
-        .map((c) => Tween<double>(begin: 0.3, end: 1.0).animate(
-              CurvedAnimation(parent: c, curve: Curves.easeInOut),
-            ))
-        .toList();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+    _shimmer = CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
   }
 
   @override
   void dispose() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: List.generate(3, (i) {
-        return AnimatedBuilder(
-          animation: _animations[i],
-          builder: (_, __) => Container(
-            width: 8,
-            height: 8,
-            margin: const EdgeInsets.only(right: 4),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Color.lerp(
-                const Color(0xFF3F3F46),
-                const Color(0xFF8B5CF6),
-                _animations[i].value,
-              ),
-            ),
-          ),
+    return AnimatedBuilder(
+      animation: _shimmer,
+      builder: (context, _) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Paragraph-like skeleton — varies widths to mimic real text
+            _buildBar(widthFraction: 1.0,  delay: 0.0),
+            const SizedBox(height: 8),
+            _buildBar(widthFraction: 0.92, delay: 0.06),
+            const SizedBox(height: 8),
+            _buildBar(widthFraction: 0.97, delay: 0.12),
+            const SizedBox(height: 8),
+            _buildBar(widthFraction: 0.85, delay: 0.18),
+            const SizedBox(height: 8),
+            _buildBar(widthFraction: 0.55, delay: 0.24),
+          ],
         );
-      }),
+      },
+    );
+  }
+
+  Widget _buildBar({required double widthFraction, required double delay}) {
+    // Offset the shimmer phase per bar for a cascading effect
+    final t = (_shimmer.value + delay) % 1.0;
+    final opacity = 0.15 + 0.25 * (0.5 + 0.5 * (1.0 - (2.0 * t - 1.0).abs()));
+
+    return FractionallySizedBox(
+      alignment: Alignment.centerLeft,
+      widthFactor: widthFraction,
+      child: Container(
+        height: 14,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFF8B5CF6).withValues(alpha: opacity * 0.5),
+              const Color(0xFF6366F1).withValues(alpha: opacity),
+              const Color(0xFF8B5CF6).withValues(alpha: opacity * 0.5),
+            ],
+            stops: [
+              (t - 0.3).clamp(0.0, 1.0),
+              t,
+              (t + 0.3).clamp(0.0, 1.0),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
