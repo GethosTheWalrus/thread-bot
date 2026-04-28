@@ -100,8 +100,8 @@ async def get_message_count(db: AsyncSession, thread_id: UUID) -> int:
 async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None) -> MCPServer:
     server = MCPServer(name=name, image=image, env_vars=env_vars or {})
     db.add(server)
-        await db.flush()
-        await db.refresh(server)
+    await db.flush()
+    await db.refresh(server)
     return server
 
 
