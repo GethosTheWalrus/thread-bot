@@ -7,6 +7,7 @@ class Thread {
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<Message> messages;
+  final bool isGenerating;
 
   Thread({
     required this.id,
@@ -15,6 +16,7 @@ class Thread {
     required this.createdAt,
     required this.updatedAt,
     this.messages = const [],
+    this.isGenerating = false,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -30,6 +32,7 @@ class Thread {
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
       messages: messages,
+      isGenerating: json['is_generating'] as bool? ?? false,
     );
   }
 

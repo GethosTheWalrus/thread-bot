@@ -2,7 +2,7 @@ FROM python:3.12-slim AS base
 
 WORKDIR /app
 
-# Install system dependencies (multi-arch Docker CLI)
+# Install system dependencies (multi-arch Docker CLI + kubectl)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ARCH=$(dpkg --print-architecture) \
     && if [ "$ARCH" = "amd64" ]; then DOCKER_ARCH="x86_64"; elif [ "$ARCH" = "arm64" ]; then DOCKER_ARCH="aarch64"; else DOCKER_ARCH="$ARCH"; fi \
     && curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-24.0.7.tgz" | tar -xzC /usr/local/bin --strip-components=1 docker/docker \
+    && curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" -o /usr/local/bin/kubectl \
+    && chmod +x /usr/local/bin/kubectl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
