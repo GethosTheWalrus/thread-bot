@@ -53,6 +53,18 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -61,6 +73,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
+      - REDIS_URL=redis://redis:6379
     ports:
       - "8000:8000"
     volumes:
@@ -69,6 +82,8 @@ services:
       postgres:
         condition: service_healthy
       temporal:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - chatbot-network
@@ -85,12 +100,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
+      - REDIS_URL=redis://redis:6379
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       postgres:
         condition: service_healthy
       temporal:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - chatbot-network

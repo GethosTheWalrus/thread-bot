@@ -12,7 +12,8 @@ class RunThreadWorkflow:
         with workflow.unsafe.imports_passed_through():
             from app.activities.llm_activities import (
                 call_llm, save_message, get_messages, update_title,
-                compact_history, delete_messages_before
+                compact_history, delete_messages_before, publish_done,
+                publish_title
             )
         thread_id = input["thread_id"]
         message = input["message"]
@@ -29,7 +30,7 @@ class RunThreadWorkflow:
 
         # ── Compaction Check ──────────────────────────────────────────
         # Build a config for the compaction LLM call that doesn't stream
-        compaction_config = {k: v for k, v in llm_config.items() if k != "stream_url"}
+        compaction_config = {k: v for k, v in llm_config.items() if k not in ("stream_url", "redis_url", "stream_channel")}
 
         compact_result = await execute_activity(
             compact_history,
@@ -79,15 +80,22 @@ class RunThreadWorkflow:
         # ── Call LLM ─────────────────────────────────────────────────
         llm_result = await execute_activity(
             call_llm,
-            {"messages": chat_history, "llm_config": llm_config},
+            {"messages": chat_history, "llm_config": llm_config, "thread_id": thread_id},
             start_to_close_timeout=timedelta(seconds=600),
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
         llm_response = llm_result["content"]
-        intermediate_messages = llm_result.get("intermediate_messages", [])
 
-        # ── Auto-title ───────────────────────────────────────────────
+        # ── Save final assistant response ────────────────────────────
+        # (intermediate tool_call/tool_result/thinking already saved inline by call_llm)
+        await execute_activity(
+            save_message,
+            {"thread_id": thread_id, "role": "assistant", "content": llm_response},
+            start_to_close_timeout=timedelta(seconds=10),
+        )
+
+        # ── Auto-title (runs before [DONE] so the frontend gets the title in the stream) ──
         if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
             # Build context from recent human-readable messages only
             readable = [m for m in chat_history[-5:] if m.get("content") and m.get("role") in ("user", "assistant")]
@@ -106,30 +114,33 @@ class RunThreadWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=2),
             )
             title_text = title["content"] if isinstance(title, dict) else title
+            title_text = title_text.strip("\"'").strip()[:50]
             await execute_activity(
                 update_title,
-                {"thread_id": thread_id, "title": title_text.strip("\"'").strip()[:50]},
+                {"thread_id": thread_id, "title": title_text},
                 start_to_close_timeout=timedelta(seconds=10),
             )
-
-        # ── Save intermediate tool messages ──────────────────────────
-        for msg in intermediate_messages:
+            # Publish title event to Redis so frontend sidebar updates immediately
             await execute_activity(
-                save_message,
+                publish_title,
                 {
-                    "thread_id": thread_id,
-                    "role": msg["role"],
-                    "content": msg["content"],
-                    "metadata": msg.get("metadata"),
+                    "redis_url": llm_config.get("redis_url"),
+                    "stream_channel": llm_config.get("stream_channel"),
+                    "title": title_text,
                 },
-                start_to_close_timeout=timedelta(seconds=10),
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
             )
 
-        # ── Save final assistant response ────────────────────────────
+        # ── Signal frontend: all messages persisted ──────────────────
         await execute_activity(
-            save_message,
-            {"thread_id": thread_id, "role": "assistant", "content": llm_response},
-            start_to_close_timeout=timedelta(seconds=10),
+            publish_done,
+            {
+                "redis_url": llm_config.get("redis_url"),
+                "stream_channel": llm_config.get("stream_channel"),
+            },
+            start_to_close_timeout=timedelta(seconds=5),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
 
         return {
