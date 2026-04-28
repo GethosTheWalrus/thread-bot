@@ -38,6 +38,8 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 ### Configuration (`app/config.py`)
 - Uses Pydantic v2 `BaseSettings`.
 - Because Pydantic v2 models are frozen by default, runtime overrides (e.g., from the settings UI) are stored in a separate `_overrides` dictionary.
+- On startup, `load_settings_from_db()` loads all persisted settings from the `settings` table into `_overrides`, so DB values take precedence over environment variables.
+- The `PATCH /api/settings` endpoint writes to both `_overrides` (in-memory) and the `settings` table (DB), ensuring values survive restarts.
 - Always use `get_setting("KEY")` or `get_llm_config()` rather than accessing the `Settings` object directly to ensure overrides are respected.
 - `REDIS_URL` and `REDIS_DB` are configurable via environment variables. `get_redis_url()` returns the full connection string.
 
@@ -48,7 +50,8 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
     - `Thread`: Represents a conversation. Has a `parent_id` for branching (though the current UI focuses on linear threads).
     - `Message`: Belongs to a Thread. Contains `role` (user/assistant/thinking/tool_call/tool_result/system), `content`, and `metadata_` (JSONB).
     - `MCPServer`: Stores MCP server configurations (image, env vars, active status).
-- **CRUD**: Located in `app/database/crud.py`. All functions are asynchronous and expect an `AsyncSession`. Note that the `Message` model's metadata column is named `metadata_` to avoid conflicts with SQLAlchemy's internal `metadata` attribute.
+    - `Setting`: Simple key-value table for persisting runtime settings (LLM URL, model, API key, context params, etc.).
+- **CRUD**: Located in `app/database/crud.py`. All functions are asynchronous and expect an `AsyncSession`. Note that the `Message` model's metadata column is named `metadata_` to avoid conflicts with SQLAlchemy's internal `metadata` attribute. Settings CRUD includes `get_all_settings` and `upsert_settings` for bulk read/write of key-value pairs.
 
 ### API Routes (`app/api/routes.py`)
 - Standard REST endpoints for managing threads, messages, and settings.
@@ -163,7 +166,7 @@ The frontend is a Flutter Web application designed to look and feel like a premi
 
 ### API Communication (`lib/services/api_service.dart`)
 - Handles all HTTP communication with the FastAPI backend.
-- Manages LLM settings persistence using `shared_preferences`. It reads from local storage and falls back to backend defaults.
+- Settings (LLM URL, model, API key, context params) are loaded from and saved to the backend API exclusively. No local storage is used for settings.
 
 ### UI Components (`lib/screens/`, `lib/widgets/`)
 - `ChatScreen`: The main layout containing the sidebar and the chat area. Handles message sending, structured JSON event parsing, token streaming, and placeholder management.
@@ -269,7 +272,7 @@ sequenceDiagram
 
 1.  **User action**: The user types a message and presses Enter in `ChatInput`.
 2.  **Frontend Optimistic Update**: `ChatScreen` immediately adds the user's message and a placeholder assistant message (empty content, shows skeleton shimmer) to the local list and scrolls to the bottom.
-3.  **API Request**: `ApiService.sendMessageStream` sends a `POST /api/chat` request containing the content and any LLM config overrides (including `redis_url` and `stream_channel`).
+3.  **API Request**: `ApiService.sendMessageStream` sends a `POST /api/chat` request containing the content and optional thread ID. LLM configuration is managed entirely server-side.
 4.  **Backend Setup**: `chat_endpoint` creates the message in DB, subscribes to the Redis channel, sets the `generating:{thread_id}` flag in Redis, starts the workflow, and opens a `StreamingResponse` that relays Redis events.
 5.  **Agent Loop**: The worker executes `call_llm` with non-streaming calls during tool iterations. Intermediate messages (thinking, tool_call, tool_result) are saved to DB inline and published to Redis (both pub/sub and event buffer list) in real-time.
 6.  **Token Streaming**: When the agent loop's final iteration returns text (no tool calls), `call_llm` re-issues the request with `stream: true`. Each SSE token is published to Redis → relayed by backend → appended to the placeholder by the frontend.
@@ -295,5 +298,5 @@ sequenceDiagram
 
 - **Simplicity First**: Avoid over-engineering. If a simple `setState` works in Flutter, use it instead of a complex state management system.
 - **Temporal Sandbox**: Always remember that Temporal activities run in restricted environments. Avoid module-level state and perform lazy imports for database connections.
-- **Config Overrides**: Always use the override-aware helper functions (`get_setting`, `get_llm_config`) in the backend, as Pydantic models are immutable.
+- **Config Overrides**: Always use the override-aware helper functions (`get_setting`, `get_llm_config`) in the backend, as Pydantic models are immutable. Settings are persisted in the DB `settings` table and loaded on startup via `load_settings_from_db()`.
 - **Redis is Required**: Redis pub/sub cannot be replaced with in-memory queues because the worker and backend are separate processes. With K8s multi-replica deployments, in-memory approaches fail when the request handler and worker activity land on different pods. Redis also serves as the event buffer store for stream reconnect (events lists) and generation status tracking (generating keys).
