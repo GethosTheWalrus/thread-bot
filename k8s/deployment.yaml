@@ -84,9 +84,13 @@ spec:
         - name: worker
           image: git.home:5050/mike/thread-bot/worker:latest
           imagePullPolicy: Always
+          command: ["python", "-m", "app.worker"]
           envFrom:
             - configMapRef:
                 name: threadbot-config
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
           resources:
             requests:
               memory: "128Mi"
@@ -94,6 +98,11 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
 ---
 # ── Frontend Deployment ────────────────────────────────────────────────────────
 apiVersion: apps/v1
