@@ -251,4 +251,29 @@ class ApiService {
     }
     throw Exception('Failed to update MCP server: ${response.statusCode}');
   }
+
+  // ── Thread Tool Overrides ────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getThreadToolOverrides(String threadId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/threads/$threadId/tool-overrides'),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load tool overrides: ${response.statusCode}');
+  }
+
+  Future<void> setThreadToolOverrides(String threadId, List<Map<String, dynamic>> overrides) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/threads/$threadId/tool-overrides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'overrides': overrides}),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save tool overrides: ${response.statusCode}');
+    }
+  }
 }
