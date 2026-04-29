@@ -59,6 +59,7 @@ echo -e "\n${BLUE}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
 kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml
+kubectl apply -f k8s/cronjob-mcp-cleanup.yaml
 
 # Since we use :latest, we should rollout restart to force nodes to pull the latest images
 echo -e "\n${BLUE}Restarting deployments to pull new images...${NC}"
