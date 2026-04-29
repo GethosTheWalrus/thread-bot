@@ -75,6 +75,9 @@ async def call_llm(args: dict) -> dict:
 
     print(f"Discovered {len(active_servers)} active MCP servers", flush=True)
 
+    # Decrypt env_vars and args for each server
+    from app.encryption import decrypt_dict
+
     # Map of tool_name -> server_info
     mcp_tools_map = {}
     openai_tools = []
@@ -82,7 +85,9 @@ async def call_llm(args: dict) -> dict:
     for server in active_servers:
         print(f"Loading tools from MCP server: {server.name} ({server.image})", flush=True)
         try:
-            params = get_mcp_server_params(server.image, server.env_vars)
+            decrypted_env = await decrypt_dict(server.env_vars) or {}
+            decrypted_args = await decrypt_dict(server.args) or {}
+            params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
 
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
@@ -93,7 +98,8 @@ async def call_llm(args: dict) -> dict:
                         full_name = f"{server.name}_{tool.name}"
                         mcp_tools_map[full_name] = {
                             "image": server.image,
-                            "env_vars": server.env_vars,
+                            "env_vars": decrypted_env,
+                            "args": decrypted_args,
                             "original_name": tool.name,
                             "server_name": server.name
                         }
@@ -203,7 +209,7 @@ async def call_llm(args: dict) -> dict:
                             tool_display = f"{info['server_name']}:{info['original_name']}"
 
                             try:
-                                exec_params = get_mcp_server_params(info["image"], info["env_vars"])
+                                exec_params = get_mcp_server_params(info["image"], info["env_vars"], info.get("args"))
                                 async with stdio_client(exec_params) as (read, write):
                                     async with ClientSession(read, write) as mcp_session:
                                         await mcp_session.initialize()

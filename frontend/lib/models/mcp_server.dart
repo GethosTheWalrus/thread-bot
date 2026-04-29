@@ -5,6 +5,7 @@ class MCPServer {
   final String name;
   final String image;
   final Map<String, dynamic> envVars;
+  final Map<String, dynamic> args;
   final bool isActive;
   final DateTime createdAt;
 
@@ -13,6 +14,7 @@ class MCPServer {
     required this.name,
     required this.image,
     required this.envVars,
+    required this.args,
     required this.isActive,
     required this.createdAt,
   });
@@ -23,6 +25,7 @@ class MCPServer {
       name: json['name'],
       image: json['image'],
       envVars: Map<String, dynamic>.from(json['env_vars'] ?? {}),
+      args: Map<String, dynamic>.from(json['args'] ?? {}),
       isActive: json['is_active'] ?? true,
       createdAt: DateTime.parse(json['created_at']),
     );
@@ -34,6 +37,7 @@ class MCPServer {
       'name': name,
       'image': image,
       'env_vars': envVars,
+      'args': args,
       'is_active': isActive,
       'created_at': createdAt.toIso8601String(),
     };

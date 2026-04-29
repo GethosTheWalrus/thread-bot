@@ -9,11 +9,12 @@ backend/                    # Python/FastAPI + Temporal worker
     worker.py               # Temporal worker: registers RunThreadWorkflow + 8 activities
     workflows/thread_workflow.py  # Orchestrator: get_messages → compact_history → call_llm → save_message → auto-title → publish_done
     api/routes.py           # REST endpoints at /api/* (threads, chat, settings, stream reconnect); Redis pub/sub streaming
-    models/models.py        # SQLAlchemy: Thread (self-referencing FK) + Message (JSONB metadata_) + MCPServer + Setting (key-value)
+    models/models.py        # SQLAlchemy: Thread (self-referencing FK) + Message (JSONB metadata_) + MCPServer (encrypted env_vars/args) + Setting (key-value)
     models/schemas.py       # Pydantic v2 schemas (ThreadResponse includes is_generating)
     config.py               # Singleton Settings + update_settings() for runtime overrides + load_settings_from_db(); REDIS_URL, REDIS_DB
     database/               # Async SQLAlchemy engine, session factory, get_db dependency, CRUD
     activities/llm_activities.py  # Temporal activities (lazy DB imports inside functions)
+    encryption.py           # Fernet encryption/decryption for MCP secrets (env_vars, args)
     mcp_helper.py           # Auto-detect Docker vs K8s, build StdioServerParameters for MCP containers
   config/dynamicconfig/     # Temporal dynamic config YAML
 frontend/                   # Flutter web app (dark theme, Material 3)
@@ -118,5 +119,7 @@ curl http://localhost:8088                   # Temporal UI
 - **Ollama URL** — Default is `host.docker.internal:11434` (Docker internal). Workers need network access to the Ollama instance. Configure via Settings screen (persisted to DB). Ollama must be installed and running on the host machine for chat to work.
 - **K8s ingress** — Routes `/api` and `/health` to backend, `/` to frontend. Backend Service port is 80 (target 8000).
 - **MCP infrastructure auto-detection** — `mcp_helper.py` checks for `/var/run/secrets/kubernetes.io/serviceaccount/token` to decide between Docker (`docker run -i`) and Kubernetes (`kubectl run --rm -i --quiet`). In K8s, full `os.environ` must be passed to `StdioServerParameters` so kubectl can find the API server.
-- **MCP pod name collision** — `mcp_tools_map` stores `image`/`env_vars` instead of pre-built `StdioServerParameters`. Fresh params with unique pod names are generated per tool execution via `get_mcp_server_params()`.
+- **MCP pod name collision** — `mcp_tools_map` stores `image`/`env_vars`/`args` instead of pre-built `StdioServerParameters`. Fresh params with unique pod names are generated per tool execution via `get_mcp_server_params()`.
+- **MCP encryption** — `env_vars` and `args` are encrypted at rest in PostgreSQL using Fernet (AES-128-CBC + HMAC-SHA256). Key comes from `MCP_ENCRYPTION_KEY` env var or auto-generated in the `settings` table. Values are encrypted per-field (keys stay plaintext). Decryption handles legacy unencrypted data gracefully. The `encryption.py` module provides `encrypt_dict()` and `decrypt_dict()` async functions.
+- **MCP container args** — Stored as key-value dict, converted to `--key=value` CLI flags appended after the image. In K8s, a `--` separator is added before the args.
 - **K8s RBAC for MCP** — The `threadbot-sa` ServiceAccount needs a Role with permissions for `pods` (create/delete/get/list/watch), `pods/attach`, and `pods/log` in the threadbot namespace.

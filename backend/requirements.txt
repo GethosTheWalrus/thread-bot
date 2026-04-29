@@ -10,5 +10,6 @@ python-multipart==0.0.9
 sse-starlette==2.1.0
 psutil==6.0.0
 redis>=5.0.0
+cryptography
 docker
 mcp
