@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     LLM_CONTEXT_WINDOW: int = 8192
     LLM_COMPACTION_THRESHOLD: float = 0.75
     LLM_PRESERVE_RECENT: int = 10
+    LLM_TOOL_RESULT_MAX_CHARS: int = 0  # 0 = no truncation
 
     # Redis
     REDIS_URL: str = "redis://redis:6379"
@@ -92,6 +93,7 @@ async def load_settings_from_db() -> None:
         "llm_context_window": int,
         "llm_compaction_threshold": float,
         "llm_preserve_recent": int,
+        "llm_tool_result_max_chars": int,
     }
     for key, value in rows.items():
         coerce = _type_map.get(key)
@@ -115,6 +117,7 @@ def get_llm_config() -> dict:
         "context_window": get_setting("LLM_CONTEXT_WINDOW"),
         "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
         "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
+        "tool_result_max_chars": get_setting("LLM_TOOL_RESULT_MAX_CHARS"),
     }
 
 

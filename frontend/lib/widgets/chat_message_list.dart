@@ -868,7 +868,7 @@ class _ResponseTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     if (steps.length <= 1) return const SizedBox.shrink();
 
-    return Row(
+    final row = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         for (var i = 0; i < steps.length; i++) ...[
@@ -876,6 +876,12 @@ class _ResponseTimeline extends StatelessWidget {
           _buildStepIcon(steps[i], i == steps.length - 1),
         ],
       ],
+    );
+
+    // On narrow screens the timeline may overflow — allow horizontal scroll
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: row,
     );
   }
 
