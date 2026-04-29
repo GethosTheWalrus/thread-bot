@@ -35,3 +35,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key VARCHAR(255) PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS thread_tool_overrides (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id UUID NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    server_id UUID NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+    tool_name VARCHAR(255),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    UNIQUE (thread_id, server_id, tool_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_tool_overrides_thread_id ON thread_tool_overrides(thread_id);

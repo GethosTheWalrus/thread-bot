@@ -116,6 +116,54 @@ async def call_llm(args: dict) -> dict:
 
     print(f"Total tools available to LLM: {len(openai_tools)}", flush=True)
 
+    # ── Apply per-thread tool overrides ───────────────────────────────
+    tool_overrides = config.get("tool_overrides", [])
+    if tool_overrides:
+        # Build lookup: (server_name) -> server-level enabled
+        # and (server_name, tool_name) -> tool-level enabled
+        server_enabled = {}
+        tool_enabled = {}
+        # We need to map server_id -> server_name. Build from active_servers.
+        server_id_to_name = {str(s.id): s.name for s in active_servers}
+
+        for o in tool_overrides:
+            server_name = server_id_to_name.get(o["server_id"])
+            if server_name is None:
+                continue
+            if o.get("tool_name") is None:
+                # Server-level override
+                server_enabled[server_name] = o["enabled"]
+            else:
+                # Tool-level override
+                tool_enabled[(server_name, o["tool_name"])] = o["enabled"]
+
+        # Filter openai_tools and mcp_tools_map
+        filtered_tools = []
+        filtered_map = {}
+        for tool_def in openai_tools:
+            full_name = tool_def["function"]["name"]
+            info = mcp_tools_map.get(full_name, {})
+            sname = info.get("server_name", "")
+            tname = info.get("original_name", "")
+
+            # Check tool-level override first, then server-level, default to enabled
+            if (sname, tname) in tool_enabled:
+                enabled = tool_enabled[(sname, tname)]
+            elif sname in server_enabled:
+                enabled = server_enabled[sname]
+            else:
+                enabled = True
+
+            if enabled:
+                filtered_tools.append(tool_def)
+                filtered_map[full_name] = mcp_tools_map[full_name]
+
+        removed = len(openai_tools) - len(filtered_tools)
+        if removed > 0:
+            print(f"Thread overrides: disabled {removed} tool(s), {len(filtered_tools)} remaining", flush=True)
+        openai_tools = filtered_tools
+        mcp_tools_map = filtered_map
+
     # ── LLM Interaction Loop ──────────────────────────────────────────
     api_url = config["api_url"].rstrip("/") + "/chat/completions"
     headers = {

@@ -1,7 +1,7 @@
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Thread, Message, MCPServer, Setting
+from app.models.models import Thread, Message, MCPServer, Setting, ThreadToolOverride
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
@@ -183,3 +183,41 @@ async def upsert_settings(db: AsyncSession, settings: dict[str, str]) -> None:
         else:
             db.add(Setting(key=key, value=value))
     await db.flush()
+
+
+# ── Thread Tool Overrides ─────────────────────────────────────────────
+
+async def get_thread_tool_overrides(db: AsyncSession, thread_id: UUID) -> list[ThreadToolOverride]:
+    result = await db.execute(
+        select(ThreadToolOverride).where(ThreadToolOverride.thread_id == thread_id)
+    )
+    return list(result.scalars().all())
+
+
+async def set_thread_tool_overrides(
+    db: AsyncSession, thread_id: UUID, overrides: list[dict]
+) -> list[ThreadToolOverride]:
+    """Replace all overrides for a thread with the given list.
+
+    Each override dict has: server_id, tool_name (optional), enabled.
+    """
+    from sqlalchemy import delete
+    await db.execute(
+        delete(ThreadToolOverride).where(ThreadToolOverride.thread_id == thread_id)
+    )
+
+    new_overrides = []
+    for o in overrides:
+        override = ThreadToolOverride(
+            thread_id=thread_id,
+            server_id=o["server_id"],
+            tool_name=o.get("tool_name"),
+            enabled=o["enabled"],
+        )
+        db.add(override)
+        new_overrides.append(override)
+
+    await db.flush()
+    for o in new_overrides:
+        await db.refresh(o)
+    return new_overrides
