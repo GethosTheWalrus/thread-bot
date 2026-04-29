@@ -14,6 +14,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _modelController = TextEditingController();
   final _contextWindowController = TextEditingController();
   final _preserveRecentController = TextEditingController();
+  final _toolResultMaxCharsController = TextEditingController();
   double _compactionThreshold = 0.75;
 
   bool _isLoading = true;
@@ -37,6 +38,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           (settings['llm_context_window'] ?? 8192).toString();
       _preserveRecentController.text =
           (settings['llm_preserve_recent'] ?? 10).toString();
+      _toolResultMaxCharsController.text =
+          (settings['llm_tool_result_max_chars'] ?? 0).toString();
       _compactionThreshold =
           (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
     } catch (_) {
@@ -44,6 +47,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _modelController.text = 'llama3.1';
       _contextWindowController.text = '8192';
       _preserveRecentController.text = '10';
+      _toolResultMaxCharsController.text = '0';
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -56,6 +60,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       final contextWindow = int.tryParse(_contextWindowController.text) ?? 8192;
       final preserveRecent = int.tryParse(_preserveRecentController.text) ?? 10;
+      final toolResultMaxChars = int.tryParse(_toolResultMaxCharsController.text) ?? 0;
 
       // Build the settings payload — only include API key if user entered one
       final payload = <String, dynamic>{
@@ -64,6 +69,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_context_window': contextWindow,
         'llm_compaction_threshold': _compactionThreshold,
         'llm_preserve_recent': preserveRecent,
+        'llm_tool_result_max_chars': toolResultMaxChars,
       };
       if (_apiKeyController.text.isNotEmpty) {
         payload['llm_api_key'] = _apiKeyController.text;
@@ -104,6 +110,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _modelController.dispose();
     _contextWindowController.dispose();
     _preserveRecentController.dispose();
+    _toolResultMaxCharsController.dispose();
     super.dispose();
   }
 
@@ -226,6 +233,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   child: Text(
                                     'When estimated token usage exceeds ${(_compactionThreshold * 100).round()}% '
                                     'of the context window, older messages are summarized automatically.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white.withValues(alpha: 0.5),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 32),
+                      _buildSection(
+                        'Tool Calls',
+                        'Configure MCP tool result handling',
+                        Icons.build_outlined,
+                        [
+                          _buildField(
+                            controller: _toolResultMaxCharsController,
+                            label: 'Tool Result Max Characters',
+                            hint: '0 (no limit)',
+                            icon: Icons.content_cut_rounded,
+                            keyboardType: TextInputType.number,
+                          ),
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              color: const Color(0xFF8B5CF6).withValues(alpha: 0.06),
+                              border: Border.all(
+                                color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.info_outline_rounded,
+                                    size: 16, color: Color(0xFF8B5CF6)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Truncates large tool results before sending to the LLM. '
+                                    'The LLM is told when results are truncated so it can adjust its queries. '
+                                    'Set to 0 to disable truncation.',
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: Colors.white.withValues(alpha: 0.5),
