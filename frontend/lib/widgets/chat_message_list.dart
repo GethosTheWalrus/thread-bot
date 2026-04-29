@@ -45,10 +45,10 @@ class ChatMessageList extends StatelessWidget {
     final assistantPreItems = <int, List<_PreAssistantItem>>{};
 
     for (var i = 0; i < messages.length; i++) {
-      // Only claim preceding items for assistant messages with actual content.
-      // The empty placeholder (temp-ast-* with empty content) should NOT claim
-      // tool_calls — they need to render standalone with loading spinners.
-      if (messages[i].isAssistant && messages[i].content.isNotEmpty) {
+      // Claim preceding tool_call/thinking for ALL assistant messages, including
+      // the empty placeholder (temp-ast-*). This ensures tool_calls render inline
+      // under the THREADBOT header rather than as standalone bubbles above it.
+      if (messages[i].isAssistant) {
         final items = <_PreAssistantItem>[];
         // Walk backwards from the assistant message to collect preceding tool_call/thinking
         for (var j = i - 1; j >= 0; j--) {
@@ -77,8 +77,8 @@ class ChatMessageList extends StatelessWidget {
     }
 
     // Pre-compute timeline steps for each assistant message.
-    // For completed messages: derived from preItems + final text.
-    // For streaming placeholder: scan forward from last user message to build live.
+    // Each conversational turn gets its own node: thinking, tool call,
+    // tool result processing, and final text response.
     final assistantTimelines = <int, List<_TimelineStep>>{};
     for (var i = 0; i < messages.length; i++) {
       if (!messages[i].isAssistant) continue;
@@ -89,12 +89,13 @@ class ChatMessageList extends StatelessWidget {
         // Completed assistant message — derive from claimed preItems
         for (final item in pre) {
           if (item.isThinking) {
-            // Deduplicate consecutive thinking steps
-            if (steps.isEmpty || steps.last.type != _TimelineStepType.thinking) {
-              steps.add(const _TimelineStep(_TimelineStepType.thinking));
-            }
+            steps.add(const _TimelineStep(_TimelineStepType.thinking));
           } else if (item.isToolCall) {
             steps.add(const _TimelineStep(_TimelineStepType.toolCall));
+            // Each tool result is its own node
+            for (final _ in item.toolCallGroup!.results) {
+              steps.add(const _TimelineStep(_TimelineStepType.toolResult));
+            }
           }
         }
       } else {
@@ -103,14 +104,12 @@ class ChatMessageList extends StatelessWidget {
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isUser) break;
           if (messages[j].isThinking) {
-            if (steps.isEmpty || steps.first.type != _TimelineStepType.thinking) {
-              steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
-            }
+            steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
           } else if (messages[j].isToolCall) {
             steps.insert(0, const _TimelineStep(_TimelineStepType.toolCall));
-          } else if (messages[j].isToolResult && claimedResultIndices.contains(j)) {
-            continue; // skip — part of a tool_call group
-          } else if (messages[j].isSystem || messages[j].isToolResult) {
+          } else if (messages[j].isToolResult) {
+            steps.insert(0, const _TimelineStep(_TimelineStepType.toolResult));
+          } else if (messages[j].isSystem) {
             continue;
           } else {
             break;
@@ -146,10 +145,10 @@ class ChatMessageList extends StatelessWidget {
         if (msg.isToolCall && claimedToolCallIndices.contains(index)) {
           return const SizedBox.shrink();
         }
-        // Unclaimed tool_call (no assistant message follows — still in progress)
+        // Unclaimed tool_call (no assistant message follows at all — rare edge case)
         if (msg.isToolCall) {
           final hasAssistantAfter = messages.skip(index + 1).any(
-            (m) => m.isAssistant && m.content.isNotEmpty,
+            (m) => m.isAssistant,
           );
           return _ToolCallBubble(
             message: msg,
@@ -168,6 +167,7 @@ class ChatMessageList extends StatelessWidget {
           message: msg,
           preItems: assistantPreItems[index] ?? [],
           timelineSteps: assistantTimelines[index] ?? [],
+          isLoading: isSending && msg.content.isEmpty,
         );
       },
     );
@@ -851,7 +851,7 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
 
 // ── Timeline Step Types ──────────────────────────────────────────────────────
 
-enum _TimelineStepType { thinking, toolCall, text, textActive }
+enum _TimelineStepType { thinking, toolCall, toolResult, text, textActive }
 
 class _TimelineStep {
   final _TimelineStepType type;
@@ -927,6 +927,11 @@ class _ResponseTimeline extends StatelessWidget {
         color: const Color(0xFF3B82F6),
         label: 'Tool call',
       ),
+      _TimelineStepType.toolResult => (
+        icon: Icons.inventory_2_rounded,
+        color: const Color(0xFF10B981),
+        label: 'Tool result',
+      ),
       _TimelineStepType.text || _TimelineStepType.textActive => (
         icon: Icons.edit_note_rounded,
         color: const Color(0xFF8B5CF6),
@@ -980,11 +985,13 @@ class _ChatBubble extends StatelessWidget {
   final Message message;
   final List<_PreAssistantItem> preItems;
   final List<_TimelineStep> timelineSteps;
+  final bool isLoading;
 
   const _ChatBubble({
     required this.message,
     this.preItems = const [],
     this.timelineSteps = const [],
+    this.isLoading = false,
   });
 
   @override
@@ -1076,7 +1083,10 @@ class _ChatBubble extends StatelessWidget {
             if (item.isThinking) {
               return _InlineThinkingBlock(message: item.thinking!);
             } else {
-              return _InlineToolCallGroup(group: item.toolCallGroup!);
+              return _InlineToolCallGroup(
+                group: item.toolCallGroup!,
+                isLoading: isLoading,
+              );
             }
           }),
         ],
@@ -1148,7 +1158,8 @@ class _ChatBubble extends StatelessWidget {
 /// Renders a tool_call group inline within an assistant bubble.
 class _InlineToolCallGroup extends StatelessWidget {
   final _ToolCallGroup group;
-  const _InlineToolCallGroup({required this.group});
+  final bool isLoading;
+  const _InlineToolCallGroup({required this.group, this.isLoading = false});
 
   static List<String> _parseToolCalls(String content) {
     var body = content;
@@ -1184,6 +1195,7 @@ class _InlineToolCallGroup extends StatelessWidget {
           final result = i < group.results.length ? group.results[i] : null;
           final succeeded = result != null && !_isError(result.content);
           final failed = result != null && _isError(result.content);
+          final chipLoading = isLoading && result == null;
 
           String? toolInput;
           if (toolCalls != null && i < toolCalls.length) {
@@ -1194,6 +1206,7 @@ class _InlineToolCallGroup extends StatelessWidget {
 
           return _ToolCallChip(
             tool: tools[i],
+            isLoading: chipLoading,
             succeeded: succeeded,
             failed: failed,
             result: result,
