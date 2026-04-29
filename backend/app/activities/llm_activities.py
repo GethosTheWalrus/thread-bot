@@ -94,6 +94,21 @@ async def call_llm(args: dict) -> dict:
                     await session.initialize()
                     tools_result = await session.list_tools()
                     print(f"Found {len(tools_result.tools)} tools on server {server.name}", flush=True)
+
+                    # Cache discovered tools for the tool-overrides UI
+                    cached = [
+                        {"name": t.name, "description": t.description or ""}
+                        for t in tools_result.tools
+                    ]
+                    async with AsyncSessionLocal() as cache_db:
+                        from sqlalchemy import update
+                        await cache_db.execute(
+                            update(MCPServer)
+                            .where(MCPServer.id == server.id)
+                            .values(cached_tools=cached)
+                        )
+                        await cache_db.commit()
+
                     for tool in tools_result.tools:
                         full_name = f"{server.name}_{tool.name}"
                         mcp_tools_map[full_name] = {

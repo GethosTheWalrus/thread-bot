@@ -541,6 +541,12 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools_result = await session.list_tools()
+                # Cache discovered tools for instant retrieval
+                server.cached_tools = [
+                    {"name": t.name, "description": t.description or ""}
+                    for t in tools_result.tools
+                ]
+                await db.flush()
                 return MCPTestResponse(
                     success=True, tools=[t.name for t in tools_result.tools]
                 )
@@ -553,11 +559,11 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
 
 @router.get("/threads/{thread_id}/tool-overrides")
 async def get_tool_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)):
-    """Get available MCP servers/tools and per-thread overrides."""
-    from app.encryption import decrypt_dict
-    from app.mcp_helper import get_mcp_server_params
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
+    """Get available MCP servers and per-thread overrides.
+
+    Returns servers with cached tool lists (populated by test or first chat).
+    Does NOT spin up MCP containers.
+    """
     from app.models.models import MCPServer as MCPServerModel
 
     # Get all globally active servers
@@ -566,25 +572,14 @@ async def get_tool_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)
     )
     active_servers = list(result.scalars().all())
 
-    # Discover tools from each server
     servers = []
     for server in active_servers:
         tools = []
-        try:
-            decrypted_env = await decrypt_dict(server.env_vars) or {}
-            decrypted_args = await decrypt_dict(server.args) or {}
-            params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    tools = [
-                        AvailableTool(name=t.name, description=t.description or "")
-                        for t in tools_result.tools
-                    ]
-        except Exception as e:
-            print(f"ERROR: Failed to list tools for {server.name}: {e}", flush=True)
-
+        if server.cached_tools and isinstance(server.cached_tools, list):
+            tools = [
+                AvailableTool(name=t["name"], description=t.get("description", ""))
+                for t in server.cached_tools
+            ]
         servers.append(AvailableServer(
             id=str(server.id),
             name=server.name,

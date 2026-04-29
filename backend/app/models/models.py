@@ -50,6 +50,7 @@ class MCPServer(Base):
     env_vars = Column(JSONB, nullable=True, default={})
     args = Column(JSONB, nullable=True, default={})
     is_active = Column(Boolean, default=True)
+    cached_tools = Column(JSONB, nullable=True, default=None)  # [{name, description}] from last test
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
