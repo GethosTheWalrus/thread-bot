@@ -19,6 +19,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final ApiService _api = ApiService();
   final ScrollController _scrollController = ScrollController();
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   // State
   List<ThreadListItem> _threads = [];
@@ -543,6 +544,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final isWide = MediaQuery.of(context).size.width > 768;
 
     return Scaffold(
+      key: _scaffoldKey,
       body: Row(
         children: [
           // Sidebar
@@ -629,7 +631,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           if (!isWide)
             IconButton(
               icon: const Icon(Icons.menu_rounded, color: Color(0xFFA1A1AA)),
-              onPressed: () => Scaffold.of(context).openDrawer(),
+              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
             ),
           if (isWide)
             IconButton(
@@ -731,62 +733,67 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   Widget _buildWelcomeScreen() {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Glowing logo
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
-                  blurRadius: 32,
-                  spreadRadius: 4,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Glowing logo
+            Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
+                    blurRadius: 32,
+                    spreadRadius: 4,
+                  ),
+                ],
+              ),
+              child: const Icon(Icons.auto_awesome, size: 36, color: Colors.white),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'What can I help you with?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFE4E4E7),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Start a conversation or select a thread from the sidebar',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+            const SizedBox(height: 40),
+
+            // Quick prompt suggestions
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              alignment: WrapAlignment.center,
+              children: [
+                _buildSuggestionChip('Explain quantum computing', Icons.science_outlined),
+                _buildSuggestionChip('Write a Python script', Icons.code_outlined),
+                _buildSuggestionChip('Plan a trip to Japan', Icons.flight_takeoff_outlined),
+                _buildSuggestionChip('Debug my code', Icons.bug_report_outlined),
               ],
             ),
-            child: const Icon(Icons.auto_awesome, size: 36, color: Colors.white),
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'What can I help you with?',
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFFE4E4E7),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Start a conversation or select a thread from the sidebar',
-            style: TextStyle(
-              fontSize: 15,
-              color: Colors.white.withValues(alpha: 0.4),
-            ),
-          ),
-          const SizedBox(height: 40),
-
-          // Quick prompt suggestions
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            alignment: WrapAlignment.center,
-            children: [
-              _buildSuggestionChip('Explain quantum computing', Icons.science_outlined),
-              _buildSuggestionChip('Write a Python script', Icons.code_outlined),
-              _buildSuggestionChip('Plan a trip to Japan', Icons.flight_takeoff_outlined),
-              _buildSuggestionChip('Debug my code', Icons.bug_report_outlined),
-            ],
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
