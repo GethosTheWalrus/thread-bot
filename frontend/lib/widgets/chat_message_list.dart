@@ -859,7 +859,7 @@ class _TimelineStep {
 }
 
 /// Compact horizontal timeline showing the bot's progression through a response.
-/// Each step is a small icon connected by thin lines.
+/// Renders as: (start) ── step ── step ── ... ── (end)
 class _ResponseTimeline extends StatelessWidget {
   final List<_TimelineStep> steps;
   const _ResponseTimeline({required this.steps});
@@ -868,57 +868,75 @@ class _ResponseTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     if (steps.length <= 1) return const SizedBox.shrink();
 
-    final row = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < steps.length; i++) ...[
-          if (i > 0) _buildConnector(i),
-          _buildStepIcon(steps[i], i == steps.length - 1),
-        ],
-      ],
-    );
-
-    // On narrow screens the timeline may overflow — allow horizontal scroll
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: row,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Start node
+          _buildTerminalNode(),
+          _buildConnector(),
+          for (var i = 0; i < steps.length; i++) ...[
+            _buildStepNode(steps[i], i == steps.length - 1),
+            if (i < steps.length - 1) _buildConnector(),
+          ],
+          _buildConnector(),
+          // End arrow — indicates reading direction
+          Icon(
+            Icons.arrow_right_rounded,
+            size: 14,
+            color: Colors.white.withValues(alpha: 0.25),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildConnector(int index) {
+  Widget _buildTerminalNode() {
     return Container(
-      width: 12,
-      height: 1,
-      color: Colors.white.withValues(alpha: 0.15),
+      width: 6,
+      height: 6,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white.withValues(alpha: 0.25),
+      ),
     );
   }
 
-  Widget _buildStepIcon(_TimelineStep step, bool isLast) {
+  Widget _buildConnector() {
+    return Container(
+      width: 10,
+      height: 1.5,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(1),
+        color: Colors.white.withValues(alpha: 0.12),
+      ),
+    );
+  }
+
+  Widget _buildStepNode(_TimelineStep step, bool isLast) {
     final config = _stepConfig(step);
     final isActive = step.type == _TimelineStepType.textActive;
 
-    Widget icon = Container(
-      width: 20,
-      height: 20,
+    Widget node = Container(
+      width: 14,
+      height: 14,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: config.color.withValues(alpha: isActive ? 0.2 : 0.12),
+        color: config.color.withValues(alpha: isActive ? 0.25 : 0.15),
         border: Border.all(
-          color: config.color.withValues(alpha: isActive ? 0.6 : 0.3),
+          color: config.color.withValues(alpha: isActive ? 0.7 : 0.4),
           width: 1,
         ),
       ),
-      child: Icon(config.icon, size: 10, color: config.color),
+      child: Icon(config.icon, size: 7, color: config.color),
     );
 
     if (isActive) {
-      icon = _PulsingWidget(child: icon);
+      node = _PulsingWidget(child: node);
     }
 
-    return Tooltip(
-      message: config.label,
-      child: icon,
-    );
+    return node;
   }
 
   static ({IconData icon, Color color, String label}) _stepConfig(_TimelineStep step) {
@@ -1073,7 +1091,7 @@ class _ChatBubble extends StatelessWidget {
             children: [
               headerLabel,
               const SizedBox(width: 12),
-              _ResponseTimeline(steps: timelineSteps),
+              Flexible(child: _ResponseTimeline(steps: timelineSteps)),
             ],
           )
         else if (showTimeline) ...[
