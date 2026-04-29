@@ -48,5 +48,6 @@ class MCPServer(Base):
     name = Column(String(255), nullable=False)
     image = Column(String(255), nullable=False)
     env_vars = Column(JSONB, nullable=True, default={})
+    args = Column(JSONB, nullable=True, default={})
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

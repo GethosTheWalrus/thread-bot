@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     name VARCHAR(255) NOT NULL,
     image VARCHAR(255) NOT NULL,
     env_vars JSONB DEFAULT '{}'::jsonb,
+    args JSONB DEFAULT '{}'::jsonb,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

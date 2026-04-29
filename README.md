@@ -70,7 +70,7 @@ graph TD
 | **Backend** (FastAPI) | Gateway between frontend and Temporal. Subscribes to Redis and relays streaming events to the frontend via `StreamingResponse` |
 | **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with tool execution, token streaming, auto-title generation |
 | **Redis** | Pub/sub broker bridging worker -> backend for real-time streaming. Also buffers events in Redis lists for stream reconnect after page refresh |
-| **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), and MCP server configs |
+| **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), MCP server configs, and persistent settings |
 | **Temporal** | Orchestrates workflows with retry policies and fault tolerance |
 | **MCP Sidecars** | Ephemeral containers providing tools (filesystem, APIs, databases) to the LLM. Uses Docker locally and `kubectl run` pods in Kubernetes |
 
@@ -95,11 +95,13 @@ If the user refreshes the page mid-response, the frontend detects the thread is 
 
 ## Configuration
 
-ThreadBot can be configured via the Settings screen in the UI:
+Settings are persisted in the PostgreSQL database and survive pod/container restarts. Configure via the Settings screen in the UI:
 
 1. **LLM Config**: API URL, model name, API key, temperature, max tokens (supports Ollama by default)
 2. **Context Management**: Context window size, compaction threshold, number of recent messages to preserve
 3. **MCP Servers**: Add and manage tool servers by specifying their Docker image and environment variables
+
+Environment variables (via configmap or `.env`) serve as defaults. Once settings are saved through the UI, DB values take precedence and persist across restarts.
 
 ## Development
 
