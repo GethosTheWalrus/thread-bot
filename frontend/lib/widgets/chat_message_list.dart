@@ -881,8 +881,12 @@ class _ResponseTimeline extends StatelessWidget {
             if (i < steps.length - 1) _buildConnector(),
           ],
           _buildConnector(),
-          // End node
-          _buildTerminalNode(),
+          // End arrow — indicates reading direction
+          Icon(
+            Icons.arrow_right_rounded,
+            size: 14,
+            color: Colors.white.withValues(alpha: 0.25),
+          ),
         ],
       ),
     );
