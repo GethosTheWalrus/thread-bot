@@ -880,12 +880,14 @@ class _ResponseTimeline extends StatelessWidget {
             _buildStepNode(steps[i], i == steps.length - 1),
             if (i < steps.length - 1) _buildConnector(),
           ],
-          _buildConnector(),
-          // End arrow — indicates reading direction
-          Icon(
-            Icons.arrow_right_rounded,
-            size: 20,
-            color: Colors.white.withValues(alpha: 0.25),
+          // End arrow — indicates reading direction (negative offset to close gap from icon padding)
+          Transform.translate(
+            offset: const Offset(-6, 0),
+            child: Icon(
+              Icons.chevron_right_rounded,
+              size: 18,
+              color: Colors.white.withValues(alpha: 0.35),
+            ),
           ),
         ],
       ),
