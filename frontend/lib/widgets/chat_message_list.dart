@@ -880,9 +880,10 @@ class _ResponseTimeline extends StatelessWidget {
             _buildStepNode(steps[i], i == steps.length - 1),
             if (i < steps.length - 1) _buildConnector(),
           ],
-          // End arrow — indicates reading direction (negative offset to close gap from icon padding)
+          _buildConnector(),
+          // End chevron — indicates reading direction (offset to align connector with chevron point)
           Transform.translate(
-            offset: const Offset(-6, 0),
+            offset: const Offset(-3, 0),
             child: Icon(
               Icons.chevron_right_rounded,
               size: 18,
