@@ -19,7 +19,7 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   final ApiService _api = ApiService();
   final ScrollController _scrollController = ScrollController();
-  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  // No GlobalKey needed — use Builder + Scaffold.of() for drawer access
 
   // State
   List<ThreadListItem> _threads = [];
@@ -544,7 +544,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final isWide = MediaQuery.of(context).size.width > 768;
 
     return Scaffold(
-      key: _scaffoldKey,
+      // key not needed — Builder provides scaffold context for drawer
       body: Row(
         children: [
           // Sidebar
@@ -629,9 +629,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       child: Row(
         children: [
           if (!isWide)
-            IconButton(
-              icon: const Icon(Icons.menu_rounded, color: Color(0xFFA1A1AA)),
-              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+            Builder(
+              builder: (scaffoldContext) => IconButton(
+                icon: const Icon(Icons.menu_rounded, color: Color(0xFFA1A1AA)),
+                onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
+              ),
             ),
           if (isWide)
             IconButton(
