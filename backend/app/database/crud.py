@@ -97,32 +97,15 @@ async def get_message_count(db: AsyncSession, thread_id: UUID) -> int:
     return result.scalar_one()
 
 
-async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None) -> MCPServer:
-    server = MCPServer(name=name, image=image, env_vars=env_vars or {})
+async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None, args: dict | None = None) -> MCPServer:
+    from app.encryption import encrypt_dict
+    encrypted_env = await encrypt_dict(env_vars or {})
+    encrypted_args = await encrypt_dict(args or {})
+    server = MCPServer(name=name, image=image, env_vars=encrypted_env, args=encrypted_args)
     db.add(server)
     await db.flush()
     await db.refresh(server)
     return server
-
-
-# ── Settings ────────────────────────────────────────────────────────
-
-
-async def get_all_settings(db: AsyncSession) -> dict[str, str]:
-    result = await db.execute(select(Setting))
-    rows = result.scalars().all()
-    return {row.key: row.value for row in rows}
-
-
-async def upsert_settings(db: AsyncSession, settings: dict[str, str]) -> None:
-    for key, value in settings.items():
-        result = await db.execute(select(Setting).where(Setting.key == key))
-        existing = result.scalar_one_or_none()
-        if existing:
-            existing.value = str(value)
-        else:
-            db.add(Setting(key=key, value=str(value)))
-    await db.flush()
 
 
 async def get_mcp_servers(db: AsyncSession) -> list[MCPServer]:
@@ -162,7 +145,9 @@ async def update_mcp_server(
     name: str | None = None,
     image: str | None = None,
     env_vars: dict | None = None,
+    args: dict | None = None,
 ) -> MCPServer | None:
+    from app.encryption import encrypt_dict
     result = await db.execute(
         select(MCPServer).where(MCPServer.id == server_id)
     )
@@ -173,7 +158,28 @@ async def update_mcp_server(
         if image is not None:
             server.image = image
         if env_vars is not None:
-            server.env_vars = env_vars
+            server.env_vars = await encrypt_dict(env_vars)
+        if args is not None:
+            server.args = await encrypt_dict(args)
         await db.flush()
         await db.refresh(server)
     return server
+
+
+async def get_all_settings(db: AsyncSession) -> dict[str, str]:
+    """Get all settings as a key-value dict."""
+    result = await db.execute(select(Setting))
+    rows = result.scalars().all()
+    return {r.key: r.value for r in rows}
+
+
+async def upsert_settings(db: AsyncSession, settings: dict[str, str]) -> None:
+    """Insert or update multiple settings."""
+    for key, value in settings.items():
+        result = await db.execute(select(Setting).where(Setting.key == key))
+        existing = result.scalar_one_or_none()
+        if existing:
+            existing.value = value
+        else:
+            db.add(Setting(key=key, value=value))
+    await db.flush()

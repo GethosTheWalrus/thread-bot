@@ -49,7 +49,7 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 - **Models**:
     - `Thread`: Represents a conversation. Has a `parent_id` for branching (though the current UI focuses on linear threads).
     - `Message`: Belongs to a Thread. Contains `role` (user/assistant/thinking/tool_call/tool_result/system), `content`, and `metadata_` (JSONB).
-    - `MCPServer`: Stores MCP server configurations (image, env vars, active status).
+    - `MCPServer`: Stores MCP server configurations (image, env vars, container args, active status). Environment variables and container arguments are encrypted at rest using Fernet symmetric encryption.
     - `Setting`: Simple key-value table for persisting runtime settings (LLM URL, model, API key, context params, etc.).
 - **CRUD**: Located in `app/database/crud.py`. All functions are asynchronous and expect an `AsyncSession`. Note that the `Message` model's metadata column is named `metadata_` to avoid conflicts with SQLAlchemy's internal `metadata` attribute. Settings CRUD includes `get_all_settings` and `upsert_settings` for bulk read/write of key-value pairs.
 
@@ -89,9 +89,11 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 
 ### MCP & Tool Orchestration
 ThreadBot supports extending the LLM with custom tools via the Model Context Protocol (MCP).
-- **Discovery**: The `call_llm` activity queries all active `MCPServer` entries in the database. For each server, it uses a temporary `stdio_client` connection to discover tool definitions. The connection method is auto-detected by `mcp_helper.py`: Docker locally (`docker run -i`), or `kubectl run` pods in Kubernetes.
+- **Discovery**: The `call_llm` activity queries all active `MCPServer` entries in the database. For each server, it decrypts env_vars and args, then uses a temporary `stdio_client` connection to discover tool definitions. The connection method is auto-detected by `mcp_helper.py`: Docker locally (`docker run -i`), or `kubectl run` pods in Kubernetes.
 - **Networking**: In Docker, tool containers are launched with `--add-host=host.docker.internal:host-gateway` to allow them to reach services on the host machine. In Kubernetes, MCP pods run in the same namespace with RBAC permissions via the `threadbot-sa` ServiceAccount.
+- **Container Arguments**: MCP servers can have additional CLI arguments (stored as key-value pairs, converted to `--key=value` flags). These are appended after the image name in docker/kubectl commands. In K8s, a `--` separator is added before the arguments.
 - **Execution**: If the LLM requests a tool call, the worker launches the corresponding container/pod, executes the tool, and feeds the result back into the LLM context. Fresh `StdioServerParameters` are generated per execution to avoid pod name collisions.
+- **Encryption**: MCP server secrets (`env_vars` and `args`) are encrypted at rest in PostgreSQL using Fernet (AES-128-CBC + HMAC-SHA256). The encryption key is resolved from the `MCP_ENCRYPTION_KEY` environment variable, or auto-generated and stored in the `settings` table. Values are encrypted per-field (keys remain in plaintext). Decryption handles legacy unencrypted data gracefully by passing through values that fail decryption.
 - **Persistence**: Unlike standard tool loops, ThreadBot persists every `tool_call` and `tool_result` to the database as unique message roles. This ensures the LLM retains "tool memory" across turns and allows for visual reconstruction in the UI.
 - **Agent Loop**: Capped at `max_iterations` (default 25). A system prompt is injected when tools are available to encourage multi-step tool use.
 - **Infrastructure Requirements**: The `backend` and `worker` containers must have the `docker` CLI installed (Docker Compose) or `kubectl` (Kubernetes). In K8s, the `threadbot-sa` ServiceAccount needs RBAC permissions for pods, pods/attach, and pods/log.

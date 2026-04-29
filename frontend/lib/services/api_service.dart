@@ -183,6 +183,7 @@ class ApiService {
     required String name,
     required String image,
     Map<String, dynamic>? envVars,
+    Map<String, dynamic>? args,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/mcp'),
@@ -191,6 +192,7 @@ class ApiService {
         'name': name,
         'image': image,
         'env_vars': envVars ?? {},
+        'args': args ?? {},
       }),
     );
 
@@ -232,7 +234,7 @@ class ApiService {
     throw Exception('Failed to test MCP server: ${response.statusCode}');
   }
 
-  Future<MCPServer> updateMCPServer(String serverId, String name, String image, Map<String, String> envVars) async {
+  Future<MCPServer> updateMCPServer(String serverId, String name, String image, Map<String, String> envVars, {Map<String, String>? args}) async {
     final response = await http.patch(
       Uri.parse('$baseUrl/api/mcp/$serverId'),
       headers: {'Content-Type': 'application/json'},
@@ -240,6 +242,7 @@ class ApiService {
         'name': name,
         'image': image,
         'env_vars': envVars,
+        'args': args ?? {},
       }),
     );
 
