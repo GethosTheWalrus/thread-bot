@@ -77,8 +77,8 @@ class ChatMessageList extends StatelessWidget {
     }
 
     // Pre-compute timeline steps for each assistant message.
-    // For completed messages: derived from preItems + final text.
-    // For streaming placeholder: scan forward from last user message to build live.
+    // Each conversational turn gets its own node: thinking, tool call,
+    // tool result processing, and final text response.
     final assistantTimelines = <int, List<_TimelineStep>>{};
     for (var i = 0; i < messages.length; i++) {
       if (!messages[i].isAssistant) continue;
@@ -89,12 +89,13 @@ class ChatMessageList extends StatelessWidget {
         // Completed assistant message — derive from claimed preItems
         for (final item in pre) {
           if (item.isThinking) {
-            // Deduplicate consecutive thinking steps
-            if (steps.isEmpty || steps.last.type != _TimelineStepType.thinking) {
-              steps.add(const _TimelineStep(_TimelineStepType.thinking));
-            }
+            steps.add(const _TimelineStep(_TimelineStepType.thinking));
           } else if (item.isToolCall) {
             steps.add(const _TimelineStep(_TimelineStepType.toolCall));
+            // Each tool result is its own node
+            for (final _ in item.toolCallGroup!.results) {
+              steps.add(const _TimelineStep(_TimelineStepType.toolResult));
+            }
           }
         }
       } else {
@@ -103,14 +104,12 @@ class ChatMessageList extends StatelessWidget {
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isUser) break;
           if (messages[j].isThinking) {
-            if (steps.isEmpty || steps.first.type != _TimelineStepType.thinking) {
-              steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
-            }
+            steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
           } else if (messages[j].isToolCall) {
             steps.insert(0, const _TimelineStep(_TimelineStepType.toolCall));
-          } else if (messages[j].isToolResult && claimedResultIndices.contains(j)) {
-            continue; // skip — part of a tool_call group
-          } else if (messages[j].isSystem || messages[j].isToolResult) {
+          } else if (messages[j].isToolResult) {
+            steps.insert(0, const _TimelineStep(_TimelineStepType.toolResult));
+          } else if (messages[j].isSystem) {
             continue;
           } else {
             break;
@@ -852,7 +851,7 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
 
 // ── Timeline Step Types ──────────────────────────────────────────────────────
 
-enum _TimelineStepType { thinking, toolCall, text, textActive }
+enum _TimelineStepType { thinking, toolCall, toolResult, text, textActive }
 
 class _TimelineStep {
   final _TimelineStepType type;
@@ -927,6 +926,11 @@ class _ResponseTimeline extends StatelessWidget {
         icon: Icons.build_rounded,
         color: const Color(0xFF3B82F6),
         label: 'Tool call',
+      ),
+      _TimelineStepType.toolResult => (
+        icon: Icons.inventory_2_rounded,
+        color: const Color(0xFF10B981),
+        label: 'Tool result',
       ),
       _TimelineStepType.text || _TimelineStepType.textActive => (
         icon: Icons.edit_note_rounded,
