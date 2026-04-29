@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mcp-pod-cleanup
+  namespace: threadbot
+spec:
+  schedule: "*/15 * * * *"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          serviceAccountName: threadbot-sa
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Cleaning up completed/failed MCP pods..."
+                  PODS=$(kubectl get pods -n threadbot --field-selector=status.phase!=Running,status.phase!=Pending -l run -o name 2>/dev/null)
+                  if [ -z "$PODS" ]; then
+                    echo "No finished MCP pods found"
+                    exit 0
+                  fi
+                  COUNT=$(echo "$PODS" | wc -l)
+                  echo "Found $COUNT pods to clean up"
+                  echo "$PODS" | xargs kubectl delete -n threadbot --wait=false
+                  echo "Cleanup complete"
