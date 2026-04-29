@@ -15,6 +15,7 @@ class _MCPScreenState extends State<MCPScreen> {
   List<MCPServer> _servers = [];
   bool _isLoading = true;
   String? _error;
+  final Set<String> _revealedServers = {};
 
   @override
   void initState() {
@@ -384,16 +385,44 @@ class _MCPScreenState extends State<MCPScreen> {
                 ),
               ],
             ),
-            if (server.envVars.isNotEmpty) ...[
+            if (server.envVars.isNotEmpty || server.args.isNotEmpty) ...[
               const SizedBox(height: 12),
               const Divider(color: Colors.white10),
               const SizedBox(height: 8),
-              Text(
-                'Environment Variables:',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white.withOpacity(0.3)),
+            ],
+            if (server.envVars.isNotEmpty) ...[
+              Row(
+                children: [
+                  Text(
+                    'Environment Variables:',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white.withOpacity(0.3)),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    onTap: () {
+                      setState(() {
+                        if (_revealedServers.contains(server.id)) {
+                          _revealedServers.remove(server.id);
+                        } else {
+                          _revealedServers.add(server.id);
+                        }
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        _revealedServers.contains(server.id)
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        size: 16,
+                        color: Colors.white.withOpacity(0.3),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Wrap(
@@ -408,7 +437,9 @@ class _MCPScreenState extends State<MCPScreen> {
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
-                            '${e.key}=${_maskValue(e.value.toString())}',
+                            _revealedServers.contains(server.id)
+                                ? '${e.key}=${e.value}'
+                                : '${e.key}=${_maskValue(e.value.toString())}',
                             style: const TextStyle(
                                 fontSize: 10,
                                 fontFamily: 'monospace',
@@ -440,7 +471,9 @@ class _MCPScreenState extends State<MCPScreen> {
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
-                            '--${e.key}=${e.value}',
+                            _revealedServers.contains(server.id)
+                                ? '--${e.key}=${e.value}'
+                                : '--${e.key}=${_maskValue(e.value.toString())}',
                             style: const TextStyle(
                                 fontSize: 10,
                                 fontFamily: 'monospace',
