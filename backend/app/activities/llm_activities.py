@@ -216,16 +216,29 @@ async def call_llm(args: dict) -> dict:
                                         result = await mcp_session.call_tool(info["original_name"], tool_args)
                                         result_text = "\n".join([c.text for c in result.content if hasattr(c, 'text')])
 
+                                        # Truncate for LLM context if configured (0 = no limit)
+                                        max_chars = config.get("tool_result_max_chars", 0)
+                                        if max_chars and len(result_text) > max_chars:
+                                            llm_result_text = (
+                                                result_text[:max_chars]
+                                                + f"\n\n[TRUNCATED — result was {len(result_text):,} chars, "
+                                                f"showing first {max_chars:,}. "
+                                                "Consider using more specific parameters to narrow results.]"
+                                            )
+                                        else:
+                                            llm_result_text = result_text
+
                                         current_messages.append({
                                             "role": "tool",
                                             "tool_call_id": tool_call["id"],
                                             "name": tool_name,
-                                            "content": result_text
+                                            "content": llm_result_text
                                         })
                                         result_meta = {
                                             "tool_call_id": tool_call["id"],
                                             "tool_name": tool_name,
                                         }
+                                        # Save full (untruncated) result to DB and stream
                                         await save_inline("tool_result", result_text, metadata=result_meta)
                                         await publish({
                                             "type": "tool_result",
