@@ -51,3 +51,16 @@ class MCPServer(Base):
     args = Column(JSONB, nullable=True, default={})
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ThreadToolOverride(Base):
+    __tablename__ = "thread_tool_overrides"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
+    server_id = Column(UUID(as_uuid=True), ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False)
+    tool_name = Column(String(255), nullable=True)  # null = server-level override
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    thread = relationship("Thread", foreign_keys=[thread_id])
+    server = relationship("MCPServer", foreign_keys=[server_id])

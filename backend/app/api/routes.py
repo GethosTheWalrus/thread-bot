@@ -14,6 +14,8 @@ from app.database.crud import (
     toggle_mcp_server,
     update_mcp_server,
     upsert_settings,
+    get_thread_tool_overrides,
+    set_thread_tool_overrides,
 )
 from app.models.models import Thread, Message
 from app.models.schemas import (
@@ -27,6 +29,11 @@ from app.models.schemas import (
     MCPServerCreate,
     MCPServerResponse,
     MCPTestResponse,
+    ToolOverrideRequest,
+    ToolOverridesResponse,
+    ToolOverrideItem,
+    AvailableServer,
+    AvailableTool,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy import select, func
@@ -116,6 +123,19 @@ async def chat_endpoint(
             thread_id = thread.id
 
         await add_message(setup_db, thread_id, "user", request.content)
+
+        # Load per-thread tool overrides (if any)
+        thread_overrides = await get_thread_tool_overrides(setup_db, thread_id)
+        if thread_overrides:
+            llm_config["tool_overrides"] = [
+                {
+                    "server_id": str(o.server_id),
+                    "tool_name": o.tool_name,
+                    "enabled": o.enabled,
+                }
+                for o in thread_overrides
+            ]
+
         await setup_db.commit()
 
     import asyncio
@@ -526,3 +546,79 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
                 )
     except Exception as e:
         return MCPTestResponse(success=False, tools=[], error=str(e))
+
+
+# ── Thread Tool Overrides ─────────────────────────────────────────────
+
+
+@router.get("/threads/{thread_id}/tool-overrides")
+async def get_tool_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get available MCP servers/tools and per-thread overrides."""
+    from app.encryption import decrypt_dict
+    from app.mcp_helper import get_mcp_server_params
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    # Get all globally active servers
+    result = await db.execute(
+        select(MCPServer).where(MCPServer.is_active == True)
+    )
+    active_servers = list(result.scalars().all())
+
+    # Discover tools from each server
+    servers = []
+    for server in active_servers:
+        tools = []
+        try:
+            decrypted_env = await decrypt_dict(server.env_vars) or {}
+            decrypted_args = await decrypt_dict(server.args) or {}
+            params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools_result = await session.list_tools()
+                    tools = [
+                        AvailableTool(name=t.name, description=t.description or "")
+                        for t in tools_result.tools
+                    ]
+        except Exception as e:
+            print(f"ERROR: Failed to list tools for {server.name}: {e}", flush=True)
+
+        servers.append(AvailableServer(
+            id=str(server.id),
+            name=server.name,
+            tools=tools,
+        ))
+
+    # Get existing overrides for this thread
+    overrides = await get_thread_tool_overrides(db, thread_id)
+    override_items = [
+        ToolOverrideItem(
+            server_id=str(o.server_id),
+            tool_name=o.tool_name,
+            enabled=o.enabled,
+        )
+        for o in overrides
+    ]
+
+    return ToolOverridesResponse(servers=servers, overrides=override_items)
+
+
+@router.put("/threads/{thread_id}/tool-overrides")
+async def put_tool_overrides(
+    thread_id: UUID,
+    request: ToolOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Set per-thread tool overrides (replaces all existing overrides)."""
+    overrides = [
+        {
+            "server_id": UUID(o.server_id),
+            "tool_name": o.tool_name,
+            "enabled": o.enabled,
+        }
+        for o in request.overrides
+    ]
+    await set_thread_tool_overrides(db, thread_id, overrides)
+    await db.commit()
+    return {"detail": "Overrides saved"}
