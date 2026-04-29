@@ -382,6 +382,9 @@ async def delete_all_threads_endpoint(
 
 @router.get("/settings")
 async def get_settings_endpoint():
+    # Reload overrides from DB to ensure consistency across multiple backend pods
+    from app.config import load_settings_from_db
+    await load_settings_from_db()
     config = get_llm_config()
     return {
         "llm_model": config["model"],
