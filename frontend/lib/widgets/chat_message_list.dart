@@ -859,7 +859,7 @@ class _TimelineStep {
 }
 
 /// Compact horizontal timeline showing the bot's progression through a response.
-/// Renders as: (start) ── step ── step ── ... ── (end)
+/// Renders as: (start) ── step ── step ── ... ── (end) ►
 class _ResponseTimeline extends StatelessWidget {
   final List<_TimelineStep> steps;
   const _ResponseTimeline({required this.steps});
@@ -884,7 +884,7 @@ class _ResponseTimeline extends StatelessWidget {
           // End arrow — indicates reading direction
           Icon(
             Icons.arrow_right_rounded,
-            size: 14,
+            size: 20,
             color: Colors.white.withValues(alpha: 0.25),
           ),
         ],
@@ -894,8 +894,8 @@ class _ResponseTimeline extends StatelessWidget {
 
   Widget _buildTerminalNode() {
     return Container(
-      width: 6,
-      height: 6,
+      width: 8,
+      height: 8,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: Colors.white.withValues(alpha: 0.25),
@@ -905,12 +905,9 @@ class _ResponseTimeline extends StatelessWidget {
 
   Widget _buildConnector() {
     return Container(
-      width: 10,
-      height: 1.5,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(1),
-        color: Colors.white.withValues(alpha: 0.12),
-      ),
+      width: 12,
+      height: 1,
+      color: Colors.white.withValues(alpha: 0.15),
     );
   }
 
@@ -919,17 +916,17 @@ class _ResponseTimeline extends StatelessWidget {
     final isActive = step.type == _TimelineStepType.textActive;
 
     Widget node = Container(
-      width: 14,
-      height: 14,
+      width: 20,
+      height: 20,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: config.color.withValues(alpha: isActive ? 0.25 : 0.15),
+        color: config.color.withValues(alpha: isActive ? 0.2 : 0.12),
         border: Border.all(
-          color: config.color.withValues(alpha: isActive ? 0.7 : 0.4),
+          color: config.color.withValues(alpha: isActive ? 0.6 : 0.3),
           width: 1,
         ),
       ),
-      child: Icon(config.icon, size: 7, color: config.color),
+      child: Icon(config.icon, size: 10, color: config.color),
     );
 
     if (isActive) {
