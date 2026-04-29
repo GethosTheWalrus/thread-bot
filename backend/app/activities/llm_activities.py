@@ -281,7 +281,11 @@ async def call_llm(args: dict) -> dict:
                 )
 
                 # Re-issue the same call with stream:true to get token-by-token output
+                # Omit tools — we already know this is the final text response,
+                # and sending 21 tool schemas forces the model to re-process them
+                # for no reason, adding significant latency.
                 stream_payload = dict(payload, stream=True)
+                stream_payload.pop("tools", None)
                 full_response_content = ""
                 async with session.post(api_url, headers=headers, json=stream_payload, timeout=timeout) as stream_resp:
                     if stream_resp.status != 200:
