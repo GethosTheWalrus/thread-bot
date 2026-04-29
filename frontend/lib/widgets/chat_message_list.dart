@@ -76,6 +76,57 @@ class ChatMessageList extends StatelessWidget {
       }
     }
 
+    // Pre-compute timeline steps for each assistant message.
+    // For completed messages: derived from preItems + final text.
+    // For streaming placeholder: scan forward from last user message to build live.
+    final assistantTimelines = <int, List<_TimelineStep>>{};
+    for (var i = 0; i < messages.length; i++) {
+      if (!messages[i].isAssistant) continue;
+      final steps = <_TimelineStep>[];
+      final pre = assistantPreItems[i] ?? [];
+
+      if (pre.isNotEmpty) {
+        // Completed assistant message — derive from claimed preItems
+        for (final item in pre) {
+          if (item.isThinking) {
+            // Deduplicate consecutive thinking steps
+            if (steps.isEmpty || steps.last.type != _TimelineStepType.thinking) {
+              steps.add(const _TimelineStep(_TimelineStepType.thinking));
+            }
+          } else if (item.isToolCall) {
+            steps.add(const _TimelineStep(_TimelineStepType.toolCall));
+          }
+        }
+      } else {
+        // Streaming or no preItems — scan backwards from this assistant to the
+        // previous user message and build timeline from the raw message list.
+        for (var j = i - 1; j >= 0; j--) {
+          if (messages[j].isUser) break;
+          if (messages[j].isThinking) {
+            if (steps.isEmpty || steps.first.type != _TimelineStepType.thinking) {
+              steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
+            }
+          } else if (messages[j].isToolCall) {
+            steps.insert(0, const _TimelineStep(_TimelineStepType.toolCall));
+          } else if (messages[j].isToolResult && claimedResultIndices.contains(j)) {
+            continue; // skip — part of a tool_call group
+          } else if (messages[j].isSystem || messages[j].isToolResult) {
+            continue;
+          } else {
+            break;
+          }
+        }
+      }
+
+      // Final step: text generation (always present for assistant messages)
+      steps.add(_TimelineStep(
+        messages[i].content.isEmpty
+            ? _TimelineStepType.textActive
+            : _TimelineStepType.text,
+      ));
+      assistantTimelines[i] = steps;
+    }
+
     return ListView.builder(
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 24),
@@ -116,6 +167,7 @@ class ChatMessageList extends StatelessWidget {
         return _ChatBubble(
           message: msg,
           preItems: assistantPreItems[index] ?? [],
+          timelineSteps: assistantTimelines[index] ?? [],
         );
       },
     );
@@ -797,15 +849,142 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
   }
 }
 
+// ── Timeline Step Types ──────────────────────────────────────────────────────
+
+enum _TimelineStepType { thinking, toolCall, text, textActive }
+
+class _TimelineStep {
+  final _TimelineStepType type;
+  const _TimelineStep(this.type);
+}
+
+/// Compact horizontal timeline showing the bot's progression through a response.
+/// Each step is a small icon connected by thin lines.
+class _ResponseTimeline extends StatelessWidget {
+  final List<_TimelineStep> steps;
+  const _ResponseTimeline({required this.steps});
+
+  @override
+  Widget build(BuildContext context) {
+    if (steps.length <= 1) return const SizedBox.shrink();
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < steps.length; i++) ...[
+          if (i > 0) _buildConnector(i),
+          _buildStepIcon(steps[i], i == steps.length - 1),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildConnector(int index) {
+    return Container(
+      width: 12,
+      height: 1,
+      color: Colors.white.withValues(alpha: 0.15),
+    );
+  }
+
+  Widget _buildStepIcon(_TimelineStep step, bool isLast) {
+    final config = _stepConfig(step);
+    final isActive = step.type == _TimelineStepType.textActive;
+
+    Widget icon = Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: config.color.withValues(alpha: isActive ? 0.2 : 0.12),
+        border: Border.all(
+          color: config.color.withValues(alpha: isActive ? 0.6 : 0.3),
+          width: 1,
+        ),
+      ),
+      child: Icon(config.icon, size: 10, color: config.color),
+    );
+
+    if (isActive) {
+      icon = _PulsingWidget(child: icon);
+    }
+
+    return Tooltip(
+      message: config.label,
+      child: icon,
+    );
+  }
+
+  static ({IconData icon, Color color, String label}) _stepConfig(_TimelineStep step) {
+    return switch (step.type) {
+      _TimelineStepType.thinking => (
+        icon: Icons.psychology_rounded,
+        color: const Color(0xFFF59E0B),
+        label: 'Thinking',
+      ),
+      _TimelineStepType.toolCall => (
+        icon: Icons.build_rounded,
+        color: const Color(0xFF3B82F6),
+        label: 'Tool call',
+      ),
+      _TimelineStepType.text || _TimelineStepType.textActive => (
+        icon: Icons.edit_note_rounded,
+        color: const Color(0xFF8B5CF6),
+        label: 'Response',
+      ),
+    };
+  }
+}
+
+/// Simple pulsing animation wrapper for active timeline steps.
+class _PulsingWidget extends StatefulWidget {
+  final Widget child;
+  const _PulsingWidget({required this.child});
+
+  @override
+  State<_PulsingWidget> createState() => _PulsingWidgetState();
+}
+
+class _PulsingWidgetState extends State<_PulsingWidget>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _opacity = Tween<double>(begin: 0.5, end: 1.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(opacity: _opacity, child: widget.child);
+  }
+}
+
 // ── Regular Chat Bubble ───────────────────────────────────────────────────────
 
 class _ChatBubble extends StatelessWidget {
   final Message message;
   final List<_PreAssistantItem> preItems;
+  final List<_TimelineStep> timelineSteps;
 
   const _ChatBubble({
     required this.message,
     this.preItems = const [],
+    this.timelineSteps = const [],
   });
 
   @override
@@ -859,19 +1038,37 @@ class _ChatBubble extends StatelessWidget {
   }
 
   Widget _buildContent(BuildContext context, bool isUser) {
+    final isWide = MediaQuery.of(context).size.width > 768;
+    final showTimeline = !isUser && timelineSteps.length > 1;
+    final headerLabel = Text(
+      (isUser ? 'You' : 'ThreadBot').toUpperCase(),
+      style: TextStyle(
+        fontSize: 10,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.5,
+        color: (isUser ? const Color(0xFF3B82F6) : const Color(0xFF8B5CF6))
+            .withValues(alpha: 0.9),
+      ),
+    );
+
     return Column(
       crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
-        Text(
-          (isUser ? 'You' : 'ThreadBot').toUpperCase(),
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 1.5,
-            color: (isUser ? const Color(0xFF3B82F6) : const Color(0xFF8B5CF6))
-                .withValues(alpha: 0.9),
-          ),
-        ),
+        // Header + timeline: inline on wide, stacked on narrow
+        if (showTimeline && isWide)
+          Row(
+            children: [
+              headerLabel,
+              const SizedBox(width: 12),
+              _ResponseTimeline(steps: timelineSteps),
+            ],
+          )
+        else if (showTimeline) ...[
+          headerLabel,
+          const SizedBox(height: 6),
+          _ResponseTimeline(steps: timelineSteps),
+        ] else
+          headerLabel,
         // Render thinking blocks and tool call groups in chronological order
         if (!isUser && preItems.isNotEmpty) ...[
           const SizedBox(height: 8),
