@@ -14,9 +14,9 @@ data:
   # LLM defaults (overridable via Settings UI)
   LLM_API_URL: "http://192.168.69.35:11434/v1"
   LLM_API_KEY: "ollama"
-  LLM_MODEL: "llama3.1"
-  LLM_TEMPERATURE: "0.7"
-  LLM_MAX_TOKENS: "2048"
+  LLM_MODEL: "gemma4:e2b"
+  LLM_TEMPERATURE: "1.0"
+  LLM_MAX_TOKENS: "4096"
   # Server
   HOST: "0.0.0.0"
   PORT: "8000"
