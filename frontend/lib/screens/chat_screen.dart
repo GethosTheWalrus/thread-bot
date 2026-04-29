@@ -105,19 +105,24 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   /// Reconnect to an in-progress generation stream after page refresh.
   ///
-  /// Clears non-user/system messages (they'll be rebuilt from the event buffer),
-  /// adds a placeholder assistant message, and processes the replayed stream.
+  /// Removes only the messages after the last user message (the current
+  /// generation's partial results), adds a placeholder, and replays buffered
+  /// events.  Older conversation history is preserved.
   Future<void> _reconnectToStream(String threadId) async {
     if (_isSending) return;
 
     final tempIds = <String>[];
 
-    // Remove non-user/system messages — the stream will replay tool_call, tool_result,
-    // thinking, and token events from the beginning.
+    // Remove only the *current* generation's non-user/system messages (after
+    // the last user message).  The stream buffer only replays events for the
+    // active generation, so older assistant/tool messages from the DB must be
+    // kept or the conversation history disappears on refresh.
     setState(() {
       _isSending = true;
-      _messages.removeWhere((m) =>
-          m.role != 'user' && m.role != 'system');
+      final lastUserIdx = _messages.lastIndexWhere((m) => m.role == 'user');
+      if (lastUserIdx >= 0 && lastUserIdx < _messages.length - 1) {
+        _messages.removeRange(lastUserIdx + 1, _messages.length);
+      }
     });
 
     // Add a placeholder assistant message for streaming tokens
