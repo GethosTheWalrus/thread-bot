@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,6 +15,7 @@ class _MCPScreenState extends State<MCPScreen> {
   List<MCPServer> _servers = [];
   bool _isLoading = true;
   String? _error;
+  final Set<String> _revealedServers = {};
 
   @override
   void initState() {
@@ -46,159 +46,63 @@ class _MCPScreenState extends State<MCPScreen> {
   Future<void> _showServerDialog({MCPServer? server}) async {
     final nameController = TextEditingController(text: server?.name);
     final imageController = TextEditingController(text: server?.image);
-    final envController = TextEditingController(
-        text: server == null
-            ? '{\n  "TEMPORAL_HOST": "temporal:7233",\n  "TEMPORAL_NAMESPACE": "default"\n}'
-            : const JsonEncoder.withIndent('  ').convert(server.envVars));
+
+    // Build initial key-value lists from existing server data
+    final List<_KVEntry> envEntries = [];
+    final List<_KVEntry> argEntries = [];
+
+    if (server != null) {
+      for (final e in server.envVars.entries) {
+        envEntries.add(_KVEntry(
+          key: TextEditingController(text: e.key),
+          value: TextEditingController(text: e.value.toString()),
+        ));
+      }
+      for (final e in server.args.entries) {
+        argEntries.add(_KVEntry(
+          key: TextEditingController(text: e.key),
+          value: TextEditingController(text: e.value.toString()),
+        ));
+      }
+    }
 
     showGeneralDialog(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Dismiss',
       transitionDuration: const Duration(milliseconds: 300),
-      pageBuilder: (ctx, anim1, anim2) => Center(
-        child: Material(
-          color: Colors.transparent,
-          child: Container(
-            width: 450,
-            padding: const EdgeInsets.all(32),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1C1C26),
-              borderRadius: BorderRadius.circular(28),
-              border: Border.all(color: Colors.white.withOpacity(0.08)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.4),
-                  blurRadius: 40,
-                  spreadRadius: 10,
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF8B5CF6).withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        server == null ? Icons.add_link_rounded : Icons.edit_note_rounded,
-                        color: const Color(0xFF8B5CF6),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Text(
-                      server == null ? 'Connect MCP Server' : 'Edit MCP Server',
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                _buildModernInput(
-                  controller: nameController,
-                  label: 'Server Name',
-                  hint: 'e.g. Temporal Tooling',
-                  icon: Icons.label_outline_rounded,
-                ),
-                const SizedBox(height: 16),
-                _buildModernInput(
-                  controller: imageController,
-                  label: 'Docker Image',
-                  hint: 'e.g. mcp/temporal:latest',
-                  icon: Icons.layers_outlined,
-                ),
-                const SizedBox(height: 16),
-                _buildModernInput(
-                  controller: envController,
-                  label: 'Environment Variables (JSON)',
-                  hint: '{"KEY": "VALUE"}',
-                  icon: Icons.code_rounded,
-                  maxLines: 4,
-                ),
-                const SizedBox(height: 32),
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                        ),
-                        child: Text(
-                          'Cancel',
-                          style: TextStyle(color: Colors.white.withOpacity(0.5)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(14),
-                          gradient: const LinearGradient(
-                            colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
-                          ),
-                        ),
-                        child: ElevatedButton(
-                          onPressed: () async {
-                            try {
-                              final String text = envController.text.trim();
-                              final Map<String, dynamic> envRaw = text.isEmpty
-                                  ? <String, dynamic>{}
-                                  : Map<String, dynamic>.from(jsonDecode(text));
-                              
-                              final Map<String, String> env = envRaw.map((k, v) => MapEntry(k, v.toString()));
-
-                              if (server == null) {
-                                await _api.createMCPServer(
-                                  name: nameController.text,
-                                  image: imageController.text,
-                                  envVars: env,
-                                );
-                              } else {
-                                await _api.updateMCPServer(
-                                  server.id,
-                                  nameController.text,
-                                  imageController.text,
-                                  env,
-                                );
-                              }
-                              Navigator.pop(ctx);
-                              _loadServers();
-                            } catch (e) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Error: $e')));
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.transparent,
-                            shadowColor: Colors.transparent,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                          ),
-                          child: Text(
-                            server == null ? 'Connect Server' : 'Save Changes',
-                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
+      pageBuilder: (ctx, anim1, anim2) => _ServerDialogContent(
+        nameController: nameController,
+        imageController: imageController,
+        envEntries: envEntries,
+        argEntries: argEntries,
+        isEdit: server != null,
+        onSave: (env, args) async {
+          try {
+            if (server == null) {
+              await _api.createMCPServer(
+                name: nameController.text,
+                image: imageController.text,
+                envVars: env,
+                args: args,
+              );
+            } else {
+              await _api.updateMCPServer(
+                server.id,
+                nameController.text,
+                imageController.text,
+                env.map((k, v) => MapEntry(k, v.toString())),
+                args: args.map((k, v) => MapEntry(k, v.toString())),
+              );
+            }
+            Navigator.pop(ctx);
+            _loadServers();
+          } catch (e) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Error: $e')));
+          }
+        },
+        onCancel: () => Navigator.pop(ctx),
       ),
       transitionBuilder: (ctx, anim1, anim2, child) => FadeTransition(
         opacity: anim1,
@@ -207,51 +111,6 @@ class _MCPScreenState extends State<MCPScreen> {
           child: child,
         ),
       ),
-    );
-  }
-
-  Widget _buildModernInput({
-    required TextEditingController controller,
-    required String label,
-    required String hint,
-    required IconData icon,
-    int maxLines = 1,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: Colors.white.withOpacity(0.4),
-            letterSpacing: 0.5,
-          ),
-        ),
-        const SizedBox(height: 8),
-        TextField(
-          controller: controller,
-          maxLines: maxLines,
-          style: const TextStyle(color: Colors.white, fontSize: 14),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: TextStyle(color: Colors.white.withOpacity(0.2)),
-            prefixIcon: Icon(icon, size: 20, color: Colors.white.withOpacity(0.3)),
-            filled: true,
-            fillColor: Colors.black.withOpacity(0.2),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-            enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
-            ),
-          ),
-        ),
-      ],
     );
   }
 
@@ -412,12 +271,12 @@ class _MCPScreenState extends State<MCPScreen> {
                 await launchUrl(url);
               }
             },
-            child: Row(
+            child: const Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.open_in_new, size: 14, color: Color(0xFF8B5CF6)),
-                const SizedBox(width: 8),
-                const Text(
+                Icon(Icons.open_in_new, size: 14, color: Color(0xFF8B5CF6)),
+                SizedBox(width: 8),
+                Text(
                   'Browse MCP Catalog on Docker Hub',
                   style: TextStyle(
                     color: Color(0xFF8B5CF6),
@@ -451,6 +310,12 @@ class _MCPScreenState extends State<MCPScreen> {
         ],
       ),
     );
+  }
+
+  /// Mask a value for display: show first 4 chars then dots, or all dots if short.
+  String _maskValue(String value) {
+    if (value.length <= 4) return '****';
+    return '${value.substring(0, 4)}${'*' * (value.length - 4).clamp(0, 12)}';
   }
 
   Widget _buildServerCard(MCPServer server) {
@@ -520,16 +385,44 @@ class _MCPScreenState extends State<MCPScreen> {
                 ),
               ],
             ),
-            if (server.envVars.isNotEmpty) ...[
+            if (server.envVars.isNotEmpty || server.args.isNotEmpty) ...[
               const SizedBox(height: 12),
               const Divider(color: Colors.white10),
               const SizedBox(height: 8),
-              Text(
-                'Environment Variables:',
-                style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white.withOpacity(0.3)),
+            ],
+            if (server.envVars.isNotEmpty) ...[
+              Row(
+                children: [
+                  Text(
+                    'Environment Variables:',
+                    style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white.withOpacity(0.3)),
+                  ),
+                  const Spacer(),
+                  InkWell(
+                    onTap: () {
+                      setState(() {
+                        if (_revealedServers.contains(server.id)) {
+                          _revealedServers.remove(server.id);
+                        } else {
+                          _revealedServers.add(server.id);
+                        }
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        _revealedServers.contains(server.id)
+                            ? Icons.visibility_off_outlined
+                            : Icons.visibility_outlined,
+                        size: 16,
+                        color: Colors.white.withOpacity(0.3),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Wrap(
@@ -544,7 +437,43 @@ class _MCPScreenState extends State<MCPScreen> {
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
-                            '${e.key}=${e.value}',
+                            _revealedServers.contains(server.id)
+                                ? '${e.key}=${e.value}'
+                                : '${e.key}=${_maskValue(e.value.toString())}',
+                            style: const TextStyle(
+                                fontSize: 10,
+                                fontFamily: 'monospace',
+                                color: Color(0xFFA1A1AA)),
+                          ),
+                        ))
+                    .toList(),
+              ),
+            ],
+            if (server.args.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Container Arguments:',
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white.withOpacity(0.3)),
+              ),
+              const SizedBox(height: 4),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: server.args.entries
+                    .map((e) => Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.black26,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            _revealedServers.contains(server.id)
+                                ? '--${e.key}=${e.value}'
+                                : '--${e.key}=${_maskValue(e.value.toString())}',
                             style: const TextStyle(
                                 fontSize: 10,
                                 fontFamily: 'monospace',
@@ -555,6 +484,394 @@ class _MCPScreenState extends State<MCPScreen> {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+
+// ── Helper class for key-value entries ──────────────────────────────
+
+class _KVEntry {
+  final TextEditingController key;
+  final TextEditingController value;
+
+  _KVEntry({required this.key, required this.value});
+
+  void dispose() {
+    key.dispose();
+    value.dispose();
+  }
+}
+
+
+// ── Dialog content as StatefulWidget (so KV lists can update) ───────
+
+class _ServerDialogContent extends StatefulWidget {
+  final TextEditingController nameController;
+  final TextEditingController imageController;
+  final List<_KVEntry> envEntries;
+  final List<_KVEntry> argEntries;
+  final bool isEdit;
+  final Future<void> Function(Map<String, dynamic> env, Map<String, dynamic> args) onSave;
+  final VoidCallback onCancel;
+
+  const _ServerDialogContent({
+    required this.nameController,
+    required this.imageController,
+    required this.envEntries,
+    required this.argEntries,
+    required this.isEdit,
+    required this.onSave,
+    required this.onCancel,
+  });
+
+  @override
+  State<_ServerDialogContent> createState() => _ServerDialogContentState();
+}
+
+class _ServerDialogContentState extends State<_ServerDialogContent> {
+  bool _isSaving = false;
+
+  Map<String, dynamic> _entriesToMap(List<_KVEntry> entries) {
+    final map = <String, dynamic>{};
+    for (final e in entries) {
+      final k = e.key.text.trim();
+      if (k.isNotEmpty) {
+        map[k] = e.value.text;
+      }
+    }
+    return map;
+  }
+
+  Widget _buildKVEditor({
+    required String label,
+    required IconData icon,
+    required List<_KVEntry> entries,
+    required String keyHint,
+    required String valueHint,
+    bool obscureValues = false,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withOpacity(0.4),
+                letterSpacing: 0.5,
+              ),
+            ),
+            const Spacer(),
+            InkWell(
+              onTap: () {
+                setState(() {
+                  entries.add(_KVEntry(
+                    key: TextEditingController(),
+                    value: TextEditingController(),
+                  ));
+                });
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF8B5CF6).withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add, size: 14, color: const Color(0xFF8B5CF6)),
+                    const SizedBox(width: 4),
+                    Text('Add', style: TextStyle(fontSize: 11, color: const Color(0xFF8B5CF6))),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (entries.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withOpacity(0.04)),
+            ),
+            child: Center(
+              child: Text(
+                'No entries. Click Add to add one.',
+                style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.2)),
+              ),
+            ),
+          )
+        else
+          ...entries.asMap().entries.map((indexed) {
+            final i = indexed.key;
+            final entry = indexed.value;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: TextField(
+                      controller: entry.key,
+                      style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+                      decoration: InputDecoration(
+                        hintText: keyHint,
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.15)),
+                        filled: true,
+                        fillColor: Colors.black.withOpacity(0.2),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Text('=', style: TextStyle(color: Colors.white.withOpacity(0.2), fontSize: 16)),
+                  ),
+                  Expanded(
+                    flex: 3,
+                    child: TextField(
+                      controller: entry.value,
+                      obscureText: obscureValues,
+                      style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+                      decoration: InputDecoration(
+                        hintText: valueHint,
+                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.15)),
+                        filled: true,
+                        fillColor: Colors.black.withOpacity(0.2),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  InkWell(
+                    onTap: () {
+                      setState(() {
+                        entries[i].dispose();
+                        entries.removeAt(i);
+                      });
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(Icons.close, size: 16, color: Colors.red.withOpacity(0.6)),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
+  Widget _buildModernInput({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    required IconData icon,
+    int maxLines = 1,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Colors.white.withOpacity(0.4),
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          maxLines: maxLines,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: TextStyle(color: Colors.white.withOpacity(0.2)),
+            prefixIcon: Icon(icon, size: 20, color: Colors.white.withOpacity(0.3)),
+            filled: true,
+            fillColor: Colors.black.withOpacity(0.2),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          width: 520,
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1C1C26),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.4),
+                blurRadius: 40,
+                spreadRadius: 10,
+              ),
+            ],
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF8B5CF6).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        widget.isEdit ? Icons.edit_note_rounded : Icons.add_link_rounded,
+                        color: const Color(0xFF8B5CF6),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Text(
+                      widget.isEdit ? 'Edit MCP Server' : 'Connect MCP Server',
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                _buildModernInput(
+                  controller: widget.nameController,
+                  label: 'Server Name',
+                  hint: 'e.g. Temporal Tooling',
+                  icon: Icons.label_outline_rounded,
+                ),
+                const SizedBox(height: 16),
+                _buildModernInput(
+                  controller: widget.imageController,
+                  label: 'Docker Image',
+                  hint: 'e.g. mcp/temporal:latest',
+                  icon: Icons.layers_outlined,
+                ),
+                const SizedBox(height: 20),
+                _buildKVEditor(
+                  label: 'Environment Variables',
+                  icon: Icons.vpn_key_outlined,
+                  entries: widget.envEntries,
+                  keyHint: 'KEY',
+                  valueHint: 'value',
+                  obscureValues: false,
+                ),
+                const SizedBox(height: 20),
+                _buildKVEditor(
+                  label: 'Container Arguments',
+                  icon: Icons.code_rounded,
+                  entries: widget.argEntries,
+                  keyHint: 'flag',
+                  valueHint: 'value (optional)',
+                ),
+                const SizedBox(height: 32),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: widget.onCancel,
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          gradient: const LinearGradient(
+                            colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
+                          ),
+                        ),
+                        child: ElevatedButton(
+                          onPressed: _isSaving
+                              ? null
+                              : () async {
+                                  setState(() => _isSaving = true);
+                                  final env = _entriesToMap(widget.envEntries);
+                                  final args = _entriesToMap(widget.argEntries);
+                                  await widget.onSave(env, args);
+                                  if (mounted) setState(() => _isSaving = false);
+                                },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          ),
+                          child: _isSaving
+                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : Text(
+                                  widget.isEdit ? 'Save Changes' : 'Connect Server',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                                ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

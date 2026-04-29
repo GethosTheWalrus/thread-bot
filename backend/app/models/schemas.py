@@ -74,6 +74,7 @@ class MCPServerCreate(BaseModel):
     name: str
     image: str
     env_vars: Optional[dict] = {}
+    args: Optional[dict] = {}
 
 
 class MCPServerResponse(BaseModel):
@@ -81,6 +82,7 @@ class MCPServerResponse(BaseModel):
     name: str
     image: str
     env_vars: dict
+    args: dict
     is_active: bool
     created_at: datetime
 
