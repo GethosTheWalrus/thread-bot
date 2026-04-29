@@ -558,10 +558,11 @@ async def get_tool_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)
     from app.mcp_helper import get_mcp_server_params
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
+    from app.models.models import MCPServer as MCPServerModel
 
     # Get all globally active servers
     result = await db.execute(
-        select(MCPServer).where(MCPServer.is_active == True)
+        select(MCPServerModel).where(MCPServerModel.is_active == True)
     )
     active_servers = list(result.scalars().all())
 
