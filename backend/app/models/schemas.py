@@ -93,3 +93,29 @@ class MCPTestResponse(BaseModel):
     success: bool
     tools: list[str] = []
     error: Optional[str] = None
+
+
+class ToolOverrideItem(BaseModel):
+    server_id: str
+    tool_name: Optional[str] = None  # null = server-level override
+    enabled: bool
+
+
+class ToolOverrideRequest(BaseModel):
+    overrides: list[ToolOverrideItem]
+
+
+class AvailableTool(BaseModel):
+    name: str
+    description: str
+
+
+class AvailableServer(BaseModel):
+    id: str
+    name: str
+    tools: list[AvailableTool] = []
+
+
+class ToolOverridesResponse(BaseModel):
+    servers: list[AvailableServer] = []
+    overrides: list[ToolOverrideItem] = []

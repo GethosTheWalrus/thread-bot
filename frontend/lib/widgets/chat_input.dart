@@ -4,11 +4,15 @@ import 'package:flutter/services.dart';
 class ChatInput extends StatefulWidget {
   final Function(String) onSend;
   final bool isSending;
+  final VoidCallback? onToolsPressed;
+  final bool hasToolOverrides;
 
   const ChatInput({
     super.key,
     required this.onSend,
     this.isSending = false,
+    this.onToolsPressed,
+    this.hasToolOverrides = false,
   });
 
   @override
@@ -102,6 +106,36 @@ class _ChatInputState extends State<ChatInput> {
                         ),
                       ),
                     ),
+
+                    // Tools button
+                    if (widget.onToolsPressed != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: widget.onToolsPressed,
+                            child: Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                color: widget.hasToolOverrides
+                                    ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                    : Colors.transparent,
+                              ),
+                              child: Icon(
+                                Icons.build_outlined,
+                                size: 16,
+                                color: widget.hasToolOverrides
+                                    ? const Color(0xFF8B5CF6)
+                                    : Colors.white.withValues(alpha: 0.3),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
 
                     // Send button
                     Padding(

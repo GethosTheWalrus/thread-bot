@@ -30,6 +30,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _isSending = false;
   String? _error;
   bool _sidebarOpen = true;
+  bool _hasToolOverrides = false;
 
   // Animation
   late final AnimationController _fadeController;
@@ -70,12 +71,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
-    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; });
+    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; });
     try {
       final thread = await _api.getThread(threadId);
       if (mounted) {
         setState(() { _messages = thread.messages; _isLoadingMessages = false; });
         _scrollToBottom();
+
+        // Check if this thread has any tool overrides
+        _loadToolOverrideStatus(threadId);
 
         // If this thread is still generating (e.g., page was refreshed mid-response),
         // reconnect to the in-progress stream.
@@ -85,6 +89,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     } catch (e) {
       if (mounted) setState(() { _error = 'Failed to load thread'; _isLoadingMessages = false; });
+    }
+  }
+
+  Future<void> _loadToolOverrideStatus(String threadId) async {
+    try {
+      final data = await _api.getThreadToolOverrides(threadId);
+      final overrides = data['overrides'] as List<dynamic>? ?? [];
+      if (mounted) {
+        setState(() => _hasToolOverrides = overrides.any((o) => o['enabled'] == false));
+      }
+    } catch (_) {
+      // Non-critical — don't show error
     }
   }
 
@@ -268,6 +284,23 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _scrollToBottom();
       }
     }
+  }
+
+  void _showToolOverrides() {
+    if (_activeThreadId == null) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF16161E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => _ToolOverridesSheet(
+        threadId: _activeThreadId!,
+        api: _api,
+        onChanged: () => _loadToolOverrideStatus(_activeThreadId!),
+      ),
+    );
   }
 
   Future<void> _sendMessage(String content) async {
@@ -578,6 +611,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   ChatInput(
                     onSend: _sendMessage,
                     isSending: _isSending,
+                    onToolsPressed: _activeThreadId != null ? _showToolOverrides : null,
+                    hasToolOverrides: _hasToolOverrides,
                   ),
                 ],
               ),
@@ -836,4 +871,387 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
     );
   }
+}
+
+
+// ── Tool Overrides Bottom Sheet ──────────────────────────────────────────────
+
+class _ToolOverridesSheet extends StatefulWidget {
+  final String threadId;
+  final ApiService api;
+  final VoidCallback onChanged;
+
+  const _ToolOverridesSheet({
+    required this.threadId,
+    required this.api,
+    required this.onChanged,
+  });
+
+  @override
+  State<_ToolOverridesSheet> createState() => _ToolOverridesSheetState();
+}
+
+class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
+  bool _isLoading = true;
+  bool _isSaving = false;
+  List<_ServerState> _servers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await widget.api.getThreadToolOverrides(widget.threadId);
+      final servers = (data['servers'] as List<dynamic>? ?? []);
+      final overrides = (data['overrides'] as List<dynamic>? ?? []);
+
+      // Build override lookup
+      final overrideMap = <String, bool>{};       // "server_id" -> enabled
+      final toolOverrideMap = <String, bool>{};   // "server_id:tool_name" -> enabled
+      for (final o in overrides) {
+        final sid = o['server_id'] as String;
+        final toolName = o['tool_name'] as String?;
+        if (toolName == null) {
+          overrideMap[sid] = o['enabled'] as bool;
+        } else {
+          toolOverrideMap['$sid:$toolName'] = o['enabled'] as bool;
+        }
+      }
+
+      final serverStates = servers.map((s) {
+        final sid = s['id'] as String;
+        final tools = (s['tools'] as List<dynamic>? ?? []).map((t) {
+          final tname = t['name'] as String;
+          return _ToolState(
+            name: tname,
+            description: t['description'] as String? ?? '',
+            enabled: toolOverrideMap['$sid:$tname'] ?? overrideMap[sid] ?? true,
+          );
+        }).toList();
+
+        // Server is enabled if any tool is enabled (or no server-level override)
+        final serverEnabled = overrideMap[sid] ?? true;
+
+        return _ServerState(
+          id: sid,
+          name: s['name'] as String,
+          enabled: serverEnabled,
+          tools: tools,
+          expanded: false,
+        );
+      }).toList();
+
+      if (mounted) setState(() { _servers = serverStates; _isLoading = false; });
+    } catch (e) {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _save() async {
+    setState(() => _isSaving = true);
+    try {
+      final overrides = <Map<String, dynamic>>[];
+      for (final server in _servers) {
+        if (!server.enabled) {
+          // Server-level disable
+          overrides.add({
+            'server_id': server.id,
+            'tool_name': null,
+            'enabled': false,
+          });
+        } else {
+          // Check for individual tool disables
+          for (final tool in server.tools) {
+            if (!tool.enabled) {
+              overrides.add({
+                'server_id': server.id,
+                'tool_name': tool.name,
+                'enabled': false,
+              });
+            }
+          }
+        }
+      }
+      await widget.api.setThreadToolOverrides(widget.threadId, overrides);
+      widget.onChanged();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save: $e'),
+            backgroundColor: Colors.red.shade800,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final maxHeight = MediaQuery.of(context).size.height * 0.7;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Handle bar
+          Padding(
+            padding: const EdgeInsets.only(top: 12, bottom: 8),
+            child: Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(2),
+                color: Colors.white.withValues(alpha: 0.2),
+              ),
+            ),
+          ),
+          // Header
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Row(
+              children: [
+                const Icon(Icons.build_outlined, size: 18, color: Color(0xFF8B5CF6)),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    'Thread Tools',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                FilledButton(
+                  onPressed: _isSaving ? null : _save,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF8B5CF6),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  child: _isSaving
+                      ? const SizedBox(
+                          width: 14, height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Save', style: TextStyle(fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              'Enable or disable MCP servers and individual tools for this thread.',
+              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // Server list
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.all(32),
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
+              ),
+            )
+          else if (_servers.isEmpty)
+            Padding(
+              padding: const EdgeInsets.all(32),
+              child: Text(
+                'No active MCP servers configured.',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.4)),
+              ),
+            )
+          else
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                itemCount: _servers.length,
+                itemBuilder: (context, index) => _buildServerTile(_servers[index]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServerTile(_ServerState server) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withValues(alpha: 0.03),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        children: [
+          // Server header with toggle
+          InkWell(
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+            onTap: () => setState(() => server.expanded = !server.expanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    server.expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: Colors.white.withValues(alpha: 0.4),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(7),
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF3B82F6), Color(0xFF6366F1)],
+                      ),
+                    ),
+                    child: const Icon(Icons.dns_rounded, size: 14, color: Colors.white),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          server.name,
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                        ),
+                        Text(
+                          '${server.tools.length} tool${server.tools.length == 1 ? '' : 's'}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white.withValues(alpha: 0.4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: server.enabled,
+                    onChanged: (v) {
+                      setState(() {
+                        server.enabled = v;
+                        // When toggling server, also toggle all its tools
+                        for (final t in server.tools) {
+                          t.enabled = v;
+                        }
+                      });
+                    },
+                    activeColor: const Color(0xFF8B5CF6),
+                    activeTrackColor: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
+                    inactiveThumbColor: Colors.white.withValues(alpha: 0.3),
+                    inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          // Expanded tool list
+          if (server.expanded && server.tools.isNotEmpty)
+            Container(
+              decoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                ),
+              ),
+              child: Column(
+                children: server.tools.map((tool) => _buildToolTile(server, tool)).toList(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToolTile(_ServerState server, _ToolState tool) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 50, right: 14),
+      child: Row(
+        children: [
+          Icon(
+            Icons.build_rounded,
+            size: 12,
+            color: tool.enabled
+                ? const Color(0xFF3B82F6).withValues(alpha: 0.6)
+                : Colors.white.withValues(alpha: 0.15),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tool.name,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: tool.enabled
+                        ? Colors.white.withValues(alpha: 0.8)
+                        : Colors.white.withValues(alpha: 0.3),
+                  ),
+                ),
+                if (tool.description.isNotEmpty)
+                  Text(
+                    tool.description,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.white.withValues(alpha: 0.3),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+              ],
+            ),
+          ),
+          Switch(
+            value: server.enabled && tool.enabled,
+            onChanged: server.enabled
+                ? (v) => setState(() => tool.enabled = v)
+                : null,
+            activeColor: const Color(0xFF8B5CF6),
+            activeTrackColor: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
+            inactiveThumbColor: Colors.white.withValues(alpha: 0.3),
+            inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Helper state classes for the tool overrides sheet
+class _ServerState {
+  final String id;
+  final String name;
+  bool enabled;
+  final List<_ToolState> tools;
+  bool expanded;
+
+  _ServerState({
+    required this.id,
+    required this.name,
+    required this.enabled,
+    required this.tools,
+    required this.expanded,
+  });
+}
+
+class _ToolState {
+  final String name;
+  final String description;
+  bool enabled;
+
+  _ToolState({
+    required this.name,
+    required this.description,
+    required this.enabled,
+  });
 }
