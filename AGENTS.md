@@ -6,8 +6,8 @@ docker-compose.yml          # Dev orchestration: postgres, temporal, temporal-ui
 backend/                    # Python/FastAPI + Temporal worker
   app/
     main.py                 # FastAPI app, lifespan, CORS, health endpoint
-    worker.py               # Temporal worker: registers RunThreadWorkflow + 8 activities
-    workflows/thread_workflow.py  # Orchestrator: get_messages → compact_history → call_llm → save_message → auto-title → publish_done
+    worker.py               # Temporal worker: registers RunThreadWorkflow + 12 activities
+    workflows/thread_workflow.py  # Orchestrator: get_messages → compact_history → discover_tools → loop { llm_turn → execute_tools } → stream_response → save_message → auto-title → publish_done
     api/routes.py           # REST endpoints at /api/* (threads, chat, settings, MCP, tool overrides, stream reconnect); Redis pub/sub streaming
     models/models.py        # SQLAlchemy: Thread, Message, MCPServer (encrypted env_vars/args, cached_tools), ThreadToolOverride, Setting
     models/schemas.py       # Pydantic v2 schemas (ThreadResponse, ToolOverridesResponse, MCPServerResponse, etc.)
@@ -42,8 +42,8 @@ deploy.sh                   # Interactive K8s deploy script: configmap generatio
 
 ## Key Architecture Facts
 - **Thread model**: self-referencing FK (`parent_id`) for branching conversations. Displayed as a tree in UI.
-- **Temporal workflow**: `RunThreadWorkflow` — orchestrates history fetching, token-aware compaction, tool execution loop, persistence, auto-title, and stream finalization. Order: `get_messages → compact_history → call_llm → save_message → auto-title → publish_title → publish_done`.
-- **Token streaming**: The final LLM call uses `stream: true`. SSE chunks are parsed in `call_llm`, each token published to Redis as `{"type":"token","content":"..."}`. Non-streaming calls are used during tool iterations (need full `tool_calls` JSON). The frontend appends tokens progressively to a placeholder assistant message.
+- **Temporal workflow**: `RunThreadWorkflow` — orchestrates history fetching, token-aware compaction, tool execution loop, persistence, auto-title, and stream finalization. Order: `get_messages → compact_history → discover_tools → loop { llm_turn → execute_tools } → stream_response → save_message → auto-title → publish_title → publish_done`.
+- **Token streaming**: The final LLM call uses `stream: true`. SSE chunks are parsed in `stream_response`, each token published to Redis as `{"type":"token","content":"..."}`. Non-streaming calls are used during tool iterations (need full `tool_calls` JSON). The frontend appends tokens progressively to a placeholder assistant message.
 - **Redis pub/sub + event buffer**: Bridges the worker→backend gap for real-time streaming. The worker publishes structured JSON events to a per-request Redis channel AND appends them to a Redis list (`events:{channel}`). The backend subscribes before starting the workflow and relays events to the frontend via `StreamingResponse`. The event buffer list enables stream reconnect after page refresh. Redis is required because the worker and backend are separate processes/containers.
 - **Stream reconnect**: When the user refreshes mid-generation, the frontend detects `is_generating: true` in the thread response, connects to `GET /api/threads/{id}/stream`, and replays all buffered events from the Redis list. A `generating:{thread_id}` Redis key (600s TTL) tracks active generation. `publish_done` clears it and sets the event list TTL to 60s.
 - **Structured stream events**: `{"type":"thinking","content":"..."}`, `{"type":"tool_call","content":"...","tools":[...],"tool_calls":[...]}`, `{"type":"tool_result","tool":"...","content":"...","success":bool}`, `{"type":"token","content":"..."}`, `{"type":"title","content":"..."}`, `{"type":"text","content":"..."}` (fallback). `[DONE]` and `[ERROR]` are plain string sentinels.
@@ -55,7 +55,7 @@ deploy.sh                   # Interactive K8s deploy script: configmap generatio
 - **DB**: Async SQLAlchemy 2.0 with `asyncpg`. `expire_on_commit=False`, `autoflush=False`. Always use explicit queries or `selectinload` — lazy loading after commit raises `MissingGreenlet`.
 - **Temporal SDK v1.8+**: Workflows must be classes decorated with `@defn`, with `@run` method. Activities use `@activity.defn`. DB imports must be inside function bodies (Temporal sandbox blocks SQLAlchemy imports at module level).
 - **Per-thread tool overrides**: Users can enable/disable individual MCP tools or entire servers on a per-thread basis via a wrench icon in the chat input. Overrides are stored in the `thread_tool_overrides` table. Tool-level overrides take precedence over server-level. No rows = all enabled (default).
-- **MCP tool caching**: Discovered tools are cached in the `cached_tools` JSONB column on `mcp_servers`. Populated by the test endpoint (`POST /mcp/{id}/test`) and by `call_llm` during the first chat. The `GET /tool-overrides` endpoint reads from the cache — it does NOT spin up MCP containers.
+- **MCP tool caching**: Discovered tools are cached in the `cached_tools` JSONB column on `mcp_servers`. Populated by the test endpoint (`POST /mcp/{id}/test`) and by `discover_tools` during the first chat. The `GET /tool-overrides` endpoint reads from the cache — it does NOT spin up MCP containers.
 - **Tool result truncation**: Configurable via `LLM_TOOL_RESULT_MAX_CHARS` setting (default 0 = no truncation). When enabled, only the LLM context is truncated; the full result is saved to DB and streamed to the frontend. Truncated results include an LLM-aware notice: `[TRUNCATED — result was X chars, showing first Y. Consider using more specific parameters.]`.
 
 ## Coding Principles
@@ -119,8 +119,8 @@ curl http://localhost:8080                   # Temporal UI
 - **Temporal + DB race condition** — `chat_endpoint` creates thread+message in a committed `AsyncSessionLocal()` before starting the workflow. The route's `get_db` session commits AFTER workflow completes. Never remove the committed session pattern.
 - **Temporal sandbox** — Never import SQLAlchemy/uuid at module level in activity files. All DB imports must be inside the activity function body.
 - **SQLAlchemy `metadata_`** — Column named `metadata_` (reserved name), Pydantic schema field stays `metadata` (auto-mapped via `from_attributes`).
-- **`call_llm` Return Type** — Returns a `dict` with `content` (str), `used_tools` (bool), and `iterations` (int). DO NOT change this back to a raw string or tool persistence will break.
-- **`call_llm` Streaming** — Uses `stream: true` only for the final LLM response (no tool calls). Tool iterations use non-streaming calls to get the full `tool_calls` JSON array. If the streaming call fails, falls back to the non-streaming response already received.
+- **`generate_title` Return Type** — Returns a `dict` with `content` (str). Used exclusively for auto-title generation.
+- **`stream_response` Streaming** — Uses `stream: true` only for the final LLM response (no tool calls). Tool iterations use non-streaming `llm_turn` calls to get the full `tool_calls` JSON array. If the streaming call fails, falls back to the non-streaming response already received.
 - **`get_messages` Reconstruction** — This activity is critical for "tool memory." It converts DB `tool_call`/`tool_result` rows back into the nested `assistant`/`tool` format expected by OpenAI/Ollama APIs. It skips `thinking` role messages (display-only).
 - **Placeholder assistant message** — The frontend creates a `temp-ast-*` placeholder on send. Intermediate events (thinking, tool_call, tool_result) are inserted before it. Token events append to its content. The placeholder is never removed during streaming — it becomes the real message content. On `[DONE]`, a silent DB reload replaces temp messages with persisted ones.
 - **Per-chip tool pulse** — Tool call pulse animation is per-chip (on `_ToolCallChip`), not per-bubble. A chip stops pulsing immediately when its result arrives. Each chip shows a loading spinner while waiting for its result. The bubble-level `_ToolCallBubble` has no animation.

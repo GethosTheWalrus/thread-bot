@@ -137,27 +137,73 @@ class _MCPScreenState extends State<MCPScreen> {
             context: context,
             builder: (ctx) => AlertDialog(
               backgroundColor: const Color(0xFF1C1C26),
-              title: const Row(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+              contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+              actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+              title: Row(
                 children: [
-                  Icon(Icons.check_circle_outline, color: Colors.green),
-                  SizedBox(width: 12),
-                  Text('Connection Success'),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Connection Success', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 2),
+                        Text('${tools.length} tool${tools.length == 1 ? '' : 's'} discovered',
+                            style: TextStyle(fontSize: 12, color: Colors.grey[400], fontWeight: FontWeight.normal)),
+                      ],
+                    ),
+                  ),
                 ],
               ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Discovered ${tools.length} tools:'),
-                  const SizedBox(height: 12),
-                  ...tools.map((t) => Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text('• $t', style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-                  )),
-                ],
+              content: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(ctx).size.height * 0.45,
+                  maxWidth: 400,
+                ),
+                child: SingleChildScrollView(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: tools.map((t) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF252533),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.build_rounded, size: 14, color: Colors.grey[500]),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(t, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                          ),
+                        ],
+                      ),
+                    )).toList(),
+                  ),
+                ),
               ),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  ),
+                  child: const Text('Close'),
+                ),
               ],
             ),
           );

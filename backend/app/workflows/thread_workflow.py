@@ -1,36 +1,47 @@
 from temporalio.workflow import defn, execute_activity, run
+from temporalio.common import RetryPolicy
 from datetime import timedelta
 
 
 @defn
 class RunThreadWorkflow:
-    """Main workflow for handling a chat interaction."""
+    """Main workflow for handling a chat interaction.
+
+    Orchestrates the agent loop as discrete Temporal activities:
+      get_messages → compact_history → discover_tools →
+      loop { llm_turn → execute_tools } → stream_response →
+      save_message → auto-title → publish_done
+
+    Each step is visible as a separate activity in the Temporal UI,
+    with independent timeouts, retry policies, and heartbeat details.
+    """
 
     @run
     async def run(self, input: dict) -> dict:
         from temporalio import workflow
         with workflow.unsafe.imports_passed_through():
             from app.activities.llm_activities import (
-                call_llm, save_message, get_messages, update_title,
+                generate_title, save_message, get_messages, update_title,
                 compact_history, delete_messages_before, publish_done,
-                publish_title
+                publish_title, discover_tools, llm_turn, execute_tools,
+                stream_response,
             )
         thread_id = input["thread_id"]
         message = input["message"]
         llm_config = input.get("llm_config", {})
 
-        # Get chat history (includes user message already saved by the route)
+        # ── Get chat history ─────────────────────────────────────────
         chat_history = await execute_activity(
             get_messages,
             thread_id,
             start_to_close_timeout=timedelta(seconds=10),
         )
 
-        from temporalio.common import RetryPolicy
-
-        # ── Compaction Check ──────────────────────────────────────────
-        # Build a config for the compaction LLM call that doesn't stream
-        compaction_config = {k: v for k, v in llm_config.items() if k not in ("stream_url", "redis_url", "stream_channel")}
+        # ── Compaction Check ─────────────────────────────────────────
+        compaction_config = {
+            k: v for k, v in llm_config.items()
+            if k not in ("stream_url", "redis_url", "stream_channel")
+        }
 
         compact_result = await execute_activity(
             compact_history,
@@ -47,8 +58,6 @@ class RunThreadWorkflow:
         )
 
         if compact_result["compacted"]:
-            from temporalio import workflow
-            # Save the compaction summary as a system message in the DB
             import datetime
             compacted_at = datetime.datetime.utcnow().isoformat()
             await execute_activity(
@@ -65,7 +74,6 @@ class RunThreadWorkflow:
                 },
                 start_to_close_timeout=timedelta(seconds=10),
             )
-            # Delete the now-compacted messages from the DB
             await execute_activity(
                 delete_messages_before,
                 {
@@ -74,31 +82,120 @@ class RunThreadWorkflow:
                 },
                 start_to_close_timeout=timedelta(seconds=15),
             )
-            # Use the compacted (summarised + recent) message list
             chat_history = compact_result["messages"]
 
-        # ── Call LLM ─────────────────────────────────────────────────
-        llm_result = await execute_activity(
-            call_llm,
-            {"messages": chat_history, "llm_config": llm_config, "thread_id": thread_id},
-            start_to_close_timeout=timedelta(seconds=600),
-            retry_policy=RetryPolicy(maximum_attempts=1),
+        # ── Discover MCP Tools ───────────────────────────────────────
+        tool_overrides = llm_config.get("tool_overrides", [])
+        tools_result = await execute_activity(
+            discover_tools,
+            {
+                "thread_id": thread_id,
+                "tool_overrides": tool_overrides,
+            },
+            start_to_close_timeout=timedelta(seconds=120),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_timeout=timedelta(seconds=60),
         )
 
-        llm_response = llm_result["content"]
+        mcp_tools_map = tools_result["mcp_tools_map"]
+        openai_tools = tools_result["openai_tools"]
+
+        # ── Build initial message list ───────────────────────────────
+        current_messages = list(chat_history)
+
+        # Inject system message when tools are available
+        if openai_tools and (not current_messages or current_messages[0].get("role") != "system"):
+            current_messages.insert(0, {
+                "role": "system",
+                "content": (
+                    "You are a helpful assistant with access to tools. "
+                    "Use tools as many times as needed to thoroughly answer the user's question. "
+                    "Think step by step: gather information, verify it, and refine your answer "
+                    "before providing a final response. You may call multiple tools in sequence."
+                ),
+            })
+
+        # ── Agent Loop ───────────────────────────────────────────────
+        max_iterations = llm_config.get("max_iterations", 25)
+        llm_response = ""
+        used_tools = False
+
+        for iteration in range(1, max_iterations + 1):
+            # Single LLM call
+            turn_result = await execute_activity(
+                llm_turn,
+                {
+                    "messages": current_messages,
+                    "llm_config": llm_config,
+                    "thread_id": thread_id,
+                    "openai_tools": openai_tools,
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                },
+                start_to_close_timeout=timedelta(seconds=300),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                heartbeat_timeout=timedelta(seconds=120),
+            )
+
+            if turn_result["has_tool_calls"]:
+                used_tools = True
+
+                # Append the assistant message with tool_calls to context
+                current_messages.append(turn_result["llm_message"])
+
+                # Execute all tool calls
+                exec_result = await execute_activity(
+                    execute_tools,
+                    {
+                        "tool_calls": turn_result["tool_calls"],
+                        "mcp_tools_map": mcp_tools_map,
+                        "thread_id": thread_id,
+                        "llm_config": llm_config,
+                        "llm_message": turn_result["llm_message"],
+                        "iteration": iteration,
+                    },
+                    start_to_close_timeout=timedelta(seconds=300),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                    heartbeat_timeout=timedelta(seconds=120),
+                )
+
+                # Append tool results to context for next LLM turn
+                current_messages.extend(exec_result["tool_messages"])
+                continue
+            else:
+                # Final response — stream it token by token
+                stream_result = await execute_activity(
+                    stream_response,
+                    {
+                        "messages": current_messages,
+                        "llm_config": llm_config,
+                        "fallback_content": turn_result["text_content"] or "",
+                    },
+                    start_to_close_timeout=timedelta(seconds=600),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                    heartbeat_timeout=timedelta(seconds=120),
+                )
+
+                llm_response = stream_result["content"]
+                break
+        else:
+            # Safety exit — max iterations reached
+            if not llm_response:
+                llm_response = "(Agent reached maximum iteration limit.)"
 
         # ── Save final assistant response ────────────────────────────
-        # (intermediate tool_call/tool_result/thinking already saved inline by call_llm)
         await execute_activity(
             save_message,
             {"thread_id": thread_id, "role": "assistant", "content": llm_response},
             start_to_close_timeout=timedelta(seconds=10),
         )
 
-        # ── Auto-title (runs before [DONE] so the frontend gets the title in the stream) ──
+        # ── Auto-title ───────────────────────────────────────────────
         if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
-            # Build context from recent human-readable messages only
-            readable = [m for m in chat_history[-5:] if m.get("content") and m.get("role") in ("user", "assistant")]
+            readable = [
+                m for m in chat_history[-5:]
+                if m.get("content") and m.get("role") in ("user", "assistant")
+            ]
             context = "\n".join([f"{m['role']}: {m['content']}" for m in readable])
             title_prompt = (
                 "Generate a very short, catchy title for this conversation (max 4 words). "
@@ -108,7 +205,7 @@ class RunThreadWorkflow:
             title_config = compaction_config.copy()
 
             title = await execute_activity(
-                call_llm,
+                generate_title,
                 {"messages": [{"role": "user", "content": title_prompt}], "llm_config": title_config},
                 start_to_close_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(maximum_attempts=2),
@@ -120,7 +217,6 @@ class RunThreadWorkflow:
                 {"thread_id": thread_id, "title": title_text},
                 start_to_close_timeout=timedelta(seconds=10),
             )
-            # Publish title event to Redis so frontend sidebar updates immediately
             await execute_activity(
                 publish_title,
                 {
