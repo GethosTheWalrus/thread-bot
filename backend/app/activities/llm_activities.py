@@ -276,6 +276,134 @@ async def llm_turn(args: dict) -> dict:
                 }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  Built-in tool execution (no MCP containers)
+# ═══════════════════════════════════════════════════════════════════════
+
+async def _execute_builtin(
+    tool_name: str,
+    tool_args: dict,
+    thread_id: str,
+    redis_url: str | None,
+    stream_channel: str | None,
+) -> str:
+    """Execute a built-in tool and return the result as a string."""
+
+    if tool_name == "continue_thinking":
+        reasoning_text = tool_args.get("reasoning", "")
+        if reasoning_text:
+            await _save_inline(thread_id, "thinking", reasoning_text)
+            await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning_text})
+        return "Acknowledged. Continue your analysis."
+
+    if tool_name == "web_fetch":
+        import aiohttp
+        url = tool_args.get("url", "")
+        if not url.startswith(("http://", "https://")):
+            return "Error: URL must start with http:// or https://"
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        return f"Error: HTTP {resp.status}"
+                    content_type = resp.headers.get("Content-Type", "")
+                    if "text" in content_type or "json" in content_type or "xml" in content_type:
+                        text = await resp.text()
+                        # Limit response size to avoid flooding context
+                        if len(text) > 50000:
+                            return text[:50000] + f"\n\n[TRUNCATED — response was {len(text):,} chars, showing first 50,000]"
+                        return text
+                    else:
+                        return f"Binary content ({content_type}), {resp.content_length or 'unknown'} bytes — cannot display as text."
+        except Exception as e:
+            return f"Error fetching URL: {str(e)}"
+
+    if tool_name == "current_datetime":
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        local = datetime.now().astimezone()
+        return (
+            f"UTC:   {now.strftime('%Y-%m-%d %H:%M:%S %Z')}\n"
+            f"Local: {local.strftime('%Y-%m-%d %H:%M:%S %Z (%z)')}\n"
+            f"Day:   {local.strftime('%A')}\n"
+            f"Unix:  {int(now.timestamp())}"
+        )
+
+    if tool_name == "calculator":
+        import math
+        expression = tool_args.get("expression", "")
+        # Whitelist of safe names for eval
+        safe_names = {
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
+            "tan": math.tan, "log": math.log, "log10": math.log10,
+            "abs": abs, "round": round, "ceil": math.ceil,
+            "floor": math.floor, "pi": math.pi, "e": math.e,
+            "pow": pow, "min": min, "max": max,
+        }
+        try:
+            result = eval(expression, {"__builtins__": {}}, safe_names)  # noqa: S307
+            return str(result)
+        except Exception as e:
+            return f"Error evaluating expression: {str(e)}"
+
+    if tool_name == "json_parse":
+        import json as _json
+        json_string = tool_args.get("json_string", "")
+        key_path = tool_args.get("key_path", "")
+        try:
+            data = _json.loads(json_string)
+            if key_path:
+                for key in key_path.split("."):
+                    if isinstance(data, list):
+                        data = data[int(key)]
+                    elif isinstance(data, dict):
+                        data = data[key]
+                    else:
+                        return f"Error: cannot traverse into {type(data).__name__} with key '{key}'"
+            return _json.dumps(data, indent=2) if isinstance(data, (dict, list)) else str(data)
+        except _json.JSONDecodeError as e:
+            return f"Error parsing JSON: {str(e)}"
+        except (KeyError, IndexError, ValueError) as e:
+            return f"Error accessing path '{key_path}': {str(e)}"
+
+    if tool_name == "text_count":
+        import re
+        text = tool_args.get("text", "")
+        unit = tool_args.get("unit", "words")
+        if unit == "words":
+            count = len(text.split())
+        elif unit == "characters":
+            count = len(text)
+        elif unit == "lines":
+            count = len(text.splitlines()) if text else 0
+        elif unit == "sentences":
+            count = len(re.split(r'[.!?]+\s*', text.strip())) if text.strip() else 0
+        else:
+            return f"Error: unknown unit '{unit}'. Use words, characters, lines, or sentences."
+        return f"{count} {unit}"
+
+    if tool_name == "base64_decode":
+        import base64
+        encoded = tool_args.get("encoded", "")
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8", errors="replace")
+            return decoded
+        except Exception as e:
+            return f"Error decoding base64: {str(e)}"
+
+    if tool_name == "base64_encode":
+        import base64
+        text = tool_args.get("text", "")
+        try:
+            encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+            return encoded
+        except Exception as e:
+            return f"Error encoding base64: {str(e)}"
+
+    return f"Error: unknown built-in tool '{tool_name}'"
+
+
 @defn
 async def execute_tools(args: dict) -> dict:
     """Execute MCP tool calls and publish results.
@@ -302,25 +430,42 @@ async def execute_tools(args: dict) -> dict:
 
     heartbeat({"step": "execute_tools", "iteration": iteration, "count": len(tool_calls)})
 
+    # Names of built-in tools that don't require MCP containers
+    BUILTIN_TOOLS = {
+        "continue_thinking", "web_fetch", "current_datetime", "calculator",
+        "json_parse", "text_count", "base64_decode", "base64_encode",
+    }
+
     # Build human-readable description and publish tool_call event
     call_descriptions = []
     tool_list_for_event = []
     for tc in tool_calls:
-        info = mcp_tools_map.get(tc["function"]["name"], {})
-        desc = f"{info.get('server_name', '?')}:{info.get('original_name', tc['function']['name'])}"
+        fn_name = tc["function"]["name"]
+        if fn_name in BUILTIN_TOOLS:
+            # Built-in tools get a clean display name
+            desc = f"built-in:{fn_name}"
+            # Only add non-silent built-ins to the tool_call event
+            if fn_name != "continue_thinking":
+                call_descriptions.append(desc)
+                tool_list_for_event.append(desc)
+            continue
+        info = mcp_tools_map.get(fn_name, {})
+        desc = f"{info.get('server_name', '?')}:{info.get('original_name', fn_name)}"
         call_descriptions.append(desc)
         tool_list_for_event.append(desc)
 
-    tool_call_content = "Calling " + ", ".join(call_descriptions)
-    tool_call_metadata = {"tool_calls": tool_calls}
+    if call_descriptions:
+        tool_call_content = "Calling " + ", ".join(call_descriptions)
+        mcp_tool_calls = [tc for tc in tool_calls if tc["function"]["name"] not in BUILTIN_TOOLS]
+        tool_call_metadata = {"tool_calls": mcp_tool_calls or tool_calls}
 
-    await _save_inline(thread_id, "tool_call", tool_call_content, metadata=tool_call_metadata)
-    await _publish(redis_url, stream_channel, {
-        "type": "tool_call",
-        "content": tool_call_content,
-        "tools": tool_list_for_event,
-        "tool_calls": tool_calls,
-    })
+        await _save_inline(thread_id, "tool_call", tool_call_content, metadata=tool_call_metadata)
+        await _publish(redis_url, stream_channel, {
+            "type": "tool_call",
+            "content": tool_call_content,
+            "tools": tool_list_for_event,
+            "tool_calls": mcp_tool_calls or tool_calls,
+        })
 
     # Execute each tool call
     tool_messages = []
@@ -328,6 +473,30 @@ async def execute_tools(args: dict) -> dict:
         tool_name = tool_call["function"]["name"]
         tool_args = json.loads(tool_call["function"]["arguments"])
 
+        # ── Built-in tool handlers ────────────────────────────────────
+        if tool_name in BUILTIN_TOOLS:
+            result_text = await _execute_builtin(
+                tool_name, tool_args, thread_id, redis_url, stream_channel,
+            )
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "name": tool_name,
+                "content": result_text,
+            })
+            # Publish result for non-silent built-ins
+            if tool_name != "continue_thinking":
+                result_meta = {"tool_call_id": tool_call["id"], "tool_name": tool_name}
+                await _save_inline(thread_id, "tool_result", result_text, metadata=result_meta)
+                await _publish(redis_url, stream_channel, {
+                    "type": "tool_result",
+                    "tool": f"built-in:{tool_name}",
+                    "content": result_text,
+                    "success": True,
+                })
+            continue
+
+        # ── MCP tool execution ────────────────────────────────────────
         if tool_name in mcp_tools_map:
             info = mcp_tools_map[tool_name]
             tool_display = f"{info['server_name']}:{info['original_name']}"
