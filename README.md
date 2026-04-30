@@ -15,8 +15,10 @@ It features a responsive Flutter web interface, an asynchronous FastAPI backend,
     - **Conversational Compaction**: Automated, token-aware summarization of older history to manage context window limits.
     - **Tool Result Truncation**: Configurable truncation of large tool results for the LLM context (full results preserved in DB and UI) with LLM-aware notices.
 - **Agent Loop**: Multi-step tool execution with thinking blocks, capped at configurable max iterations (default 25). The LLM can chain multiple tool calls before producing a final response.
-- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations with loading spinners, expandable tool input/output blocks, response timeline visualization, and rich markdown support.
-- **Response Timeline**: Each assistant message includes a compact horizontal timeline showing the sequence of thinking, tool calls, tool results, and response steps with animated progress indicators.
+- **Built-in Tools**: 8 tools that execute in-process without MCP containers: `continue_thinking` (extends reasoning), `web_fetch`, `current_datetime`, `calculator`, `json_parse`, `text_count`, `base64_encode`, `base64_decode`. Always available regardless of MCP configuration.
+- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations with loading spinners, expandable tool input/output blocks, response timeline visualization, context consumption donut chart, and rich markdown support.
+- **Response Timeline**: Each assistant message includes a compact horizontal timeline showing the sequence of thinking, tool calls, tool results, compaction, and response steps with animated progress indicators.
+- **Context Awareness**: Real-time context window consumption donut chart in the chat input area (color-coded green/amber/red). Updated after every LLM call and compaction event.
 
 ## Quick Start (Docker Compose)
 
@@ -74,9 +76,9 @@ graph TD
 
 | Component | Role |
 |-----------|------|
-| **Frontend** (Flutter) | SPA with token streaming, markdown rendering, tool call UI, response timeline, per-thread tool overrides, and MCP server management |
+| **Frontend** (Flutter) | SPA with token streaming, markdown rendering, tool call UI, response timeline, context donut chart, per-thread tool overrides, smart auto-scroll, and MCP server management |
 | **Backend** (FastAPI) | Gateway between frontend and Temporal. Subscribes to Redis and relays streaming events to the frontend via `StreamingResponse`. Manages MCP server CRUD with encryption at rest |
-| **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with tool execution, per-thread tool filtering, tool result truncation, token streaming, auto-title generation |
+| **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with MCP + built-in tool execution, per-thread tool filtering, tool result truncation, token streaming, context usage publishing, auto-title generation |
 | **Redis** | Pub/sub broker bridging worker -> backend for real-time streaming. Also buffers events in Redis lists for stream reconnect after page refresh. Tracks generation status |
 | **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), MCP server configs (encrypted), tool overrides, cached tool lists, and persistent settings |
 | **Temporal** | Orchestrates workflows with retry policies and fault tolerance |
@@ -85,7 +87,7 @@ graph TD
 ### Streaming Flow
 
 1. User sends a message -> backend saves it to DB, subscribes to a Redis channel, sets generating flag in Redis, starts the Temporal workflow
-2. Worker runs the agent loop: non-streaming LLM calls during tool iterations, publishing `thinking`, `tool_call`, and `tool_result` events to Redis (both pub/sub and an event buffer list)
+2. Worker runs the agent loop: non-streaming LLM calls during tool iterations (MCP and built-in tools), publishing `thinking`, `tool_call`, `tool_result`, `compaction`, and `context` events to Redis (both pub/sub and an event buffer list)
 3. Final LLM call uses `stream: true` -- each SSE token is published to Redis as `{"type":"token","content":"..."}`
 4. Backend relays all Redis events to the frontend via chunked HTTP response
 5. Frontend appends tokens to a placeholder message, rendering markdown progressively

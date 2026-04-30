@@ -103,10 +103,10 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 - **Activities** (12 registered in `worker.py`):
     - `discover_tools`: Discovers active MCP tools (from DB), applies per-thread tool overrides (tool-level > server-level > default enabled). Caches discovered tools in `mcp_servers.cached_tools`.
     - `llm_turn`: Single non-streaming LLM call. Publishes thinking events to Redis. Returns assistant response including any tool_calls.
-    - `execute_tools`: Executes MCP tool calls in containers. Publishes tool_call/tool_result events. Saves intermediate messages to DB inline. Supports configurable tool result truncation (`LLM_TOOL_RESULT_MAX_CHARS`).
+    - `execute_tools`: Executes MCP tool calls in containers. Publishes tool_call/tool_result events. Saves intermediate messages to DB inline. Supports configurable tool result truncation (`LLM_TOOL_RESULT_MAX_CHARS`). Also handles 8 built-in tools (`continue_thinking`, `web_fetch`, `current_datetime`, `calculator`, `json_parse`, `text_count`, `base64_encode`, `base64_decode`) that execute in-process without MCP containers.
     - `stream_response`: Re-issues the final LLM call with `stream: true` and publishes each SSE token to Redis as `{"type":"token","content":"..."}`. All events are also buffered in a Redis list (`events:{channel}`) for stream reconnect.
     - `generate_title`: Lightweight LLM call for auto-title generation only (no tools, no streaming).
-    - `compact_history`: Estimates tokens in history using a character-count heuristic (`chars / 4`) and uses the LLM to generate a summary of older messages if a threshold is exceeded.
+    - `compact_history`: Estimates tokens in history using a character-count heuristic (`chars / 4`) and uses the LLM to generate a summary of older messages if a threshold is exceeded. Publishes `compaction` and `context` events to Redis.
     - `delete_messages_before`: Cleans up the database by removing messages that have been compacted into a summary.
     - `save_message`, `get_messages`, `update_title`: Interact with the database.
     - `publish_done`: Publishes `[DONE]` sentinel to Redis (both pub/sub and event buffer). Clears the `generating:{thread_id}` Redis key and sets a 60s TTL on the event buffer for reconnect grace period.
@@ -127,6 +127,7 @@ ThreadBot supports extending the LLM with custom tools via the Model Context Pro
 - **Encryption**: MCP server secrets (`env_vars` and `args`) are encrypted at rest in PostgreSQL using Fernet (AES-128-CBC + HMAC-SHA256). The encryption key is resolved from the `MCP_ENCRYPTION_KEY` environment variable, or auto-generated and stored in the `settings` table. Values are encrypted per-field (keys remain in plaintext). Decryption handles legacy unencrypted data gracefully by passing through values that fail decryption.
 - **Persistence**: Unlike standard tool loops, ThreadBot persists every `tool_call` and `tool_result` to the database as unique message roles. This ensures the LLM retains "tool memory" across turns and allows for visual reconstruction in the UI.
 - **Agent Loop**: Capped at `max_iterations` (default 25). A system prompt is injected when tools are available to encourage multi-step tool use.
+- **Built-in Tools**: 8 tools execute in-process without MCP containers: `continue_thinking` (extends reasoning, publishes thinking event, silent in tool_call chips), `web_fetch` (HTTP GET, 30s timeout, 50k char cap), `current_datetime` (UTC/local time), `calculator` (safe math eval), `json_parse` (dot-notation path extraction), `text_count` (words/chars/lines/sentences), `base64_encode`, `base64_decode`. Defined as OpenAI function schemas in `thread_workflow.py`, dispatched via `BUILTIN_TOOLS` set in `execute_tools`, executed by `_execute_builtin()` in `llm_activities.py`. Built-in tools are always appended to MCP tools regardless of server configuration.
 - **Infrastructure Requirements**: The `backend` and `worker` containers must have the `docker` CLI installed (Docker Compose) or `kubectl` (Kubernetes). In K8s, the `threadbot-sa` ServiceAccount needs RBAC permissions for pods, pods/attach, and pods/log.
 - **Pod Cleanup**: A K8s CronJob (`mcp-pod-cleanup`) runs every 15 minutes to delete completed/failed MCP pods in the threadbot namespace.
 
@@ -176,6 +177,8 @@ All events are JSON objects published to a per-request Redis channel:
 | `tool_result` | `{"type":"tool_result","tool":"...","content":"...","success":bool}` | Tool execution completes |
 | `token` | `{"type":"token","content":"<chunk>"}` | Each SSE token from the final streaming LLM call |
 | `title` | `{"type":"title","content":"..."}` | Auto-generated thread title |
+| `compaction` | `{"type":"compaction","content":"...","compacted_count":N}` | Context compaction triggered |
+| `context` | `{"type":"context","estimated_tokens":N,"context_window":N}` | Context usage update (after LLM calls and compaction) |
 | `text` | `{"type":"text","content":"..."}` | Fallback for non-streaming responses |
 | `[DONE]` | Plain string sentinel | Stream complete, safe to reload from DB |
 | `[ERROR]` | Plain string sentinel | Error occurred |
@@ -217,12 +220,18 @@ There is no `HomeScreen`, `ThreadListScreen`, `ThreadDetailScreen`, or `ThreadTr
     - **Thinking**: Collapsible amber blocks (`_ThinkingBubble` standalone, `_InlineThinkingBlock` within assistant bubbles).
     - **Tool Call**: Styled purple chips (`_ToolCallChip`) showing the server and tool name. Each chip has its own pulse animation that stops when its result arrives. Chips show a loading spinner while waiting for results. Expandable sections show tool input (JSON arguments) and output.
     - **Tool Result**: Collapsible monospace code blocks (`_CollapsibleResultBlock`) for raw tool output, with green check / red X status icons.
-    - **Response Timeline**: Compact horizontal timeline (`_ResponseTimeline`) on each assistant bubble with nodes for thinking, tool_call, tool_result, and response steps. Active step pulses. Start dot + end chevron arrow indicate reading direction. Derived from the message sequence (no extra storage).
+    - **Response Timeline**: Compact horizontal timeline (`_ResponseTimeline`) on each assistant bubble with nodes for thinking, tool_call, tool_result, compaction, and response steps. Active step pulses. Start dot + end chevron arrow indicate reading direction. Derived from the message sequence (no extra storage).
     - **Compaction Summary**: Subtle divider labels indicating that earlier messages have been summarized.
     - **Skeleton Shimmer** (`_TypingDots`): Cascading gradient bars shown while waiting for the first token.
     - Pre-computes claimed indices to avoid duplicate rendering of tool results, tool calls, and thinking messages across bubbles.
 - `Sidebar` (`lib/widgets/sidebar.dart`): 280px wide thread list sidebar. Groups threads by: Today, Yesterday, Previous 7 Days, Older. New Chat button, thread list with rename/delete popup menus, bottom actions (Clear Conversations, MCP Servers, Settings). Shows spinner for "New Thread" titles (generating).
-- `ChatInput` (`lib/widgets/chat_input.dart`): Text input with send button and tools (wrench) button for per-thread tool overrides. Multi-line (max 6 lines). Wrench icon highlights purple when overrides are active.
+- `ChatInput` (`lib/widgets/chat_input.dart`): Text input with send button, tools (wrench) button for per-thread overrides, and context donut chart. Multi-line (max 6 lines). Wrench icon highlights purple when overrides are active. Uses Stack-based hint overlay to avoid native browser placeholder doubling, and `TextSelectionTheme` to prevent double selection highlights on Flutter web. Context donut (`_ContextDonut`) shows context window consumption as a color-coded `CustomPaint` ring (green/amber/red). Only visible when `estimatedTokens > 0`.
+
+### Smart Auto-Scroll
+- `_isAtBottom` flag (80px threshold) tracks whether the user is scrolled to the bottom of the chat.
+- `_scrollToBottom()` skips when the user has scrolled away, respecting their scroll position during streaming.
+- `force: true` overrides for intentional actions (send message, load thread, reconnect).
+- Stream events (tokens, tool results, thinking) only auto-scroll when the user is already at the bottom.
 
 ### Placeholder & Streaming Flow
 1. User sends a message -> frontend creates a `temp-ast-*` placeholder assistant message (empty content, shows skeleton shimmer under THREADBOT header).
