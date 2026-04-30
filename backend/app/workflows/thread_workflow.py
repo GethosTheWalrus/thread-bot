@@ -100,6 +100,181 @@ class RunThreadWorkflow:
         mcp_tools_map = tools_result["mcp_tools_map"]
         openai_tools = tools_result["openai_tools"]
 
+        # ── Built-in tools (no MCP container required) ───────────────
+        builtin_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "continue_thinking",
+                    "description": (
+                        "Use this tool when you need more time to reason, reflect on tool results, "
+                        "or plan your next steps before giving a final answer. Call this tool with "
+                        "your current reasoning and the loop will continue, allowing you to make "
+                        "additional tool calls or think further."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reasoning": {
+                                "type": "string",
+                                "description": "Your current reasoning, reflections, or plan for next steps.",
+                            },
+                        },
+                        "required": ["reasoning"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_fetch",
+                    "description": (
+                        "Fetch the content of a web page or API endpoint and return it as text. "
+                        "Use this to read documentation, articles, API responses, or any public URL. "
+                        "Returns the raw text content of the page."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The full URL to fetch (must start with http:// or https://).",
+                            },
+                        },
+                        "required": ["url"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "current_datetime",
+                    "description": (
+                        "Returns the current date, time, and timezone. Use this whenever you need "
+                        "to know the current time, today's date, or the day of the week."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "calculator",
+                    "description": (
+                        "Evaluate a mathematical expression and return the result. Supports "
+                        "arithmetic (+, -, *, /, **), parentheses, and common math functions "
+                        "(sqrt, sin, cos, tan, log, log10, abs, round, ceil, floor, pi, e). "
+                        "Use this instead of doing mental math."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {
+                                "type": "string",
+                                "description": "The math expression to evaluate, e.g. '(3.14 * 5**2) / 2'.",
+                            },
+                        },
+                        "required": ["expression"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "json_parse",
+                    "description": (
+                        "Parse a JSON string and extract a value at a specific key path. "
+                        "Use this to drill into large JSON responses from other tools instead of "
+                        "pasting the entire JSON into your context. "
+                        "The key path uses dot notation (e.g. 'data.items.0.name')."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "json_string": {
+                                "type": "string",
+                                "description": "The JSON string to parse.",
+                            },
+                            "key_path": {
+                                "type": "string",
+                                "description": "Dot-separated path to extract, e.g. 'results.0.title'. Omit or use empty string to return the full parsed structure.",
+                            },
+                        },
+                        "required": ["json_string"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "text_count",
+                    "description": (
+                        "Count words, characters, lines, or sentences in a given text. "
+                        "Use this when you need precise counts instead of estimating."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "The text to analyze.",
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["words", "characters", "lines", "sentences"],
+                                "description": "What to count. Defaults to 'words'.",
+                            },
+                        },
+                        "required": ["text"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "base64_decode",
+                    "description": (
+                        "Decode a base64-encoded string to plain text. "
+                        "Use this for encoded API responses, JWT payloads, or other base64 data."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "encoded": {
+                                "type": "string",
+                                "description": "The base64-encoded string to decode.",
+                            },
+                        },
+                        "required": ["encoded"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "base64_encode",
+                    "description": (
+                        "Encode a plain text string to base64. "
+                        "Use this when you need to encode data for APIs, headers, or other purposes."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "text": {
+                                "type": "string",
+                                "description": "The plain text string to encode.",
+                            },
+                        },
+                        "required": ["text"],
+                    },
+                },
+            },
+        ]
+        openai_tools.extend(builtin_tools)
+
         # ── Build initial message list ───────────────────────────────
         current_messages = list(chat_history)
 
