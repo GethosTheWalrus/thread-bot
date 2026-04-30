@@ -103,20 +103,11 @@ Settings are persisted in the PostgreSQL database and survive pod/container rest
 
 Environment variables (via configmap or `.env`) serve as defaults. Once settings are saved through the UI, DB values take precedence and persist across restarts.
 
-## Development
 
-```bash
-# Backend (local)
-cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload
-
-# Frontend (local Flutter)
-cd frontend && flutter pub get
-flutter build web --release
-
-# View logs
-docker compose logs -f worker    # Workflow execution
-docker compose logs -f backend   # API server
+# Development
+Test the whole stack easily with docker
+```
+docker compose up --build -d
 ```
 
 For detailed developer instructions, architectural deep-dives, and coding rules, see:
