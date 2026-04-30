@@ -435,6 +435,7 @@ async def update_settings_endpoint(
         "llm_context_window": "llm_context_window",
         "llm_compaction_threshold": "llm_compaction_threshold",
         "llm_preserve_recent": "llm_preserve_recent",
+        "llm_tool_result_max_chars": "llm_tool_result_max_chars",
     }
     updates = {valid_keys[k]: v for k, v in request.items() if k in valid_keys}
     if updates:
@@ -452,6 +453,7 @@ async def update_settings_endpoint(
         "llm_context_window": config["context_window"],
         "llm_compaction_threshold": config["compaction_threshold"],
         "llm_preserve_recent": config["preserve_recent"],
+        "llm_tool_result_max_chars": config["tool_result_max_chars"],
         "has_api_key": bool(config["api_key"]),
     }
 
