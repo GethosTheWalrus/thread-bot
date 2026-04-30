@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'dart:math' as math;
 
 class ChatInput extends StatefulWidget {
   final Function(String) onSend;
   final bool isSending;
   final VoidCallback? onToolsPressed;
   final bool hasToolOverrides;
+  final int estimatedTokens;
+  final int contextWindow;
 
   const ChatInput({
     super.key,
@@ -13,6 +15,8 @@ class ChatInput extends StatefulWidget {
     this.isSending = false,
     this.onToolsPressed,
     this.hasToolOverrides = false,
+    this.estimatedTokens = 0,
+    this.contextWindow = 8192,
   });
 
   @override
@@ -33,6 +37,7 @@ class _ChatInputState extends State<ChatInput> {
         setState(() => _hasText = hasText);
       }
     });
+    _focusNode.addListener(() => setState(() {}));
   }
 
   @override
@@ -81,31 +86,66 @@ class _ChatInputState extends State<ChatInput> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    // Text field
+                    // Text field with stack-based hint to avoid native placeholder doubling
                     Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        focusNode: _focusNode,
-                        maxLines: 6,
-                        minLines: 1,
-                        textInputAction: TextInputAction.send,
-                        onSubmitted: (_) => _handleSend(),
-                        style: const TextStyle(
-                          fontSize: 15,
-                          color: Color(0xFFE4E4E7),
-                          height: 1.5,
-                        ),
-                        decoration: InputDecoration(
-                          hintText: 'Message ThreadBot...',
-                          hintStyle: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.25),
+                      child: Stack(
+                        children: [
+                          // Hint overlay (avoids browser native placeholder)
+                          if (!_hasText)
+                            Positioned(
+                              left: 20,
+                              top: 14,
+                              child: IgnorePointer(
+                                child: Text(
+                                  'Message ThreadBot...',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    height: 1.5,
+                                    color: Colors.white.withValues(alpha: 0.25),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          TextSelectionTheme(
+                            data: const TextSelectionThemeData(
+                              selectionColor: Color(0x408B5CF6),
+                            ),
+                            child: TextField(
+                              controller: _controller,
+                              focusNode: _focusNode,
+                              maxLines: 6,
+                              minLines: 1,
+                              textInputAction: TextInputAction.send,
+                              onSubmitted: (_) => _handleSend(),
+                              cursorColor: const Color(0xFF8B5CF6),
+                              enableSuggestions: false,
+                              autocorrect: false,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                color: Color(0xFFE4E4E7),
+                                height: 1.5,
+                              ),
+                              decoration: const InputDecoration(
+                                border: InputBorder.none,
+                                contentPadding: EdgeInsets.fromLTRB(20, 14, 8, 14),
+                                filled: false,
+                                // No hintText — using Stack overlay instead
+                              ),
+                            ),
                           ),
-                          border: InputBorder.none,
-                          contentPadding: const EdgeInsets.fromLTRB(20, 14, 8, 14),
-                          filled: false,
-                        ),
+                        ],
                       ),
                     ),
+
+                    // Context donut
+                    if (widget.estimatedTokens > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: _ContextDonut(
+                          estimatedTokens: widget.estimatedTokens,
+                          contextWindow: widget.contextWindow,
+                        ),
+                      ),
 
                     // Tools button
                     if (widget.onToolsPressed != null)
@@ -194,4 +234,111 @@ class _ChatInputState extends State<ChatInput> {
       ),
     );
   }
+}
+
+
+/// Small donut chart showing context window consumption.
+class _ContextDonut extends StatelessWidget {
+  final int estimatedTokens;
+  final int contextWindow;
+
+  const _ContextDonut({
+    required this.estimatedTokens,
+    required this.contextWindow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = contextWindow > 0
+        ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
+        : 0.0;
+    final percentage = (ratio * 100).round();
+
+    // Color shifts: green → amber → red
+    final Color arcColor;
+    if (ratio < 0.5) {
+      arcColor = const Color(0xFF10B981); // green
+    } else if (ratio < 0.75) {
+      arcColor = const Color(0xFFF59E0B); // amber
+    } else {
+      arcColor = const Color(0xFFEF4444); // red
+    }
+
+    final tokenLabel = estimatedTokens >= 1000
+        ? '${(estimatedTokens / 1000).toStringAsFixed(1)}k'
+        : '$estimatedTokens';
+    final windowLabel = contextWindow >= 1000
+        ? '${(contextWindow / 1000).toStringAsFixed(0)}k'
+        : '$contextWindow';
+
+    return Tooltip(
+      message: '$tokenLabel / $windowLabel tokens ($percentage%)',
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: CustomPaint(
+          painter: _DonutPainter(
+            ratio: ratio,
+            arcColor: arcColor,
+          ),
+          child: Center(
+            child: Text(
+              '$percentage%',
+              style: TextStyle(
+                fontSize: 8,
+                fontWeight: FontWeight.w600,
+                color: Colors.white.withValues(alpha: 0.5),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+class _DonutPainter extends CustomPainter {
+  final double ratio;
+  final Color arcColor;
+
+  _DonutPainter({required this.ratio, required this.arcColor});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 4;
+    const strokeWidth = 3.0;
+
+    // Background track
+    final bgPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.08)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.round;
+
+    canvas.drawCircle(center, radius, bgPaint);
+
+    // Filled arc
+    if (ratio > 0) {
+      final arcPaint = Paint()
+        ..color = arcColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = strokeWidth
+        ..strokeCap = StrokeCap.round;
+
+      final sweepAngle = 2 * math.pi * ratio;
+      canvas.drawArc(
+        Rect.fromCircle(center: center, radius: radius),
+        -math.pi / 2, // start from top
+        sweepAngle,
+        false,
+        arcPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DonutPainter oldDelegate) =>
+      oldDelegate.ratio != ratio || oldDelegate.arcColor != arcColor;
 }

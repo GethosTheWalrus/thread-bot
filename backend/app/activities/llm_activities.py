@@ -233,6 +233,16 @@ async def llm_turn(args: dict) -> dict:
             choice = data["choices"][0]
             message = choice["message"]
 
+            # Publish context usage estimate
+            context_window = config.get("context_window", 8192)
+            response_chars = len(message.get("content", "") or "")
+            total_chars = sum(len(m.get("content", "") or "") for m in messages) + response_chars
+            await _publish(redis_url, stream_channel, {
+                "type": "context",
+                "estimated_tokens": int(total_chars / 4),
+                "context_window": context_window,
+            })
+
             if message.get("tool_calls"):
                 print(f"[agent-loop] LLM requested {len(message['tool_calls'])} tool call(s)", flush=True)
                 thinking_content = message.get("content") or message.get("reasoning") or ""
@@ -875,6 +885,8 @@ async def compact_history(args: dict) -> dict:
     context_window = args.get("context_window", 8192)
     threshold = args.get("compaction_threshold", 0.75)
     preserve_recent = args.get("preserve_recent", 10)
+    redis_url = config.get("redis_url")
+    stream_channel = config.get("stream_channel")
 
     # Estimate tokens using character count heuristic (chars / 4)
     total_chars = sum(len(m.get("content", "") or "") for m in messages)
@@ -888,10 +900,21 @@ async def compact_history(args: dict) -> dict:
     )
 
     if estimated_tokens <= token_limit:
+        # Publish context usage even when no compaction
+        await _publish(redis_url, stream_channel, {
+            "type": "context",
+            "estimated_tokens": int(estimated_tokens),
+            "context_window": context_window,
+        })
         return {"compacted": False, "summary": None, "messages": messages, "compacted_count": 0}
 
     if len(messages) <= preserve_recent:
         print("Compaction skipped: not enough messages to compact", flush=True)
+        await _publish(redis_url, stream_channel, {
+            "type": "context",
+            "estimated_tokens": int(estimated_tokens),
+            "context_window": context_window,
+        })
         return {"compacted": False, "summary": None, "messages": messages, "compacted_count": 0}
 
     to_compact = messages[:-preserve_recent]
@@ -968,6 +991,21 @@ async def compact_history(args: dict) -> dict:
     }
 
     new_messages = [summary_message] + to_keep
+
+    # Publish compaction event so the frontend shows it in the timeline
+    await _publish(redis_url, stream_channel, {
+        "type": "compaction",
+        "content": f"Compacted {len(to_compact)} messages into a summary",
+        "compacted_count": len(to_compact),
+    })
+
+    # Publish updated context usage after compaction
+    post_chars = sum(len(m.get("content", "") or "") for m in new_messages)
+    await _publish(redis_url, stream_channel, {
+        "type": "context",
+        "estimated_tokens": int(post_chars / 4),
+        "context_window": context_window,
+    })
 
     return {
         "compacted": True,
