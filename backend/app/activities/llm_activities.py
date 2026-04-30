@@ -235,7 +235,7 @@ async def llm_turn(args: dict) -> dict:
 
             if message.get("tool_calls"):
                 print(f"[agent-loop] LLM requested {len(message['tool_calls'])} tool call(s)", flush=True)
-                thinking_content = message.get("content")
+                thinking_content = message.get("content") or message.get("reasoning") or ""
 
                 # Publish thinking event if LLM returned content alongside tool_calls
                 if thinking_content:
@@ -257,13 +257,21 @@ async def llm_turn(args: dict) -> dict:
                     f"streaming final response",
                     flush=True,
                 )
+
+                # Publish reasoning here — stream_response re-issues the call
+                # but streaming APIs may not return reasoning deltas.
+                reasoning = message.get("reasoning") or ""
+                if reasoning:
+                    await _save_inline(thread_id, "thinking", reasoning)
+                    await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning})
+
                 heartbeat({"step": "llm_call_done", "iteration": iteration, "tool_calls": 0})
 
                 return {
                     "has_tool_calls": False,
                     "llm_message": message,
                     "tool_calls": None,
-                    "thinking_content": None,
+                    "thinking_content": reasoning or None,
                     "text_content": message.get("content", ""),
                 }
 
@@ -441,6 +449,7 @@ async def stream_response(args: dict) -> dict:
     messages = args.get("messages", [])
     config = args.get("llm_config", {})
     fallback_content = args.get("fallback_content", "")
+    thread_id = args.get("thread_id")
     redis_url = config.get("redis_url")
     stream_channel = config.get("stream_channel")
 
