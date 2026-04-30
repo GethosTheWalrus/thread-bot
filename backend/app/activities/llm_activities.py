@@ -309,6 +309,8 @@ async def _execute_builtin(
     if tool_name == "web_fetch":
         import aiohttp
         url = tool_args.get("url", "")
+        start_index = int(tool_args.get("start_index", 0))
+        max_chars = int(tool_args.get("max_chars", 5000))
         if not url.startswith(("http://", "https://")):
             return "Error: URL must start with http:// or https://"
         try:
@@ -320,10 +322,16 @@ async def _execute_builtin(
                     content_type = resp.headers.get("Content-Type", "")
                     if "text" in content_type or "json" in content_type or "xml" in content_type:
                         text = await resp.text()
-                        # Limit response size to avoid flooding context
-                        if len(text) > 50000:
-                            return text[:50000] + f"\n\n[TRUNCATED — response was {len(text):,} chars, showing first 50,000]"
-                        return text
+                        total_len = len(text)
+                        # Clamp start_index
+                        start_index = max(0, min(start_index, total_len))
+                        end_index = min(start_index + max_chars, total_len)
+                        chunk = text[start_index:end_index]
+                        header = f"[Page content: {total_len:,} chars total. Showing chars {start_index:,}-{end_index:,}.]"
+                        if end_index < total_len:
+                            remaining = total_len - end_index
+                            header += f"\n[{remaining:,} chars remaining. Use start_index={end_index} to continue reading.]"
+                        return header + "\n\n" + chunk
                     else:
                         return f"Binary content ({content_type}), {resp.content_length or 'unknown'} bytes — cannot display as text."
         except Exception as e:
