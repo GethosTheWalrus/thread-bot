@@ -126,7 +126,8 @@ class RunThreadWorkflow:
                     "description": (
                         "Fetch the content of a web page or API endpoint and return it as text. "
                         "Use this to read documentation, articles, API responses, or any public URL. "
-                        "Returns the raw text content of the page."
+                        "Returns a paginated window of the page content. Use start_index and max_chars "
+                        "to paginate through large pages."
                     ),
                     "parameters": {
                         "type": "object",
@@ -134,6 +135,14 @@ class RunThreadWorkflow:
                             "url": {
                                 "type": "string",
                                 "description": "The full URL to fetch (must start with http:// or https://).",
+                            },
+                            "start_index": {
+                                "type": "integer",
+                                "description": "Character offset to start reading from. Defaults to 0.",
+                            },
+                            "max_chars": {
+                                "type": "integer",
+                                "description": "Maximum number of characters to return. Defaults to 5000.",
                             },
                         },
                         "required": ["url"],
