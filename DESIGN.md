@@ -94,12 +94,18 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
     1. `get_messages` — fetch chat history, reconstructing OpenAI-compatible format (10s timeout)
     2. `compact_history` — token-aware compaction check and summarization (120s timeout, 2 retries)
     3. If compacted: `save_message` (summary) + `delete_messages_before` (cleanup)
-    4. `call_llm` — LLM interaction loop with MCP tool support and real-time streaming (600s timeout, 1 attempt)
-    5. `save_message` — persist final assistant response (10s timeout)
-    6. Auto-title (conditional: first exchange or every 5th message) — `call_llm` (title gen, 60s) + `update_title` + `publish_title`
-    7. `publish_done` — send `[DONE]` sentinel to close the stream (5s timeout, 2 retries)
-- **Activities** (8 registered in `worker.py`):
-    - `call_llm`: Agent loop with MCP tool support. Discovers active MCP tools (from DB), applies per-thread tool overrides (tool-level > server-level > default enabled), runs non-streaming calls during tool iterations (need full `tool_calls` JSON). Re-issues the final call with `stream: true` and publishes each SSE token to Redis as `{"type":"token","content":"..."}`. Saves intermediate messages (thinking, tool_call, tool_result) to DB inline. Caches discovered tools in `mcp_servers.cached_tools`. Supports configurable tool result truncation (`LLM_TOOL_RESULT_MAX_CHARS`). All events are also buffered in a Redis list (`events:{channel}`) for stream reconnect.
+    4. `discover_tools` — MCP tool discovery, caching, per-thread override filtering (120s timeout, 2 retries)
+    5. Loop: `llm_turn` (300s, 1 attempt) → `execute_tools` (300s, 2 retries) — agent loop with non-streaming LLM calls
+    6. `stream_response` — re-issues final call with `stream: true`, publishes tokens to Redis (600s timeout, 1 attempt)
+    7. `save_message` — persist final assistant response (10s timeout)
+    8. Auto-title (conditional: first exchange or every 5th message) — `generate_title` (60s) + `update_title` + `publish_title`
+    9. `publish_done` — send `[DONE]` sentinel to close the stream (5s timeout, 2 retries)
+- **Activities** (12 registered in `worker.py`):
+    - `discover_tools`: Discovers active MCP tools (from DB), applies per-thread tool overrides (tool-level > server-level > default enabled). Caches discovered tools in `mcp_servers.cached_tools`.
+    - `llm_turn`: Single non-streaming LLM call. Publishes thinking events to Redis. Returns assistant response including any tool_calls.
+    - `execute_tools`: Executes MCP tool calls in containers. Publishes tool_call/tool_result events. Saves intermediate messages to DB inline. Supports configurable tool result truncation (`LLM_TOOL_RESULT_MAX_CHARS`).
+    - `stream_response`: Re-issues the final LLM call with `stream: true` and publishes each SSE token to Redis as `{"type":"token","content":"..."}`. All events are also buffered in a Redis list (`events:{channel}`) for stream reconnect.
+    - `generate_title`: Lightweight LLM call for auto-title generation only (no tools, no streaming).
     - `compact_history`: Estimates tokens in history using a character-count heuristic (`chars / 4`) and uses the LLM to generate a summary of older messages if a threshold is exceeded.
     - `delete_messages_before`: Cleans up the database by removing messages that have been compacted into a summary.
     - `save_message`, `get_messages`, `update_title`: Interact with the database.
@@ -111,8 +117,8 @@ The backend is split into the API server (`app/main.py` + `app/api/routes.py`) a
 
 ### MCP & Tool Orchestration
 ThreadBot supports extending the LLM with custom tools via the Model Context Protocol (MCP).
-- **Discovery**: The `call_llm` activity queries all active `MCPServer` entries in the database. For each server, it decrypts env_vars and args, then uses a temporary `stdio_client` connection to discover tool definitions. The connection method is auto-detected by `mcp_helper.py`: Docker locally (`docker run -i`), or `kubectl run` pods in Kubernetes.
-- **Tool Caching**: Discovered tools are cached in the `cached_tools` JSONB column on `mcp_servers`. This is populated by the test endpoint (`POST /mcp/{id}/test`) and by `call_llm` during the first chat. The `GET /tool-overrides` endpoint reads from this cache — it does NOT spin up MCP containers, making it instant.
+- **Discovery**: The `discover_tools` activity queries all active `MCPServer` entries in the database. For each server, it decrypts env_vars and args, then uses a temporary `stdio_client` connection to discover tool definitions. The connection method is auto-detected by `mcp_helper.py`: Docker locally (`docker run -i`), or `kubectl run` pods in Kubernetes.
+- **Tool Caching**: Discovered tools are cached in the `cached_tools` JSONB column on `mcp_servers`. This is populated by the test endpoint (`POST /mcp/{id}/test`) and by `discover_tools` during the first chat. The `GET /tool-overrides` endpoint reads from this cache — it does NOT spin up MCP containers, making it instant.
 - **Per-Thread Overrides**: Users can enable/disable individual MCP tools or entire servers on a per-thread basis. Overrides are stored in the `thread_tool_overrides` table. Tool-level overrides take precedence over server-level. No rows = all enabled (default). The frontend provides a wrench icon in the chat input to access a bottom sheet with server master toggles and individual tool toggles.
 - **Networking**: In Docker, tool containers are launched with `--add-host=host.docker.internal:host-gateway` to allow them to reach services on the host machine. In Kubernetes, MCP pods run in the same namespace with RBAC permissions via the `threadbot-sa` ServiceAccount.
 - **Container Arguments**: MCP servers can have additional CLI arguments (stored as key-value pairs, converted to `--key=value` flags). These are appended after the image name in docker/kubectl commands. In K8s, a `--` separator is added before the arguments.
@@ -138,14 +144,14 @@ To manage large conversations and stay within LLM context limits, ThreadBot impl
 Streaming is the core UX feature. Here's why Redis pub/sub is used and how it works:
 
 ### Why Redis is Required
-The Temporal worker (where `call_llm` executes) and the backend (where the HTTP streaming response lives) are **separate processes/containers**. Temporal workflows/activities don't support streaming results back to the caller — they return values only when complete. Redis bridges this gap with:
+The Temporal worker (where `stream_response` executes) and the backend (where the HTTP streaming response lives) are **separate processes/containers**. Temporal workflows/activities don't support streaming results back to the caller — they return values only when complete. Redis bridges this gap with:
 - **Pub/sub channels**: Real-time event relay from worker to backend for the initial SSE connection.
 - **Event buffer lists**: A Redis list (`events:{channel}`) stores all events for stream reconnect after page refresh. The list is polled by the reconnect endpoint.
 - **Generating status**: A Redis key (`generating:{thread_id}`) tracks which threads have active generation so the frontend knows to reconnect.
 
 ### Event Flow
 ```
-LLM API --SSE tokens--> Worker (call_llm activity)
+LLM API --SSE tokens--> Worker (stream_response activity)
                             |
                             | publish() to Redis channel + event buffer list
                             v
@@ -267,7 +273,7 @@ sequenceDiagram
         W->>DB: Save summary & delete old messages
     end
 
-    W->>W: call_llm activity begins
+    W->>W: discover_tools activity
     W->>W: Discover active MCP tools
     W->>W: Apply per-thread tool overrides
 
@@ -314,8 +320,8 @@ sequenceDiagram
 3.  **API Request**: `ApiService.sendMessageStream` sends a `POST /api/chat` request containing the content and optional thread ID. LLM configuration is managed entirely server-side.
 4.  **Backend Setup**: `chat_endpoint` creates the message in DB, subscribes to the Redis channel, sets the `generating:{thread_id}` flag in Redis, starts the workflow, and opens a `StreamingResponse` that relays Redis events.
 5.  **Tool Override Filtering**: The worker loads per-thread overrides from the DB and filters the discovered tool set. Tool-level overrides take precedence over server-level. No overrides = all tools enabled.
-6.  **Agent Loop**: The worker executes `call_llm` with non-streaming calls during tool iterations. Intermediate messages (thinking, tool_call, tool_result) are saved to DB inline and published to Redis (both pub/sub and event buffer list) in real-time. Tool results can be truncated for the LLM context while the full result is saved to DB and streamed to the frontend.
-7.  **Token Streaming**: When the agent loop's final iteration returns text (no tool calls), `call_llm` re-issues the request with `stream: true`. Each SSE token is published to Redis -> relayed by backend -> appended to the placeholder by the frontend.
+6.  **Agent Loop**: The worker executes `llm_turn` with non-streaming calls during tool iterations, then `execute_tools` for MCP tool execution. Intermediate messages (thinking, tool_call, tool_result) are saved to DB inline and published to Redis (both pub/sub and event buffer list) in real-time. Tool results can be truncated for the LLM context while the full result is saved to DB and streamed to the frontend.
+7.  **Token Streaming**: When the agent loop's final iteration returns text (no tool calls), `stream_response` re-issues the request with `stream: true`. Each SSE token is published to Redis -> relayed by backend -> appended to the placeholder by the frontend.
 8.  **Title Generation**: After saving the final response, the workflow generates a title, saves it, and publishes a `title` event to Redis so the sidebar updates instantly.
 9.  **Finalization**: `publish_done` sends `[DONE]` to close the stream, buffers it in the events list, and clears the `generating:{thread_id}` Redis key. The event buffer list TTL is set to 60s for reconnect grace period. The frontend does a silent DB reload to replace temp messages with persisted ones.
 
@@ -353,4 +359,4 @@ sequenceDiagram
 - **Temporal Sandbox**: Always remember that Temporal activities run in restricted environments. Avoid module-level state and perform lazy imports for database connections.
 - **Config Overrides**: Always use the override-aware helper functions (`get_setting`, `get_llm_config`) in the backend, as Pydantic models are immutable. Settings are persisted in the DB `settings` table and loaded on startup via `load_settings_from_db()`.
 - **Redis is Required**: Redis pub/sub cannot be replaced with in-memory queues because the worker and backend are separate processes. With K8s multi-replica deployments, in-memory approaches fail when the request handler and worker activity land on different pods. Redis also serves as the event buffer store for stream reconnect (events lists) and generation status tracking (generating keys).
-- **MCP Tool Caching**: The `GET /tool-overrides` endpoint must never spin up MCP containers. It reads from the `cached_tools` column on `mcp_servers`, which is populated by the test endpoint or by `call_llm` during the first chat.
+- **MCP Tool Caching**: The `GET /tool-overrides` endpoint must never spin up MCP containers. It reads from the `cached_tools` column on `mcp_servers`, which is populated by the test endpoint or by `discover_tools` during the first chat.
