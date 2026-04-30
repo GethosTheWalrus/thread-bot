@@ -109,6 +109,8 @@ class ChatMessageList extends StatelessWidget {
             steps.insert(0, const _TimelineStep(_TimelineStepType.toolCall));
           } else if (messages[j].isToolResult) {
             steps.insert(0, const _TimelineStep(_TimelineStepType.toolResult));
+          } else if (messages[j].isSystem && messages[j].metadata?['type'] == 'compaction_event') {
+            steps.insert(0, const _TimelineStep(_TimelineStepType.compaction));
           } else if (messages[j].isSystem) {
             continue;
           } else {
@@ -182,7 +184,7 @@ class _CompactionDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final count = message.metadata?['original_message_count'];
+    final count = message.metadata?['compacted_count'] ?? message.metadata?['original_message_count'];
     final label = count != null
         ? '📋 $count earlier messages summarized'
         : '📋 Conversation summarized';
@@ -851,7 +853,7 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
 
 // ── Timeline Step Types ──────────────────────────────────────────────────────
 
-enum _TimelineStepType { thinking, toolCall, toolResult, text, textActive }
+enum _TimelineStepType { thinking, toolCall, toolResult, compaction, text, textActive }
 
 class _TimelineStep {
   final _TimelineStepType type;
@@ -955,6 +957,11 @@ class _ResponseTimeline extends StatelessWidget {
         icon: Icons.inventory_2_rounded,
         color: const Color(0xFF10B981),
         label: 'Tool result',
+      ),
+      _TimelineStepType.compaction => (
+        icon: Icons.compress_rounded,
+        color: const Color(0xFFEC4899),
+        label: 'Compaction',
       ),
       _TimelineStepType.text || _TimelineStepType.textActive => (
         icon: Icons.edit_note_rounded,

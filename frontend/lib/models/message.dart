@@ -33,5 +33,7 @@ class Message {
   bool get isSystem => role == 'system';
   bool get isThinking => role == 'thinking';
   bool get isCompactionSummary =>
-      role == 'system' && metadata?['type'] == 'compaction_summary';
+      role == 'system' &&
+      (metadata?['type'] == 'compaction_summary' ||
+       metadata?['type'] == 'compaction_event');
 }

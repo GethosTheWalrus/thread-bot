@@ -32,6 +32,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
   bool _isAtBottom = true; // auto-scroll when anchored to bottom
+  int _contextEstimatedTokens = 0;
+  int _contextWindow = 8192;
 
   // Animation
   late final AnimationController _fadeController;
@@ -84,7 +86,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
-    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; });
+    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; _contextEstimatedTokens = 0; });
     try {
       final thread = await _api.getThread(threadId);
       if (mounted) {
@@ -510,6 +512,39 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           }
         });
         break;
+
+      case 'compaction':
+        final compactedCount = event['compacted_count'] as int? ?? 0;
+        final id = 'temp-compact-${DateTime.now().millisecondsSinceEpoch}';
+        tempIds.add(id);
+        setState(() {
+          final placeholderIdx = _messages.indexWhere(
+            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
+          );
+          final msg = Message(
+            id: id,
+            threadId: _activeThreadId ?? '',
+            role: 'system',
+            content: content,
+            createdAt: DateTime.now(),
+            metadata: {'type': 'compaction_event', 'compacted_count': compactedCount},
+          );
+          if (placeholderIdx >= 0) {
+            _messages.insert(placeholderIdx, msg);
+          } else {
+            _messages.add(msg);
+          }
+        });
+        break;
+
+      case 'context':
+        final estimatedTokens = event['estimated_tokens'] as int? ?? 0;
+        final contextWindow = event['context_window'] as int? ?? 8192;
+        setState(() {
+          _contextEstimatedTokens = estimatedTokens;
+          _contextWindow = contextWindow;
+        });
+        break;
     }
   }
 
@@ -518,6 +553,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _activeThreadId = null;
       _messages = [];
       _error = null;
+      _contextEstimatedTokens = 0;
     });
   }
 
@@ -628,6 +664,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     isSending: _isSending,
                     onToolsPressed: _activeThreadId != null ? _showToolOverrides : null,
                     hasToolOverrides: _hasToolOverrides,
+                    estimatedTokens: _contextEstimatedTokens,
+                    contextWindow: _contextWindow,
                   ),
                 ],
               ),
