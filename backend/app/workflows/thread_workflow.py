@@ -38,16 +38,11 @@ class RunThreadWorkflow:
         )
 
         # ── Compaction Check ─────────────────────────────────────────
-        compaction_config = {
-            k: v for k, v in llm_config.items()
-            if k not in ("stream_url", "redis_url", "stream_channel")
-        }
-
         compact_result = await execute_activity(
             compact_history,
             {
                 "thread_id": thread_id,
-                "llm_config": compaction_config,
+                "llm_config": llm_config,
                 "messages": chat_history,
                 "context_window": llm_config.get("context_window", 8192),
                 "compaction_threshold": llm_config.get("compaction_threshold", 0.75),
@@ -378,7 +373,7 @@ class RunThreadWorkflow:
                 "Reply with ONLY the title, no quotes, no labels. Context:\n" + context
             )
 
-            title_config = compaction_config.copy()
+            title_config = llm_config.copy()
 
             title = await execute_activity(
                 generate_title,
