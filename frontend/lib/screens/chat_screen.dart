@@ -31,6 +31,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String? _error;
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
+  bool _isAtBottom = true; // auto-scroll when anchored to bottom
 
   // Animation
   late final AnimationController _fadeController;
@@ -48,14 +49,26 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       curve: Curves.easeOut,
     );
     _fadeController.forward();
+    _scrollController.addListener(_onScroll);
     _loadThreads();
   }
 
   @override
   void dispose() {
     _fadeController.dispose();
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final pos = _scrollController.position;
+    // Consider "at bottom" if within 80px of the max extent
+    final atBottom = pos.pixels >= pos.maxScrollExtent - 80;
+    if (atBottom != _isAtBottom) {
+      _isAtBottom = atBottom;
+    }
   }
 
   // ── Data Loading ──────────────────────────────────────────────────
@@ -76,7 +89,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final thread = await _api.getThread(threadId);
       if (mounted) {
         setState(() { _messages = thread.messages; _isLoadingMessages = false; });
-        _scrollToBottom();
+        _scrollToBottom(force: true);
 
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
@@ -153,7 +166,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         createdAt: DateTime.now(),
       ));
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
 
     try {
       final stream = _api.reconnectStream(threadId);
@@ -317,7 +330,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       createdAt: DateTime.now(),
     );
     setState(() => _messages.add(optimisticMsg));
-    _scrollToBottom();
+    _scrollToBottom(force: true);
 
     // Track temporary message IDs for cleanup on reload
     final tempIds = <String>[optimisticMsg.id];
@@ -334,7 +347,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         createdAt: DateTime.now(),
       ));
     });
-    _scrollToBottom();
+    _scrollToBottom(force: true);
 
     try {
       final stream = _api.sendMessageStream(content, threadId: _activeThreadId);
@@ -551,7 +564,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom({bool force = false}) {
+    if (!force && !_isAtBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -559,6 +573,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
+        _isAtBottom = true;
       }
     });
   }
