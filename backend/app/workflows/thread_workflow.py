@@ -170,6 +170,7 @@ class RunThreadWorkflow:
                         "messages": current_messages,
                         "llm_config": llm_config,
                         "fallback_content": turn_result["text_content"] or "",
+                        "thread_id": thread_id,
                     },
                     start_to_close_timeout=timedelta(seconds=600),
                     retry_policy=RetryPolicy(maximum_attempts=1),
