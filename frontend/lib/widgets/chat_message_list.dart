@@ -1107,19 +1107,10 @@ class _ChatBubble extends StatelessWidget {
           _ResponseTimeline(steps: timelineSteps),
         ] else
           headerLabel,
-        // Render thinking blocks and tool call groups in chronological order
+        // Render thinking blocks and tool call groups as a collapsible accordion
         if (!isUser && preItems.isNotEmpty) ...[
           const SizedBox(height: 8),
-          ...preItems.map((item) {
-            if (item.isThinking) {
-              return _InlineThinkingBlock(message: item.thinking!);
-            } else {
-              return _InlineToolCallGroup(
-                group: item.toolCallGroup!,
-                isLoading: isLoading,
-              );
-            }
-          }),
+          _AgentStepsAccordion(preItems: preItems, isLoading: isLoading),
         ],
         const SizedBox(height: 6),
         _buildMessageBody(context, isUser),
@@ -1182,6 +1173,115 @@ class _ChatBubble extends StatelessWidget {
         if (href != null) launchUrl(Uri.parse(href));
       },
       styleSheet: style,
+    );
+  }
+}
+
+/// Collapsible accordion that groups all thinking blocks and tool call groups
+/// into a single summary line. Expands to show full details on tap.
+class _AgentStepsAccordion extends StatefulWidget {
+  final List<_PreAssistantItem> preItems;
+  final bool isLoading;
+
+  const _AgentStepsAccordion({required this.preItems, this.isLoading = false});
+
+  @override
+  State<_AgentStepsAccordion> createState() => _AgentStepsAccordionState();
+}
+
+class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final thinkCount = widget.preItems.where((i) => i.isThinking).length;
+    final toolGroups = widget.preItems.where((i) => i.isToolCall).toList();
+    final toolCallCount = toolGroups.fold<int>(
+      0,
+      (sum, item) {
+        final content = item.toolCallGroup!.message.content;
+        var body = content;
+        if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
+        return sum + body.split(',').where((s) => s.trim().isNotEmpty).length;
+      },
+    );
+
+    // Build summary label
+    final parts = <String>[];
+    if (thinkCount > 0) parts.add('$thinkCount thinking');
+    if (toolCallCount > 0) parts.add('$toolCallCount tool call${toolCallCount > 1 ? 's' : ''}');
+    final summary = parts.join(', ');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Collapsed summary bar
+        GestureDetector(
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(8),
+              color: const Color(0xFF8B5CF6).withValues(alpha: 0.06),
+              border: Border.all(
+                color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.account_tree_rounded,
+                  size: 12,
+                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.8),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  summary,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                if (widget.isLoading) ...[
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    width: 10,
+                    height: 10,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      valueColor: AlwaysStoppedAnimation(
+                        const Color(0xFF8B5CF6).withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 4),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 14,
+                  color: Colors.white.withValues(alpha: 0.3),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // Expanded detail view
+        if (_expanded) ...[
+          const SizedBox(height: 6),
+          ...widget.preItems.map((item) {
+            if (item.isThinking) {
+              return _InlineThinkingBlock(message: item.thinking!);
+            } else {
+              return _InlineToolCallGroup(
+                group: item.toolCallGroup!,
+                isLoading: widget.isLoading,
+              );
+            }
+          }),
+        ],
+      ],
     );
   }
 }
