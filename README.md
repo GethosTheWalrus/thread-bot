@@ -1,5 +1,7 @@
 # ThreadBot
 
+Read the blog post about ThreadBot on my website [here](https://miketoscano.com/blog/threadbot-temporal.html)
+
 ThreadBot is a thread-based AI chatbot powered by **Temporal** for robust workflow orchestration and **Model Context Protocol (MCP)** for extensible tool support.
 
 It features a responsive Flutter web interface, an asynchronous FastAPI backend, real-time token streaming via Redis pub/sub, and a context-aware memory system that automatically compacts conversation history to stay within LLM token limits.
