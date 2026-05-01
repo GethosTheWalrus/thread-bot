@@ -1012,7 +1012,7 @@ class _PulsingWidgetState extends State<_PulsingWidget>
 
 // ── Regular Chat Bubble ───────────────────────────────────────────────────────
 
-class _ChatBubble extends StatelessWidget {
+class _ChatBubble extends StatefulWidget {
   final Message message;
   final List<_PreAssistantItem> preItems;
   final List<_TimelineStep> timelineSteps;
@@ -1026,8 +1026,15 @@ class _ChatBubble extends StatelessWidget {
   });
 
   @override
+  State<_ChatBubble> createState() => _ChatBubbleState();
+}
+
+class _ChatBubbleState extends State<_ChatBubble> {
+  bool _stepsExpanded = false;
+
+  @override
   Widget build(BuildContext context) {
-    final isUser = message.isUser;
+    final isUser = widget.message.isUser;
     final screenWidth = MediaQuery.of(context).size.width;
     final maxContentWidth = screenWidth > 900 ? 720.0 : screenWidth * 0.85;
 
@@ -1077,7 +1084,7 @@ class _ChatBubble extends StatelessWidget {
 
   Widget _buildContent(BuildContext context, bool isUser) {
     final isWide = MediaQuery.of(context).size.width > 768;
-    final showTimeline = !isUser && timelineSteps.length > 1;
+    final hasTimeline = !isUser && widget.timelineSteps.length > 1;
     final headerLabel = Text(
       (isUser ? 'You' : 'ThreadBot').toUpperCase(),
       style: TextStyle(
@@ -1093,24 +1100,48 @@ class _ChatBubble extends StatelessWidget {
       crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
         // Header + timeline: inline on wide, stacked on narrow
-        if (showTimeline && isWide)
+        if (hasTimeline && isWide)
           Row(
             children: [
               headerLabel,
               const SizedBox(width: 12),
-              Flexible(child: _ResponseTimeline(steps: timelineSteps)),
+              Flexible(
+                child: AnimatedOpacity(
+                  opacity: _stepsExpanded ? 0.0 : 1.0,
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeInOut,
+                  child: IgnorePointer(
+                    ignoring: _stepsExpanded,
+                    child: _ResponseTimeline(steps: widget.timelineSteps),
+                  ),
+                ),
+              ),
             ],
           )
-        else if (showTimeline) ...[
+        else if (hasTimeline) ...[
           headerLabel,
           const SizedBox(height: 6),
-          _ResponseTimeline(steps: timelineSteps),
+          AnimatedOpacity(
+            opacity: _stepsExpanded ? 0.0 : 1.0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOut,
+            child: IgnorePointer(
+              ignoring: _stepsExpanded,
+              child: _ResponseTimeline(steps: widget.timelineSteps),
+            ),
+          ),
         ] else
           headerLabel,
         // Render thinking blocks and tool call groups as a collapsible accordion
-        if (!isUser && preItems.isNotEmpty) ...[
+        if (!isUser && widget.preItems.isNotEmpty) ...[
           const SizedBox(height: 8),
-          _AgentStepsAccordion(preItems: preItems, isLoading: isLoading),
+          _AgentStepsAccordion(
+            preItems: widget.preItems,
+            isLoading: widget.isLoading,
+            onExpandChanged: (expanded) {
+              setState(() { _stepsExpanded = expanded; });
+            },
+          ),
         ],
         const SizedBox(height: 6),
         _buildMessageBody(context, isUser),
@@ -1119,7 +1150,7 @@ class _ChatBubble extends StatelessWidget {
   }
 
   Widget _buildMessageBody(BuildContext context, bool isUser) {
-    if (!isUser && message.content.isEmpty) {
+    if (!isUser && widget.message.content.isEmpty) {
       return const Padding(
         padding: EdgeInsets.only(top: 8),
         child: _TypingDots(),
@@ -1162,12 +1193,12 @@ class _ChatBubble extends StatelessWidget {
       blockquotePadding: const EdgeInsets.only(left: 16, top: 4, bottom: 4),
     );
 
-    if (!isUser && message.id.startsWith('temp-ast-')) {
-      return _AnimatedMarkdown(data: message.content, styleSheet: style);
+    if (!isUser && widget.message.id.startsWith('temp-ast-')) {
+      return _AnimatedMarkdown(data: widget.message.content, styleSheet: style);
     }
 
     return MarkdownBody(
-      data: message.content,
+      data: widget.message.content,
       selectable: true,
       onTapLink: (text, href, title) {
         if (href != null) launchUrl(Uri.parse(href));
@@ -1182,8 +1213,9 @@ class _ChatBubble extends StatelessWidget {
 class _AgentStepsAccordion extends StatefulWidget {
   final List<_PreAssistantItem> preItems;
   final bool isLoading;
+  final ValueChanged<bool>? onExpandChanged;
 
-  const _AgentStepsAccordion({required this.preItems, this.isLoading = false});
+  const _AgentStepsAccordion({required this.preItems, this.isLoading = false, this.onExpandChanged});
 
   @override
   State<_AgentStepsAccordion> createState() => _AgentStepsAccordionState();
@@ -1192,11 +1224,88 @@ class _AgentStepsAccordion extends StatefulWidget {
 class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
   bool _expanded = false;
 
+  void _toggle() {
+    setState(() => _expanded = !_expanded);
+    widget.onExpandChanged?.call(_expanded);
+  }
+
+  /// Flatten preItems into a uniform list of _StepEntry for rendering.
+  /// Tool calls and results are separate rows (mirroring the horizontal timeline).
+  List<_StepEntry> _buildSteps() {
+    final steps = <_StepEntry>[];
+    for (final item in widget.preItems) {
+      if (item.isThinking) {
+        steps.add(_StepEntry(
+          icon: Icons.psychology_rounded,
+          color: const Color(0xFFF59E0B),
+          label: 'Thought',
+          expandedContent: item.thinking!.content,
+        ));
+      } else if (item.isToolCall) {
+        final group = item.toolCallGroup!;
+        final content = group.message.content;
+        var body = content;
+        if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
+        final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+        final toolCalls = group.message.metadata?['tool_calls'] as List<dynamic>?;
+
+        for (var i = 0; i < tools.length; i++) {
+          final result = i < group.results.length ? group.results[i] : null;
+          final isError = result != null && _InlineToolCallGroup._isError(result.content);
+          final waiting = widget.isLoading && result == null;
+
+          // Tool call input
+          String? toolInput;
+          if (toolCalls != null && i < toolCalls.length) {
+            final tc = toolCalls[i] as Map<String, dynamic>?;
+            final fn = tc?['function'] as Map<String, dynamic>?;
+            toolInput = fn?['arguments'] as String?;
+          }
+
+          // Tool call step
+          steps.add(_StepEntry(
+            icon: Icons.build_rounded,
+            color: const Color(0xFF3B82F6),
+            label: 'Called ${tools[i]}',
+            isLoading: waiting,
+            expandedContent: _formatInput(toolInput),
+          ));
+
+          // Tool result step (only if we have one)
+          if (result != null) {
+            steps.add(_StepEntry(
+              icon: isError ? Icons.error_rounded : Icons.check_circle_rounded,
+              color: isError ? const Color(0xFFEF4444) : const Color(0xFF10B981),
+              label: isError ? 'Error from ${tools[i]}' : 'Result from ${tools[i]}',
+              expandedContent: _formatOutput(result.content),
+            ));
+          }
+        }
+      }
+    }
+    return steps;
+  }
+
+  String? _formatInput(String? input) {
+    if (input == null || input.isEmpty) return null;
+    try {
+      return const JsonEncoder.withIndent('  ').convert(jsonDecode(input));
+    } catch (_) {
+      return input;
+    }
+  }
+
+  String? _formatOutput(String content) {
+    if (content.isEmpty) return null;
+    return content;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final steps = _buildSteps();
     final thinkCount = widget.preItems.where((i) => i.isThinking).length;
-    final toolGroups = widget.preItems.where((i) => i.isToolCall).toList();
-    final toolCallCount = toolGroups.fold<int>(
+    // Count tool calls only (not results) for summary
+    final toolCallCount = widget.preItems.where((i) => i.isToolCall).fold<int>(
       0,
       (sum, item) {
         final content = item.toolCallGroup!.message.content;
@@ -1208,8 +1317,12 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
 
     // Build summary label
     final parts = <String>[];
-    if (thinkCount > 0) parts.add('$thinkCount thinking');
-    if (toolCallCount > 0) parts.add('$toolCallCount tool call${toolCallCount > 1 ? 's' : ''}');
+    if (thinkCount > 0) {
+      parts.add('thought ${thinkCount == 1 ? 'once' : '$thinkCount times'}');
+    }
+    if (toolCallCount > 0) {
+      parts.add('called $toolCallCount tool${toolCallCount > 1 ? 's' : ''}');
+    }
     final summary = parts.join(', ');
 
     return Column(
@@ -1217,7 +1330,7 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
       children: [
         // Collapsed summary bar
         GestureDetector(
-          onTap: () => setState(() => _expanded = !_expanded),
+          onTap: _toggle,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
@@ -1267,21 +1380,177 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
             ),
           ),
         ),
-        // Expanded detail view
-        if (_expanded) ...[
-          const SizedBox(height: 6),
-          ...widget.preItems.map((item) {
-            if (item.isThinking) {
-              return _InlineThinkingBlock(message: item.thinking!);
-            } else {
-              return _InlineToolCallGroup(
-                group: item.toolCallGroup!,
-                isLoading: widget.isLoading,
-              );
-            }
-          }),
-        ],
+        // Expanded: uniform activity feed with vertical connector (animated)
+        AnimatedCrossFade(
+          firstChild: const SizedBox.shrink(),
+          secondChild: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ...List.generate(steps.length, (i) {
+                  return _ActivityRow(
+                    step: steps[i],
+                    isLast: false,
+                  );
+                }),
+                _ActivityRow(
+                  step: const _StepEntry(
+                    icon: Icons.edit_note_rounded,
+                    color: Color(0xFF8B5CF6),
+                    label: 'Response',
+                  ),
+                  isLast: true,
+                ),
+              ],
+            ),
+          ),
+          crossFadeState: _expanded
+              ? CrossFadeState.showSecond
+              : CrossFadeState.showFirst,
+          duration: const Duration(milliseconds: 250),
+          sizeCurve: Curves.easeInOut,
+        ),
       ],
+    );
+  }
+}
+
+/// A single entry in the flattened step list.
+class _StepEntry {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final bool isLoading;
+  final String? expandedContent;
+
+  const _StepEntry({
+    required this.icon,
+    required this.color,
+    required this.label,
+    this.isLoading = false,
+    this.expandedContent,
+  });
+}
+
+/// A uniform row in the activity feed with a vertical connector line.
+class _ActivityRow extends StatefulWidget {
+  final _StepEntry step;
+  final bool isLast;
+
+  const _ActivityRow({required this.step, this.isLast = false});
+
+  @override
+  State<_ActivityRow> createState() => _ActivityRowState();
+}
+
+class _ActivityRowState extends State<_ActivityRow> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final step = widget.step;
+    final hasContent = step.expandedContent != null && step.expandedContent!.isNotEmpty;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Vertical timeline connector + icon
+          SizedBox(
+            width: 24,
+            child: Column(
+              children: [
+                // Icon dot
+                Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: step.color.withValues(alpha: 0.15),
+                  ),
+                  child: step.isLoading
+                      ? Padding(
+                          padding: const EdgeInsets.all(3),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            valueColor: AlwaysStoppedAnimation(step.color),
+                          ),
+                        )
+                      : Icon(step.icon, size: 10, color: step.color),
+                ),
+                // Connector line
+                if (!widget.isLast)
+                  Expanded(
+                    child: Container(
+                      width: 1.5,
+                      color: Colors.white.withValues(alpha: 0.06),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Label + expandable content
+          Expanded(
+            child: Padding(
+              padding: EdgeInsets.only(bottom: widget.isLast ? 0 : 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  GestureDetector(
+                    onTap: hasContent ? () => setState(() => _expanded = !_expanded) : null,
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            step.label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.white.withValues(alpha: 0.55),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                        if (hasContent) ...[
+                          const SizedBox(width: 4),
+                          Icon(
+                            _expanded ? Icons.expand_less : Icons.expand_more,
+                            size: 14,
+                            color: Colors.white.withValues(alpha: 0.25),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  if (_expanded && hasContent)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          color: const Color(0xFF111118),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                        ),
+                        child: SelectableText(
+                          step.expandedContent!,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                            color: Color(0xFFA1A1AA),
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
