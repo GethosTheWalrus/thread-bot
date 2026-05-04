@@ -89,12 +89,37 @@ class ChatMessageList extends StatelessWidget {
         // Completed assistant message — derive from claimed preItems
         for (final item in pre) {
           if (item.isThinking) {
-            steps.add(const _TimelineStep(_TimelineStepType.thinking));
+            steps.add(_TimelineStep(_TimelineStepType.thinking, content: item.thinking!.content));
           } else if (item.isToolCall) {
-            steps.add(const _TimelineStep(_TimelineStepType.toolCall));
-            // Each tool result is its own node
-            for (final _ in item.toolCallGroup!.results) {
-              steps.add(const _TimelineStep(_TimelineStepType.toolResult));
+            final group = item.toolCallGroup!;
+            final content = group.message.content;
+            var body = content;
+            if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
+            final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+            final toolCalls = group.message.metadata?['tool_calls'] as List<dynamic>?;
+
+            for (var j = 0; j < tools.length; j++) {
+              final result = j < group.results.length ? group.results[j] : null;
+
+              String? toolInput;
+              if (toolCalls != null && j < toolCalls.length) {
+                final tc = toolCalls[j] as Map<String, dynamic>?;
+                final fn = tc?['function'] as Map<String, dynamic>?;
+                toolInput = fn?['arguments'] as String?;
+              }
+              String? formattedInput;
+              if (toolInput != null && toolInput.isNotEmpty) {
+                try {
+                  formattedInput = const JsonEncoder.withIndent('  ').convert(jsonDecode(toolInput));
+                } catch (_) {
+                  formattedInput = toolInput;
+                }
+              }
+              steps.add(_TimelineStep(_TimelineStepType.toolCall, label: 'Called ${tools[j]}', content: formattedInput));
+              
+              if (result != null) {
+                steps.add(_TimelineStep(_TimelineStepType.toolResult, label: 'Result from ${tools[j]}', content: result.content));
+              }
             }
           }
         }
@@ -104,13 +129,34 @@ class ChatMessageList extends StatelessWidget {
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isUser) break;
           if (messages[j].isThinking) {
-            steps.insert(0, const _TimelineStep(_TimelineStepType.thinking));
+            steps.insert(0, _TimelineStep(_TimelineStepType.thinking, content: messages[j].content));
           } else if (messages[j].isToolCall) {
-            steps.insert(0, const _TimelineStep(_TimelineStepType.toolCall));
+            final content = messages[j].content;
+            var body = content;
+            if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
+            final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+            final toolCalls = messages[j].metadata?['tool_calls'] as List<dynamic>?;
+            for (var k = tools.length - 1; k >= 0; k--) {
+              String? toolInput;
+              if (toolCalls != null && k < toolCalls.length) {
+                final tc = toolCalls[k] as Map<String, dynamic>?;
+                final fn = tc?['function'] as Map<String, dynamic>?;
+                toolInput = fn?['arguments'] as String?;
+              }
+              String? formattedInput;
+              if (toolInput != null && toolInput.isNotEmpty) {
+                try {
+                  formattedInput = const JsonEncoder.withIndent('  ').convert(jsonDecode(toolInput));
+                } catch (_) {
+                  formattedInput = toolInput;
+                }
+              }
+              steps.insert(0, _TimelineStep(_TimelineStepType.toolCall, label: 'Called ${tools[k]}', content: formattedInput));
+            }
           } else if (messages[j].isToolResult) {
-            steps.insert(0, const _TimelineStep(_TimelineStepType.toolResult));
+            steps.insert(0, _TimelineStep(_TimelineStepType.toolResult, label: 'Result', content: messages[j].content));
           } else if (messages[j].isSystem && messages[j].metadata?['type'] == 'compaction_event') {
-            steps.insert(0, const _TimelineStep(_TimelineStepType.compaction));
+            steps.insert(0, _TimelineStep(_TimelineStepType.compaction, content: messages[j].content));
           } else if (messages[j].isSystem) {
             continue;
           } else {
@@ -857,7 +903,9 @@ enum _TimelineStepType { thinking, toolCall, toolResult, compaction, text, textA
 
 class _TimelineStep {
   final _TimelineStepType type;
-  const _TimelineStep(this.type);
+  final String? label;
+  final String? content;
+  const _TimelineStep(this.type, {this.label, this.content});
 }
 
 /// Compact horizontal timeline showing the bot's progression through a response.
@@ -938,7 +986,11 @@ class _ResponseTimeline extends StatelessWidget {
       node = _PulsingWidget(child: node);
     }
 
-    return node;
+    return _HoverTimelineNode(
+      step: step,
+      configLabel: config.label,
+      child: node,
+    );
   }
 
   static ({IconData icon, Color color, String label}) _stepConfig(_TimelineStep step) {
@@ -969,6 +1021,103 @@ class _ResponseTimeline extends StatelessWidget {
         label: 'Response',
       ),
     };
+  }
+}
+
+class _HoverTimelineNode extends StatefulWidget {
+  final _TimelineStep step;
+  final String configLabel;
+  final Widget child;
+
+  const _HoverTimelineNode({required this.step, required this.configLabel, required this.child});
+
+  @override
+  State<_HoverTimelineNode> createState() => _HoverTimelineNodeState();
+}
+
+class _HoverTimelineNodeState extends State<_HoverTimelineNode> {
+  bool _isHovered = false;
+
+  void _showModal() {
+    if (widget.step.content == null || widget.step.content!.isEmpty) return;
+    
+    showDialog(
+      context: context,
+      builder: (context) {
+        final title = widget.step.label ?? widget.configLabel;
+        return Dialog(
+          backgroundColor: const Color(0xFF0D0D12),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
+          ),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 800, maxHeight: 600),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close_rounded, size: 20),
+                      color: Colors.white.withValues(alpha: 0.5),
+                      onPressed: () => Navigator.of(context).pop(),
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: _CollapsibleResultBlock(content: widget.step.content!, label: 'details'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.step.label ?? widget.configLabel;
+    final isClickable = widget.step.content != null && widget.step.content!.isNotEmpty;
+
+    return MouseRegion(
+      cursor: isClickable ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onEnter: (_) {
+        if (isClickable) setState(() => _isHovered = true);
+      },
+      onExit: (_) {
+        if (isClickable) setState(() => _isHovered = false);
+      },
+      child: GestureDetector(
+        onTap: isClickable ? _showModal : null,
+        child: Tooltip(
+          message: title,
+          waitDuration: const Duration(milliseconds: 300),
+          child: AnimatedScale(
+            scale: _isHovered ? 1.2 : 1.0,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutBack,
+            child: widget.child,
+          ),
+        ),
+      ),
+    );
   }
 }
 

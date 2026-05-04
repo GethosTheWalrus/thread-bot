@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
     LLM_STREAM_TIMEOUT: int = 600
+    LLM_MAX_ITERATIONS: int = 25
     LLM_CONTEXT_WINDOW: int = 8192
     LLM_COMPACTION_THRESHOLD: float = 0.75
     LLM_PRESERVE_RECENT: int = 10
@@ -90,6 +91,7 @@ async def load_settings_from_db() -> None:
         "llm_temperature": float,
         "llm_max_tokens": int,
         "llm_stream_timeout": int,
+        "llm_max_iterations": int,
         "llm_context_window": int,
         "llm_compaction_threshold": float,
         "llm_preserve_recent": int,
@@ -114,6 +116,7 @@ def get_llm_config() -> dict:
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),
         "stream_timeout": get_setting("LLM_STREAM_TIMEOUT"),
+        "max_iterations": get_setting("LLM_MAX_ITERATIONS"),
         "context_window": get_setting("LLM_CONTEXT_WINDOW"),
         "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
         "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
