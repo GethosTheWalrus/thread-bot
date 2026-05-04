@@ -12,6 +12,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _apiUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
+  final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
   final _preserveRecentController = TextEditingController();
   final _toolResultMaxCharsController = TextEditingController();
@@ -36,6 +37,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _apiKeyController.text = '';
       _contextWindowController.text =
           (settings['llm_context_window'] ?? 8192).toString();
+      _maxIterationsController.text =
+          (settings['llm_max_iterations'] ?? 25).toString();
       _preserveRecentController.text =
           (settings['llm_preserve_recent'] ?? 10).toString();
       _toolResultMaxCharsController.text =
@@ -46,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _apiUrlController.text = '';
       _modelController.text = 'llama3.1';
       _contextWindowController.text = '8192';
+      _maxIterationsController.text = '25';
       _preserveRecentController.text = '10';
       _toolResultMaxCharsController.text = '0';
     }
@@ -59,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final api = ApiService();
 
       final contextWindow = int.tryParse(_contextWindowController.text) ?? 8192;
+      final maxIterations = int.tryParse(_maxIterationsController.text) ?? 25;
       final preserveRecent = int.tryParse(_preserveRecentController.text) ?? 10;
       final toolResultMaxChars = int.tryParse(_toolResultMaxCharsController.text) ?? 0;
 
@@ -66,6 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final payload = <String, dynamic>{
         'llm_api_url': _apiUrlController.text,
         'llm_model': _modelController.text,
+        'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
         'llm_compaction_threshold': _compactionThreshold,
         'llm_preserve_recent': preserveRecent,
@@ -108,6 +114,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _apiUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
+    _maxIterationsController.dispose();
     _contextWindowController.dispose();
     _preserveRecentController.dispose();
     _toolResultMaxCharsController.dispose();
@@ -202,6 +209,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             label: 'Context Window (tokens)',
                             hint: '8192',
                             icon: Icons.token_outlined,
+                            keyboardType: TextInputType.number,
+                          ),
+                          const SizedBox(height: 24),
+                          _buildField(
+                            controller: _maxIterationsController,
+                            label: 'Max Conversational Turns',
+                            hint: '25',
+                            icon: Icons.repeat_rounded,
                             keyboardType: TextInputType.number,
                           ),
                           const SizedBox(height: 24),

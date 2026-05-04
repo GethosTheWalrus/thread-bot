@@ -300,6 +300,15 @@ class RunThreadWorkflow:
         used_tools = False
 
         for iteration in range(1, max_iterations + 1):
+            # If this is the last iteration, force a final response without tools
+            turn_tools = openai_tools
+            if iteration == max_iterations and openai_tools:
+                turn_tools = []
+                current_messages.append({
+                    "role": "system",
+                    "content": "Notice: You have reached the maximum number of allowed conversational turns/tool calls. You must now provide a final, human-readable response to the user based on the information you have already gathered. Acknowledge that you have hit this limit and cannot make any further tool calls."
+                })
+
             # Single LLM call
             turn_result = await execute_activity(
                 llm_turn,
@@ -307,7 +316,7 @@ class RunThreadWorkflow:
                     "messages": current_messages,
                     "llm_config": llm_config,
                     "thread_id": thread_id,
-                    "openai_tools": openai_tools,
+                    "openai_tools": turn_tools,
                     "iteration": iteration,
                     "max_iterations": max_iterations,
                 },
