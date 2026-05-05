@@ -4,6 +4,12 @@ from datetime import datetime
 from typing import Optional
 
 
+class ToolOverrideItem(BaseModel):
+    server_id: str
+    tool_name: Optional[str] = None  # null = server-level override
+    enabled: bool
+
+
 class MessageCreate(BaseModel):
     role: str = Field(..., description="Role: user or assistant")
     content: str = Field(..., description="Message content")
@@ -95,12 +101,6 @@ class MCPTestResponse(BaseModel):
     success: bool
     tools: list[str] = []
     error: Optional[str] = None
-
-
-class ToolOverrideItem(BaseModel):
-    server_id: str
-    tool_name: Optional[str] = None  # null = server-level override
-    enabled: bool
 
 
 class ToolOverrideRequest(BaseModel):
