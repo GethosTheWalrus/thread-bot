@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:threadbot/screens/chat_screen.dart';
+import 'package:flutter_web_plugins/url_strategy.dart';
 
 void main() {
+  usePathUrlStrategy();
   runApp(const ThreadBotApp());
 }
 
@@ -37,7 +39,22 @@ class ThreadBotApp extends StatelessWidget {
           hintStyle: const TextStyle(color: Color(0xFF52525B)),
         ),
       ),
-      home: const ChatScreen(),
+      initialRoute: '/',
+      onGenerateRoute: (settings) {
+        final uri = Uri.parse(settings.name ?? '/');
+        
+        if (uri.pathSegments.length == 2 && uri.pathSegments.first == 'thread') {
+          return MaterialPageRoute(
+            builder: (_) => ChatScreen(initialThreadId: uri.pathSegments[1]),
+            settings: settings,
+          );
+        }
+        
+        return MaterialPageRoute(
+          builder: (_) => const ChatScreen(),
+          settings: settings,
+        );
+      },
     );
   }
 }

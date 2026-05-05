@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
@@ -10,7 +11,8 @@ import 'package:threadbot/screens/settings_screen.dart';
 import 'package:threadbot/screens/mcp_screen.dart';
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final String? initialThreadId;
+  const ChatScreen({super.key, this.initialThreadId});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -52,7 +54,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
     _fadeController.forward();
     _scrollController.addListener(_onScroll);
-    _loadThreads();
+    _loadThreads().then((_) {
+      if (widget.initialThreadId != null) {
+        _loadThread(widget.initialThreadId!);
+      }
+    });
   }
 
   @override
@@ -88,6 +94,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _loadThread(String threadId) async {
     setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; _contextEstimatedTokens = 0; });
     try {
+      SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$threadId'));
       final thread = await _api.getThread(threadId);
       if (mounted) {
         setState(() { _messages = thread.messages; _isLoadingMessages = false; });
@@ -217,6 +224,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           if (headerPart.startsWith("THREAD_ID:")) {
             final newId = headerPart.substring(10).trim();
             if (_activeThreadId == null || _activeThreadId != newId) {
+              SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$newId'));
               setState(() => _activeThreadId = newId);
             }
           }
@@ -549,6 +557,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _startNewChat() async {
+    SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
     setState(() {
       _activeThreadId = null;
       _messages = [];
@@ -561,6 +570,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       await _api.deleteThread(threadId);
       if (_activeThreadId == threadId) {
+        SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
         setState(() { _activeThreadId = null; _messages = []; });
       }
       _loadThreads();
@@ -576,6 +586,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   Future<void> _deleteAllThreads() async {
     try {
       await _api.deleteAllThreads();
+      SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
       setState(() { _activeThreadId = null; _messages = []; });
       _loadThreads();
     } catch (e) {
