@@ -183,27 +183,53 @@ async def chat_endpoint(
             # Yield the thread_id as the first chunk so the frontend knows the new thread ID
             yield f"THREAD_ID:{thread_id}\n\n".encode("utf-8")
 
+            events_key = f"events:{channel}"
+            cursor = 0
+
             while True:
                 try:
+                    # 1. Try to get a live message from Pub/Sub
                     msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=5.0,
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5),
+                        timeout=1.0,
                     )
-                    if msg is None:
-                        # No message yet — send heartbeat to keep connection alive
-                        yield b"\x00"
+                    
+                    if msg:
+                        data = msg["data"]
+                        if isinstance(data, str):
+                            data = data.encode("utf-8")
+                        
+                        if data == b"[DONE]":
+                            break
+                        if data.startswith(b"[ERROR]"):
+                            yield data
+                            break
+                        yield data
                         continue
 
-                    data = msg["data"]
-                    if isinstance(data, str):
-                        data = data.encode("utf-8")
+                    # 2. Fallback: Check the events list in Redis (reliable buffer)
+                    # This ensures we don't miss [DONE] if Pub/Sub flickers.
+                    events = await r.lrange(events_key, cursor, -1)
+                    if events:
+                        done_found = False
+                        for event_data in events:
+                            if event_data == b"[DONE]":
+                                done_found = True
+                                break
+                            if event_data.startswith(b"[ERROR]"):
+                                yield event_data
+                                done_found = True
+                                break
+                            yield event_data
+                        
+                        cursor += len(events)
+                        if done_found:
+                            break
+                    else:
+                        # No new events — send heartbeat
+                        yield b"\x00"
+                        await asyncio.sleep(0.5)
 
-                    if data == b"[DONE]":
-                        break
-                    if data.startswith(b"[ERROR]"):
-                        yield data
-                        break
-                    yield data
                 except asyncio.TimeoutError:
                     yield b"\x00"
                 except Exception as e:

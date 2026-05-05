@@ -380,7 +380,20 @@ class RunThreadWorkflow:
                 start_to_close_timeout=timedelta(seconds=10),
             )
 
-            # ── Auto-title ───────────────────────────────────────────────
+            # ── Signal frontend: all messages persisted ──────────────────
+            # We do this BEFORE titling to minimize UI perceived latency.
+            await execute_activity(
+                publish_done,
+                {
+                    "redis_url": llm_config.get("redis_url"),
+                    "stream_channel": llm_config.get("stream_channel"),
+                    "thread_id": thread_id,
+                },
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+
+            # ── Auto-title (Non-blocking for the chat stream) ────────────
             if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
                 readable = [
                     m for m in chat_history[-5:]
@@ -417,18 +430,6 @@ class RunThreadWorkflow:
                     start_to_close_timeout=timedelta(seconds=5),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
-
-            # ── Signal frontend: all messages persisted ──────────────────
-            await execute_activity(
-                publish_done,
-                {
-                    "redis_url": llm_config.get("redis_url"),
-                    "stream_channel": llm_config.get("stream_channel"),
-                    "thread_id": thread_id,
-                },
-                start_to_close_timeout=timedelta(seconds=5),
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
 
             return {
                 "thread_id": thread_id,
