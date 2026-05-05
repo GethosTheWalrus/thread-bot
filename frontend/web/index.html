@@ -31,6 +31,168 @@
 
   <title>threadbot</title>
   <link rel="manifest" href="manifest.json">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+  <script>
+    window.initPolyBot = function(container) {
+      if (!container) {
+        console.error("PolyBot: No container provided");
+        return;
+      }
+
+      // Check if already initialized
+      if (container.dataset.initialized) return;
+      container.dataset.initialized = "true";
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
+      const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+      
+      const width = container.clientWidth || 200;
+      const height = container.clientHeight || 200;
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      container.appendChild(renderer.domElement);
+
+      // Lights
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+      scene.add(ambientLight);
+      
+      const mainLight = new THREE.PointLight(0x8B5CF6, 10, 30);
+      mainLight.position.set(2, 4, 5);
+      scene.add(mainLight);
+
+      const rimLight = new THREE.PointLight(0xffffff, 2, 20);
+      rimLight.position.set(-3, 2, -3);
+      scene.add(rimLight);
+
+      // Mascot Group
+      const botGroup = new THREE.Group();
+      scene.add(botGroup);
+
+      // --- Materials ---
+      const metalMat = new THREE.MeshPhongMaterial({ 
+        color: 0x1a1a24, 
+        flatShading: false,
+        shininess: 80,
+        specular: 0x444455
+      });
+      const glowMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6, transparent: true, opacity: 0.9 });
+      const secondaryMetal = new THREE.MeshPhongMaterial({ color: 0x2a2a35 });
+
+      // --- Head Chassis ---
+      const headGeo = new THREE.BoxGeometry(1.6, 1.4, 1.4);
+      // Round the corners a bit with a subgroup or just use the box
+      const head = new THREE.Mesh(headGeo, metalMat);
+      botGroup.add(head);
+
+      // --- Face Plate (Recessed) ---
+      const faceGeo = new THREE.PlaneGeometry(1.3, 0.8);
+      const faceMat = new THREE.MeshPhongMaterial({ color: 0x050508 });
+      const face = new THREE.Mesh(faceGeo, faceMat);
+      face.position.z = 0.71;
+      botGroup.add(face);
+
+      // --- Eyes ---
+      const eyeGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.05, 16);
+      const leftEye = new THREE.Mesh(eyeGeo, glowMat);
+      leftEye.rotation.x = Math.PI / 2;
+      leftEye.position.set(-0.35, 0.05, 0.72);
+      botGroup.add(leftEye);
+
+      const rightEye = new THREE.Mesh(eyeGeo, glowMat);
+      rightEye.rotation.x = Math.PI / 2;
+      rightEye.position.set(0.35, 0.05, 0.72);
+      botGroup.add(rightEye);
+
+      // Eye Glow (Larger, transparent)
+      const eyeGlowGeo = new THREE.CircleGeometry(0.3, 16);
+      const eyeGlowMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6, transparent: true, opacity: 0.2 });
+      const leftGlow = new THREE.Mesh(eyeGlowGeo, eyeGlowMat);
+      leftGlow.position.set(-0.35, 0.05, 0.73);
+      botGroup.add(leftGlow);
+      const rightGlow = new THREE.Mesh(eyeGlowGeo, eyeGlowMat);
+      rightGlow.position.set(0.35, 0.05, 0.73);
+      botGroup.add(rightGlow);
+
+      // --- Ears / Side Vents ---
+      const earGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 8);
+      const leftEar = new THREE.Mesh(earGeo, secondaryMetal);
+      leftEar.rotation.z = Math.PI / 2;
+      leftEar.position.set(-0.85, 0, 0);
+      botGroup.add(leftEar);
+
+      const rightEar = new THREE.Mesh(earGeo, secondaryMetal);
+      rightEar.rotation.z = Math.PI / 2;
+      rightEar.position.set(0.85, 0, 0);
+      botGroup.add(rightEar);
+
+      // --- Antenna ---
+      const antBaseGeo = new THREE.CylinderGeometry(0.05, 0.1, 0.6, 8);
+      const antenna = new THREE.Mesh(antBaseGeo, metalMat);
+      antenna.position.set(0.4, 0.8, -0.2);
+      antenna.rotation.z = -0.2;
+      botGroup.add(antenna);
+
+      const antTipGeo = new THREE.SphereGeometry(0.08, 8, 8);
+      const antTip = new THREE.Mesh(antTipGeo, glowMat);
+      antTip.position.set(0.52, 1.1, -0.2);
+      botGroup.add(antTip);
+
+      // --- Neck Joint ---
+      const neckGeo = new THREE.CylinderGeometry(0.4, 0.6, 0.4, 12);
+      const neck = new THREE.Mesh(neckGeo, secondaryMetal);
+      neck.position.y = -0.8;
+      botGroup.add(neck);
+
+      camera.position.z = 5;
+
+      // Mouse tracking
+      let targetRotationX = 0;
+      let targetRotationY = 0;
+      document.addEventListener('mousemove', (e) => {
+        const x = (e.clientX / window.innerWidth) - 0.5;
+        const y = (e.clientY / window.innerHeight) - 0.5;
+        targetRotationY = x * 0.6;
+        targetRotationX = y * 0.4;
+      });
+
+      function animate() {
+        requestAnimationFrame(animate);
+
+        const time = Date.now() * 0.001;
+
+        // Idle hover
+        botGroup.position.y = Math.sin(time) * 0.12;
+        botGroup.rotation.z = Math.sin(time * 0.5) * 0.03;
+
+        // Smooth follow
+        botGroup.rotation.x += (targetRotationX - botGroup.rotation.x) * 0.06;
+        botGroup.rotation.y += (targetRotationY - botGroup.rotation.y) * 0.06;
+
+        // Eye flicker and antenna pulse
+        glowMat.opacity = 0.7 + Math.sin(time * 5) * 0.3;
+        eyeGlowMat.opacity = 0.15 + Math.sin(time * 5) * 0.1;
+
+        // Subtle antenna jiggle
+        antenna.rotation.x = Math.sin(time * 10) * 0.02;
+        antTip.position.x = 0.52 + Math.sin(time * 10) * 0.01;
+
+        renderer.render(scene, camera);
+      }
+
+      // Handle resize
+      const resizeObserver = new ResizeObserver(() => {
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        renderer.setSize(width, height);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+      });
+      resizeObserver.observe(container);
+
+      animate();
+    };
+  </script>
 </head>
 <body>
   <!--

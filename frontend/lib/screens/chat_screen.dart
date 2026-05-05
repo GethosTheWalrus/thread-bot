@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:ui_web' as ui;
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:threadbot/models/message.dart';
@@ -9,6 +12,9 @@ import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/screens/settings_screen.dart';
 import 'package:threadbot/screens/mcp_screen.dart';
+
+@JS('initPolyBot')
+external void _initPolyBot(web.HTMLElement container);
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -45,6 +51,24 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+
+    // Register Three.js PolyBot view
+    ui.platformViewRegistry.registerViewFactory(
+      'poly-bot-view',
+      (int viewId) {
+        final container = web.HTMLDivElement()
+          ..style.width = '100%'
+          ..style.height = '100%';
+        
+        // Use a small delay to ensure the element is in the DOM before Three.js starts
+        Future.delayed(const Duration(milliseconds: 100), () {
+          _initPolyBot(container);
+        });
+
+        return container;
+      },
+    );
+
     _fadeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 400),
@@ -863,26 +887,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Glowing logo
+            // Glowing 3D Poly-Bot
             Container(
-              width: 80,
-              height: 80,
+              width: 200,
+              height: 200,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
-                    blurRadius: 32,
-                    spreadRadius: 4,
+                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+                    blurRadius: 64,
+                    spreadRadius: 8,
                   ),
                 ],
               ),
-              child: const Icon(Icons.auto_awesome, size: 36, color: Colors.white),
+              child: const HtmlElementView(viewType: 'poly-bot-view'),
             ),
             const SizedBox(height: 24),
             const Text(
