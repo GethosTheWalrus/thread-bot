@@ -85,6 +85,17 @@ async def create_thread_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     thread = await create_thread(db, request.title, request.parent_id)
+    if request.tool_overrides:
+        overrides = [
+            {
+                "server_id": UUID(o.server_id),
+                "tool_name": o.tool_name,
+                "enabled": o.enabled,
+            }
+            for o in request.tool_overrides
+        ]
+        await set_thread_tool_overrides(db, thread.id, overrides)
+        await db.commit()
     return _build_thread_response(thread)
 
 
@@ -117,10 +128,30 @@ async def chat_endpoint(
             # Branch from parent
             thread = await create_thread(setup_db, "Reply", parent_id=request.parent_id)
             thread_id = thread.id
+            if request.tool_overrides:
+                overrides = [
+                    {
+                        "server_id": UUID(o.server_id),
+                        "tool_name": o.tool_name,
+                        "enabled": o.enabled,
+                    }
+                    for o in request.tool_overrides
+                ]
+                await set_thread_tool_overrides(setup_db, thread_id, overrides)
         else:
             # New root thread
             thread = await create_thread(setup_db, "New Thread", parent_id=None)
             thread_id = thread.id
+            if request.tool_overrides:
+                overrides = [
+                    {
+                        "server_id": UUID(o.server_id),
+                        "tool_name": o.tool_name,
+                        "enabled": o.enabled,
+                    }
+                    for o in request.tool_overrides
+                ]
+                await set_thread_tool_overrides(setup_db, thread_id, overrides)
 
         await add_message(setup_db, thread_id, "user", request.content)
 
@@ -583,6 +614,34 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
                 )
     except Exception as e:
         return MCPTestResponse(success=False, tools=[], error=str(e))
+
+
+@router.get("/mcp/tool-overrides", response_model=ToolOverridesResponse)
+async def get_global_tool_overrides(db: AsyncSession = Depends(get_db)):
+    """Get all available MCP servers and tools without any thread-specific overrides."""
+    from app.models.models import MCPServer as MCPServerModel
+
+    # Get all globally active servers
+    result = await db.execute(
+        select(MCPServerModel).where(MCPServerModel.is_active == True)
+    )
+    active_servers = list(result.scalars().all())
+
+    servers = []
+    for server in active_servers:
+        tools = []
+        if server.cached_tools and isinstance(server.cached_tools, list):
+            tools = [
+                AvailableTool(name=t["name"], description=t.get("description", ""))
+                for t in server.cached_tools
+            ]
+        servers.append(AvailableServer(
+            id=str(server.id),
+            name=server.name,
+            tools=tools,
+        ))
+
+    return ToolOverridesResponse(servers=servers, overrides=[])
 
 
 # ── Thread Tool Overrides ─────────────────────────────────────────────

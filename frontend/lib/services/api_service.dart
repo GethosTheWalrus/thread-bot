@@ -41,12 +41,13 @@ class ApiService {
   /// Send a message. If threadId is provided, appends to that thread.
   /// Otherwise creates a new thread.
   /// LLM config is managed server-side — no need to send it per request.
-  Stream<String> sendMessageStream(String content, {String? threadId}) async* {
+  Stream<String> sendMessageStream(String content, {String? threadId, List<Map<String, dynamic>>? overrides}) async* {
     final body = <String, dynamic>{
       'content': content,
     };
 
     if (threadId != null) body['thread_id'] = threadId;
+    if (overrides != null) body['tool_overrides'] = overrides;
 
     final request = http.Request('POST', Uri.parse('$baseUrl/api/chat'));
     request.headers['Content-Type'] = 'application/json';
@@ -94,11 +95,14 @@ class ApiService {
     }
   }
 
-  Future<Thread> createThread({String title = 'New Thread'}) async {
+  Future<Thread> createThread({String title = 'New Thread', List<Map<String, dynamic>>? overrides}) async {
+    final body = <String, dynamic>{'title': title};
+    if (overrides != null) body['tool_overrides'] = overrides;
+
     final response = await http.post(
       Uri.parse('$baseUrl/api/threads'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'title': title}),
+      body: jsonEncode(body),
     );
 
     if (response.statusCode == 200) {
@@ -253,6 +257,17 @@ class ApiService {
   }
 
   // ── Thread Tool Overrides ────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getGlobalToolOverrides() async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/mcp/tool-overrides'),
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load global tool overrides: ${response.statusCode}');
+  }
 
   Future<Map<String, dynamic>> getThreadToolOverrides(String threadId) async {
     final response = await http.get(

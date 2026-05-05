@@ -12,12 +12,14 @@ class MessageCreate(BaseModel):
 class ThreadCreateRequest(BaseModel):
     title: str = Field(default="New Thread", description="Thread title")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
+    tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides")
 
 
 class ChatRequest(BaseModel):
     content: str = Field(..., description="User message content")
     thread_id: Optional[str] = Field(None, description="Existing thread ID to continue conversation")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
+    tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides for new threads")
 
 
 class MessageResponse(BaseModel):

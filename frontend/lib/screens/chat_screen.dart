@@ -33,6 +33,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String? _error;
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
+  List<Map<String, dynamic>>? _pendingToolOverrides;
   bool _isAtBottom = true; // auto-scroll when anchored to bottom
   int _contextEstimatedTokens = 0;
   int _contextWindow = 8192;
@@ -309,7 +310,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   void _showToolOverrides() {
-    if (_activeThreadId == null) return;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -318,9 +318,22 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (context) => _ToolOverridesSheet(
-        threadId: _activeThreadId!,
+        threadId: _activeThreadId,
         api: _api,
-        onChanged: () => _loadToolOverrideStatus(_activeThreadId!),
+        initialOverrides: _activeThreadId == null ? _pendingToolOverrides : null,
+        onChanged: () {
+          if (_activeThreadId != null) {
+            _loadToolOverrideStatus(_activeThreadId!);
+          }
+        },
+        onOverridesSelected: (overrides) {
+          if (_activeThreadId == null) {
+            setState(() {
+              _pendingToolOverrides = overrides;
+              _hasToolOverrides = overrides.any((o) => o['enabled'] == false);
+            });
+          }
+        },
       ),
     );
   }
@@ -359,7 +372,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _scrollToBottom(force: true);
 
     try {
-      final stream = _api.sendMessageStream(content, threadId: _activeThreadId);
+      final stream = _api.sendMessageStream(
+        content,
+        threadId: _activeThreadId,
+        overrides: _activeThreadId == null ? _pendingToolOverrides : null,
+      );
       await _processStreamChunks(stream, tempIds);
 
       // [DONE] received — DB is guaranteed to have all messages (including
@@ -370,6 +387,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
         setState(() {
           _isSending = false;
+          _pendingToolOverrides = null; // Clear pending overrides after first message
         });
         _loadThreads();
       }
@@ -562,6 +580,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _messages = [];
       _error = null;
       _contextEstimatedTokens = 0;
+      _pendingToolOverrides = null;
+      _hasToolOverrides = false;
     });
   }
 
@@ -672,7 +692,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   ChatInput(
                     onSend: _sendMessage,
                     isSending: _isSending,
-                    onToolsPressed: _activeThreadId != null ? _showToolOverrides : null,
+                    onToolsPressed: _showToolOverrides,
                     hasToolOverrides: _hasToolOverrides,
                     estimatedTokens: _contextEstimatedTokens,
                     contextWindow: _contextWindow,
@@ -940,14 +960,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 // ── Tool Overrides Bottom Sheet ──────────────────────────────────────────────
 
 class _ToolOverridesSheet extends StatefulWidget {
-  final String threadId;
+  final String? threadId;
   final ApiService api;
   final VoidCallback onChanged;
+  final List<Map<String, dynamic>>? initialOverrides;
+  final Function(List<Map<String, dynamic>>)? onOverridesSelected;
 
   const _ToolOverridesSheet({
     required this.threadId,
     required this.api,
     required this.onChanged,
+    this.initialOverrides,
+    this.onOverridesSelected,
   });
 
   @override
@@ -967,9 +991,17 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
 
   Future<void> _load() async {
     try {
-      final data = await widget.api.getThreadToolOverrides(widget.threadId);
+      final Map<String, dynamic> data;
+      if (widget.threadId != null) {
+        data = await widget.api.getThreadToolOverrides(widget.threadId!);
+      } else {
+        data = await widget.api.getGlobalToolOverrides();
+      }
+
       final servers = (data['servers'] as List<dynamic>? ?? []);
-      final overrides = (data['overrides'] as List<dynamic>? ?? []);
+      final overrides = widget.threadId != null 
+          ? (data['overrides'] as List<dynamic>? ?? [])
+          : (widget.initialOverrides ?? []);
 
       // Build override lookup
       final overrideMap = <String, bool>{};       // "server_id" -> enabled
@@ -1038,8 +1070,14 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
           }
         }
       }
-      await widget.api.setThreadToolOverrides(widget.threadId, overrides);
-      widget.onChanged();
+
+      if (widget.threadId != null) {
+        await widget.api.setThreadToolOverrides(widget.threadId!, overrides);
+        widget.onChanged();
+      } else if (widget.onOverridesSelected != null) {
+        widget.onOverridesSelected!(overrides);
+      }
+
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) {
