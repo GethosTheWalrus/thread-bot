@@ -237,8 +237,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
       if (chunk == "[DONE]") break;
       if (chunk.startsWith("[ERROR]")) {
-        setState(() => _error = chunk.substring(7));
-        break;
+        throw Exception(chunk.substring(7));
       }
 
       // Remove null heartbeats
@@ -256,9 +255,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           break;
         }
         if (chunkBuffer.startsWith("[ERROR]")) {
-          setState(() => _error = chunkBuffer.substring(7));
+          final errorMsg = chunkBuffer.substring(7);
           chunkBuffer = "";
-          break;
+          throw Exception(errorMsg);
         }
 
         // Try to find a complete JSON object

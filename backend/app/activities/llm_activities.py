@@ -784,6 +784,33 @@ async def publish_done(args: dict) -> None:
 
 
 @defn
+async def publish_error(args: dict) -> None:
+    """Publish [ERROR] sentinel to Redis stream channel if workflow crashes.
+    """
+    redis_url = args.get("redis_url")
+    stream_channel = args.get("stream_channel")
+    thread_id = args.get("thread_id")
+    error_msg = args.get("error", "Unknown error")
+    if not redis_url or not stream_channel:
+        return
+
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(redis_url)
+    try:
+        events_key = f"events:{stream_channel}"
+        error_payload = f"[ERROR] Workflow crashed: {error_msg}".encode("utf-8")
+        await r.publish(stream_channel, error_payload)
+        await r.rpush(events_key, error_payload)
+        # Keep events list for 60s so a reconnecting client can still read it
+        await r.expire(events_key, 60)
+        # Clear the generating flag
+        if thread_id:
+            await r.delete(f"generating:{thread_id}")
+    finally:
+        await r.close()
+
+
+@defn
 async def publish_title(args: dict) -> None:
     """Publish a title event to Redis so the frontend sidebar updates in real-time."""
     import json
