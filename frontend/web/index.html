@@ -57,15 +57,19 @@
       container.appendChild(renderer.domElement);
 
       // Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
       scene.add(ambientLight);
       
-      const mainLight = new THREE.PointLight(0x8B5CF6, 10, 30);
-      mainLight.position.set(2, 4, 5);
+      const mainLight = new THREE.DirectionalLight(0xffffff, 1.5);
+      mainLight.position.set(5, 5, 10);
       scene.add(mainLight);
 
-      const rimLight = new THREE.PointLight(0xffffff, 2, 20);
-      rimLight.position.set(-3, 2, -3);
+      const accentLight = new THREE.PointLight(0x8B5CF6, 15, 30);
+      accentLight.position.set(-2, 4, 5);
+      scene.add(accentLight);
+
+      const rimLight = new THREE.PointLight(0xffffff, 5, 20);
+      rimLight.position.set(-5, 2, -5);
       scene.add(rimLight);
 
       // Mascot Group
@@ -187,18 +191,40 @@
       rightGlow.position.set(0.35, 0.05, 0.06);
       faceGroup.add(rightGlow);
 
-      // --- Processing LED Sensor ---
-      const ledHousingGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.02, 8);
+      // --- Status Aperture / Sensor ---
+      const apertureGroup = new THREE.Group();
+      apertureGroup.position.set(0.55, 0.35, 0.03);
+      faceGroup.add(apertureGroup);
+
+      const ledHousingGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.02, 12);
       const ledHousing = new THREE.Mesh(ledHousingGeo, shinyMetalMat);
       ledHousing.rotation.x = Math.PI / 2;
-      ledHousing.position.set(0.55, 0.35, 0.03);
-      faceGroup.add(ledHousing);
+      apertureGroup.add(ledHousing);
 
-      const ledGeo = new THREE.SphereGeometry(0.04, 8, 8);
-      const ledMat = new THREE.MeshBasicMaterial({ color: 0xff3333 }); // Red recording LED
-      const led = new THREE.Mesh(ledGeo, ledMat);
-      led.position.set(0.55, 0.35, 0.04);
-      faceGroup.add(led);
+      // Dark lens glass
+      const lensGlassGeo = new THREE.SphereGeometry(0.04, 12, 12);
+      const lensGlassMat = new THREE.MeshStandardMaterial({ 
+        color: 0x050505, 
+        roughness: 0, 
+        metalness: 1.0 
+      });
+      const lensGlass = new THREE.Mesh(lensGlassGeo, lensGlassMat);
+      lensGlass.position.z = 0.01;
+      apertureGroup.add(lensGlass);
+
+      // Pulsing Cyan Iris
+      const irisGeo = new THREE.CircleGeometry(0.025, 12);
+      const irisMat = new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 });
+      const iris = new THREE.Mesh(irisGeo, irisMat);
+      iris.position.z = 0.025;
+      apertureGroup.add(iris);
+
+      // Pinpoint reflection
+      const reflectGeo = new THREE.CircleGeometry(0.008, 6);
+      const reflectMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const reflect = new THREE.Mesh(reflectGeo, reflectMat);
+      reflect.position.set(0.01, 0.01, 0.026);
+      apertureGroup.add(reflect);
 
       // --- Ears / Side Vents (More Detailed) ---
       const earGroupLeft = new THREE.Group();
@@ -358,6 +384,7 @@
         // Eye flicker and antenna pulse
         glowMat.opacity = 0.7 + Math.sin(time * 5) * 0.3;
         eyeGlowMat.opacity = 0.15 + Math.sin(time * 5) * 0.1;
+        irisMat.opacity = 0.5 + Math.sin(time * 3) * 0.3; // Soft cyan pulse
 
         // Subtle antenna jiggle
         antennaGroup.rotation.x = Math.sin(time * 10) * 0.02;
