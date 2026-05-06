@@ -43,6 +43,9 @@
       if (container.dataset.initialized) return;
       container.dataset.initialized = "true";
 
+      const hideNeedle = container.dataset.hideNeedle === "true";
+      const zoom = parseFloat(container.dataset.zoom) || 4.0;
+
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(75, 1, 0.1, 1000);
       const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
@@ -144,7 +147,48 @@
       neck.position.y = -0.8;
       botGroup.add(neck);
 
-      camera.position.z = 5;
+      // --- Needle ---
+      const needleGroup = new THREE.Group();
+      const needleMat = new THREE.MeshPhongMaterial({ 
+        color: 0xffffff, // Brighter white metal
+        shininess: 250,
+        specular: 0xffffff
+      });
+      // Tapered needle: Thicker at bottom (eye), Thinner at top (point)
+      const nBody = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.05, 1.5, 8), needleMat);
+      const nTip = new THREE.Mesh(new THREE.CylinderGeometry(0.001, 0.01, 0.4, 8), needleMat);
+      nTip.position.y = 0.95;
+      const nEye = new THREE.Mesh(new THREE.TorusGeometry(0.08, 0.02, 8, 16), needleMat);
+      nEye.position.y = -0.75;
+      needleGroup.add(nBody);
+      needleGroup.add(nTip);
+      needleGroup.add(nEye);
+      
+      // Cyan light at the tip to distinguish from purple thread
+      const needleLight = new THREE.PointLight(0x00ffff, 3, 4);
+      needleLight.position.set(0, 1.1, 0);
+      needleGroup.add(needleLight);
+
+      needleGroup.visible = !hideNeedle;
+      scene.add(needleGroup);
+
+      // --- Thread ---
+      const threadSegmentCount = 100;
+      const threadPoints = [];
+      for(let i = 0; i < threadSegmentCount; i++) threadPoints.push(new THREE.Vector3());
+      const threadGeo = new THREE.BufferGeometry().setFromPoints(threadPoints);
+      const threadLineMat = new THREE.LineBasicMaterial({ 
+        color: 0x8B5CF6, 
+        transparent: true, 
+        opacity: 0.8,
+        linewidth: 2
+      });
+      const threadLine = new THREE.Line(threadGeo, threadLineMat);
+      threadLine.visible = !hideNeedle;
+      scene.add(threadLine);
+
+      // Set camera Z from data-zoom attribute
+      camera.position.z = zoom;
 
       // Mouse tracking
       let targetRotationX = 0;
@@ -176,6 +220,61 @@
         // Subtle antenna jiggle
         antenna.rotation.x = Math.sin(time * 10) * 0.02;
         antTip.position.x = 0.52 + Math.sin(time * 10) * 0.01;
+
+        if (!hideNeedle) {
+          // Update Thread Geometry (Downward Spiral + Needle at Bottom)
+          const threadPositions = threadGeo.attributes.position.array;
+          const headPos = new THREE.Vector3();
+          head.getWorldPosition(headPos);
+          
+          // Needle position (subtle drift closer to the bot)
+          const needleTargetX = headPos.x + 0.7 + Math.sin(time * 0.7) * 0.2;
+          const needleTargetY = headPos.y - 1.2 + Math.cos(time * 0.4) * 0.1;
+          const needleTargetZ = headPos.z + 0.8 + Math.sin(time * 0.3) * 0.3;
+          
+          needleGroup.position.set(needleTargetX, needleTargetY, needleTargetZ);
+          // Pointing left and slightly down
+          needleGroup.rotation.z = Math.PI * 0.7 + Math.sin(time * 0.5) * 0.1;
+          needleGroup.rotation.x = Math.PI / 4 + Math.cos(time * 0.4) * 0.1;
+
+          const eyeWorldPos = new THREE.Vector3();
+          nEye.getWorldPosition(eyeWorldPos);
+
+          for (let i = 0; i < threadSegmentCount; i++) {
+            const t = i / (threadSegmentCount - 1);
+            
+            // Spiral path around the robot head
+            const wraps = 2.5; // Loosened from 4.5
+            const angle = t * Math.PI * 2 * wraps + time * 0.2;
+            const spiralRadius = 1.7 + Math.sin(time * 0.3 + t * 4) * 0.05; // Increased from 1.3
+            
+            // Spiral from top of head down to a point below head
+            let sx = headPos.x + Math.cos(angle) * spiralRadius;
+            let sy = headPos.y + (1.0 - t * 2.0);
+            let sz = headPos.z + Math.sin(angle) * spiralRadius;
+
+            // Wind effect
+            const windX = Math.sin(time * 1.8 + i * 0.15) * 0.12;
+            const windY = Math.cos(time * 1.2 + i * 0.1) * 0.08;
+            
+            // Transition from the spiral wrap to the needle eye
+            // Most of the thread follows the spiral, the very end (t > 0.8) connects to needle
+            const blendStart = 0.75;
+            let connectionFactor = 0;
+            if (t > blendStart) {
+              connectionFactor = Math.pow((t - blendStart) / (1 - blendStart), 2);
+            }
+
+            const finalX = sx * (1 - connectionFactor) + eyeWorldPos.x * connectionFactor + windX;
+            const finalY = sy * (1 - connectionFactor) + eyeWorldPos.y * connectionFactor + windY;
+            const finalZ = sz * (1 - connectionFactor) + eyeWorldPos.z * connectionFactor;
+
+            threadPositions[i * 3] = finalX;
+            threadPositions[i * 3 + 1] = finalY;
+            threadPositions[i * 3 + 2] = finalZ;
+          }
+          threadGeo.attributes.position.needsUpdate = true;
+        }
 
         renderer.render(scene, camera);
       }

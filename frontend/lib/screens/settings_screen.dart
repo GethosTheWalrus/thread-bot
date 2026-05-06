@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:threadbot/services/api_service.dart';
+import 'package:threadbot/widgets/threadbot_avatar.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -321,17 +322,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               children: [
                                 Row(
                                   children: [
-                                    Container(
-                                      width: 40,
-                                      height: 40,
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(10),
-                                        gradient: const LinearGradient(
-                                          colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
-                                        ),
-                                      ),
-                                      child: const Icon(Icons.auto_awesome, size: 20, color: Colors.white),
-                                    ),
+                                    const ThreadbotAvatar(size: 56, borderRadius: 14, showNeedle: false, showShadow: false),
                                     const SizedBox(width: 12),
                                     const Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,

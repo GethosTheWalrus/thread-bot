@@ -1,20 +1,15 @@
 import 'dart:convert';
-import 'dart:ui_web' as ui;
-import 'dart:js_interop';
-import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/widgets/chat_message_list.dart';
+import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/screens/settings_screen.dart';
 import 'package:threadbot/screens/mcp_screen.dart';
-
-@JS('initPolyBot')
-external void _initPolyBot(web.HTMLElement container);
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -51,23 +46,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-
-    // Register Three.js PolyBot view
-    ui.platformViewRegistry.registerViewFactory(
-      'poly-bot-view',
-      (int viewId) {
-        final container = web.HTMLDivElement()
-          ..style.width = '100%'
-          ..style.height = '100%';
-        
-        // Use a small delay to ensure the element is in the DOM before Three.js starts
-        Future.delayed(const Duration(milliseconds: 100), () {
-          _initPolyBot(container);
-        });
-
-        return container;
-      },
-    );
 
     _fadeController = AnimationController(
       vsync: this,
@@ -887,21 +865,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Glowing 3D Poly-Bot
-            Container(
-              width: 200,
-              height: 200,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
-                    blurRadius: 64,
-                    spreadRadius: 8,
-                  ),
-                ],
-              ),
-              child: const HtmlElementView(viewType: 'poly-bot-view'),
+            // Glowing 3D Poly-Bot Avatar
+            const ThreadbotAvatar(
+              size: 200,
+              showBackground: false,
+              showShadow: true,
             ),
             const SizedBox(height: 24),
             const Text(

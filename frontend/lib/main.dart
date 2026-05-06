@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:threadbot/screens/chat_screen.dart';
+import 'package:threadbot/services/view_registry.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 
 void main() {
   usePathUrlStrategy();
+
+  // Register Three.js views
+  registerThreadbotViews();
+
   runApp(const ThreadBotApp());
 }
 

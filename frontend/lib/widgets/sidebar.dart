@@ -39,7 +39,7 @@ class Sidebar extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // New chat button
+          // New thread button
           Padding(
             padding: const EdgeInsets.all(12),
             child: Material(
@@ -68,7 +68,7 @@ class Sidebar extends StatelessWidget {
                       ),
                       const SizedBox(width: 10),
                       const Text(
-                        'New Chat',
+                        'New Thread',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w500,

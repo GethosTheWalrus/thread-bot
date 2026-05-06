@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
+import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class ChatMessageList extends StatelessWidget {
@@ -325,7 +326,7 @@ class _ToolCallBubbleState extends State<_ToolCallBubble> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(width: 48), // align with assistant messages
+              const SizedBox(width: 60), // align with assistant messages (44 avatar + 16 gap)
               Flexible(
                 child: _buildToolList(tools),
               ),
@@ -746,7 +747,7 @@ class _ThinkingBubbleState extends State<_ThinkingBubble> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(width: 48), // align with assistant messages
+              const SizedBox(width: 60), // align with assistant messages (44 avatar + 16 gap)
               Flexible(
                 child: GestureDetector(
                   onTap: () => setState(() => _expanded = !_expanded),
@@ -1214,18 +1215,22 @@ class _ChatBubbleState extends State<_ChatBubble> {
   }
 
   Widget _buildAvatar(bool isUser) {
+    if (!isUser) {
+      return const ThreadbotAvatar(size: 44, showNeedle: false, showShadow: false);
+    }
+
     return Container(
-      width: 32,
-      height: 32,
+      width: 44,
+      height: 44,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(8),
-        gradient: isUser
-            ? const LinearGradient(colors: [Color(0xFF3B82F6), Color(0xFF2563EB)])
-            : const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)]),
+        borderRadius: BorderRadius.circular(10),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF3B82F6), Color(0xFF2563EB)],
+        ),
       ),
-      child: Icon(
-        isUser ? Icons.person_rounded : Icons.auto_awesome,
-        size: 16,
+      child: const Icon(
+        Icons.person_rounded,
+        size: 20,
         color: Colors.white,
       ),
     );
