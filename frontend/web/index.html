@@ -73,81 +73,223 @@
       scene.add(botGroup);
 
       // --- Materials ---
-      const metalMat = new THREE.MeshPhongMaterial({ 
+      const metalMat = new THREE.MeshStandardMaterial({ 
         color: 0x1a1a24, 
-        flatShading: false,
-        shininess: 80,
-        specular: 0x444455
+        roughness: 0.6,
+        metalness: 0.8,
+      });
+      const darkMetalMat = new THREE.MeshStandardMaterial({ 
+        color: 0x111116, 
+        roughness: 0.8,
+        metalness: 0.5,
+      });
+      const shinyMetalMat = new THREE.MeshStandardMaterial({ 
+        color: 0xaaaaaa, 
+        roughness: 0.2,
+        metalness: 1.0,
       });
       const glowMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6, transparent: true, opacity: 0.9 });
-      const secondaryMetal = new THREE.MeshPhongMaterial({ color: 0x2a2a35 });
+      const secondaryMetal = new THREE.MeshStandardMaterial({ 
+        color: 0x2a2a35,
+        roughness: 0.5,
+        metalness: 0.7,
+      });
 
-      // --- Head Chassis ---
-      const headGeo = new THREE.BoxGeometry(1.6, 1.4, 1.4);
-      // Round the corners a bit with a subgroup or just use the box
+      // --- Head Chassis (More Detailed) ---
+      // Main block
+      const headGeo = new THREE.BoxGeometry(1.6, 1.4, 1.3);
       const head = new THREE.Mesh(headGeo, metalMat);
       botGroup.add(head);
 
-      // --- Face Plate (Recessed) ---
-      const faceGeo = new THREE.PlaneGeometry(1.3, 0.8);
-      const faceMat = new THREE.MeshPhongMaterial({ color: 0x050508 });
-      const face = new THREE.Mesh(faceGeo, faceMat);
-      face.position.z = 0.71;
-      botGroup.add(face);
+      // Top bevel/panel
+      const topPanelGeo = new THREE.BoxGeometry(1.4, 0.1, 1.1);
+      const topPanel = new THREE.Mesh(topPanelGeo, darkMetalMat);
+      topPanel.position.set(0, 0.72, 0);
+      botGroup.add(topPanel);
 
-      // --- Eyes ---
+      // Bottom bevel/panel
+      const bottomPanelGeo = new THREE.BoxGeometry(1.4, 0.1, 1.1);
+      const bottomPanel = new THREE.Mesh(bottomPanelGeo, darkMetalMat);
+      bottomPanel.position.set(0, -0.72, 0);
+      botGroup.add(bottomPanel);
+
+      // Back heatsink ribs
+      const heatsinkGeo = new THREE.BoxGeometry(1.2, 1.0, 0.1);
+      const heatsink = new THREE.Mesh(heatsinkGeo, secondaryMetal);
+      heatsink.position.set(0, 0, -0.66);
+      botGroup.add(heatsink);
+
+      // --- Face Plate (Recessed with details) ---
+      const faceGroup = new THREE.Group();
+      faceGroup.position.z = 0.66;
+      botGroup.add(faceGroup);
+
+      // Outer bezel
+      const faceBezelGeo = new THREE.BoxGeometry(1.4, 0.9, 0.05);
+      const faceBezel = new THREE.Mesh(faceBezelGeo, darkMetalMat);
+      faceGroup.add(faceBezel);
+
+      // Inner screen
+      const faceScreenGeo = new THREE.PlaneGeometry(1.3, 0.8);
+      const faceScreenMat = new THREE.MeshPhongMaterial({ 
+        color: 0x050508,
+        shininess: 100,
+        specular: 0x222233
+      });
+      const faceScreen = new THREE.Mesh(faceScreenGeo, faceScreenMat);
+      faceScreen.position.z = 0.03;
+      faceGroup.add(faceScreen);
+
+      // Grid pattern / scanlines on screen
+      const gridGeo = new THREE.PlaneGeometry(1.3, 0.8, 13, 8);
+      const gridMat = new THREE.MeshBasicMaterial({ 
+        color: 0x8B5CF6, 
+        wireframe: true, 
+        transparent: true, 
+        opacity: 0.05 
+      });
+      const grid = new THREE.Mesh(gridGeo, gridMat);
+      grid.position.z = 0.031;
+      faceGroup.add(grid);
+
+      // --- Eyes (More mechanical) ---
+      // Left Eye
+      const eyeHousingGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.04, 16);
+      const leftEyeHousing = new THREE.Mesh(eyeHousingGeo, shinyMetalMat);
+      leftEyeHousing.rotation.x = Math.PI / 2;
+      leftEyeHousing.position.set(-0.35, 0.05, 0.03);
+      faceGroup.add(leftEyeHousing);
+
       const eyeGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.05, 16);
       const leftEye = new THREE.Mesh(eyeGeo, glowMat);
       leftEye.rotation.x = Math.PI / 2;
-      leftEye.position.set(-0.35, 0.05, 0.72);
-      botGroup.add(leftEye);
+      leftEye.position.set(-0.35, 0.05, 0.04);
+      faceGroup.add(leftEye);
+
+      // Right Eye
+      const rightEyeHousing = new THREE.Mesh(eyeHousingGeo, shinyMetalMat);
+      rightEyeHousing.rotation.x = Math.PI / 2;
+      rightEyeHousing.position.set(0.35, 0.05, 0.03);
+      faceGroup.add(rightEyeHousing);
 
       const rightEye = new THREE.Mesh(eyeGeo, glowMat);
       rightEye.rotation.x = Math.PI / 2;
-      rightEye.position.set(0.35, 0.05, 0.72);
-      botGroup.add(rightEye);
+      rightEye.position.set(0.35, 0.05, 0.04);
+      faceGroup.add(rightEye);
 
       // Eye Glow (Larger, transparent)
       const eyeGlowGeo = new THREE.CircleGeometry(0.3, 16);
       const eyeGlowMat = new THREE.MeshBasicMaterial({ color: 0x8B5CF6, transparent: true, opacity: 0.2 });
       const leftGlow = new THREE.Mesh(eyeGlowGeo, eyeGlowMat);
-      leftGlow.position.set(-0.35, 0.05, 0.73);
-      botGroup.add(leftGlow);
+      leftGlow.position.set(-0.35, 0.05, 0.06);
+      faceGroup.add(leftGlow);
       const rightGlow = new THREE.Mesh(eyeGlowGeo, eyeGlowMat);
-      rightGlow.position.set(0.35, 0.05, 0.73);
-      botGroup.add(rightGlow);
+      rightGlow.position.set(0.35, 0.05, 0.06);
+      faceGroup.add(rightGlow);
 
-      // --- Ears / Side Vents ---
-      const earGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.2, 8);
-      const leftEar = new THREE.Mesh(earGeo, secondaryMetal);
-      leftEar.rotation.z = Math.PI / 2;
-      leftEar.position.set(-0.85, 0, 0);
-      botGroup.add(leftEar);
+      // --- Processing LED Sensor ---
+      const ledHousingGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.02, 8);
+      const ledHousing = new THREE.Mesh(ledHousingGeo, shinyMetalMat);
+      ledHousing.rotation.x = Math.PI / 2;
+      ledHousing.position.set(0.55, 0.35, 0.03);
+      faceGroup.add(ledHousing);
 
-      const rightEar = new THREE.Mesh(earGeo, secondaryMetal);
-      rightEar.rotation.z = Math.PI / 2;
-      rightEar.position.set(0.85, 0, 0);
-      botGroup.add(rightEar);
+      const ledGeo = new THREE.SphereGeometry(0.04, 8, 8);
+      const ledMat = new THREE.MeshBasicMaterial({ color: 0xff3333 }); // Red recording LED
+      const led = new THREE.Mesh(ledGeo, ledMat);
+      led.position.set(0.55, 0.35, 0.04);
+      faceGroup.add(led);
 
-      // --- Antenna ---
-      const antBaseGeo = new THREE.CylinderGeometry(0.05, 0.1, 0.6, 8);
-      const antenna = new THREE.Mesh(antBaseGeo, metalMat);
-      antenna.position.set(0.4, 0.8, -0.2);
-      antenna.rotation.z = -0.2;
-      botGroup.add(antenna);
+      // --- Ears / Side Vents (More Detailed) ---
+      const earGroupLeft = new THREE.Group();
+      earGroupLeft.position.set(-0.82, 0, 0);
+      botGroup.add(earGroupLeft);
 
-      const antTipGeo = new THREE.SphereGeometry(0.08, 8, 8);
-      const antTip = new THREE.Mesh(antTipGeo, glowMat);
-      antTip.position.set(0.52, 1.1, -0.2);
-      botGroup.add(antTip);
+      const earBaseGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.1, 16);
+      const earBaseL = new THREE.Mesh(earBaseGeo, darkMetalMat);
+      earBaseL.rotation.z = Math.PI / 2;
+      earGroupLeft.add(earBaseL);
 
-      // --- Neck Joint ---
-      const neckGeo = new THREE.CylinderGeometry(0.4, 0.6, 0.4, 12);
-      const neck = new THREE.Mesh(neckGeo, secondaryMetal);
-      neck.position.y = -0.8;
-      botGroup.add(neck);
+      const earVentGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.15, 12);
+      const earVentL = new THREE.Mesh(earVentGeo, shinyMetalMat);
+      earVentL.rotation.z = Math.PI / 2;
+      earVentL.position.x = -0.05;
+      earGroupLeft.add(earVentL);
+
+      const earInnerGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.16, 8);
+      const earInnerL = new THREE.Mesh(earInnerGeo, glowMat);
+      earInnerL.rotation.z = Math.PI / 2;
+      earInnerL.position.x = -0.05;
+      earGroupLeft.add(earInnerL);
+
+      const earGroupRight = new THREE.Group();
+      earGroupRight.position.set(0.82, 0, 0);
+      botGroup.add(earGroupRight);
+
+      const earBaseR = new THREE.Mesh(earBaseGeo, darkMetalMat);
+      earBaseR.rotation.z = Math.PI / 2;
+      earGroupRight.add(earBaseR);
+
+      const earVentR = new THREE.Mesh(earVentGeo, shinyMetalMat);
+      earVentR.rotation.z = Math.PI / 2;
+      earVentR.position.x = 0.05;
+      earGroupRight.add(earVentR);
+
+      const earInnerR = new THREE.Mesh(earInnerGeo, glowMat);
+      earInnerR.rotation.z = Math.PI / 2;
+      earInnerR.position.x = 0.05;
+      earGroupRight.add(earInnerR);
+
+      // --- Antenna (More Mechanical) ---
+      const antennaGroup = new THREE.Group();
+      antennaGroup.position.set(0.4, 0.72, -0.2);
+      antennaGroup.rotation.z = -0.2;
+      botGroup.add(antennaGroup);
+
+      const antMountGeo = new THREE.CylinderGeometry(0.15, 0.15, 0.05, 8);
+      const antMount = new THREE.Mesh(antMountGeo, darkMetalMat);
+      antennaGroup.add(antMount);
+
+      const antBaseGeoNew = new THREE.CylinderGeometry(0.04, 0.08, 0.4, 8);
+      const antennaPole = new THREE.Mesh(antBaseGeoNew, shinyMetalMat);
+      antennaPole.position.y = 0.2;
+      antennaGroup.add(antennaPole);
+
+      const antMidGeo = new THREE.CylinderGeometry(0.06, 0.06, 0.05, 8);
+      const antMid = new THREE.Mesh(antMidGeo, secondaryMetal);
+      antMid.position.y = 0.4;
+      antennaGroup.add(antMid);
+
+      const antTipGeoNew = new THREE.SphereGeometry(0.08, 12, 12);
+      const antTip = new THREE.Mesh(antTipGeoNew, glowMat);
+      antTip.position.y = 0.48;
+      antennaGroup.add(antTip);
+
+      // --- Neck Joint (Hydraulic look) ---
+      const neckGroup = new THREE.Group();
+      neckGroup.position.y = -0.72;
+      botGroup.add(neckGroup);
+
+      const neckCollarGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.1, 16);
+      const neckCollar = new THREE.Mesh(neckCollarGeo, darkMetalMat);
+      neckGroup.add(neckCollar);
+
+      const neckCoreGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.5, 12);
+      const neckCore = new THREE.Mesh(neckCoreGeo, shinyMetalMat);
+      neckCore.position.y = -0.25;
+      neckGroup.add(neckCore);
+
+      const neckPistonGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8);
+      const pistonL = new THREE.Mesh(neckPistonGeo, secondaryMetal);
+      pistonL.position.set(-0.2, -0.25, 0.2);
+      neckGroup.add(pistonL);
+
+      const pistonR = new THREE.Mesh(neckPistonGeo, secondaryMetal);
+      pistonR.position.set(0.2, -0.25, 0.2);
+      neckGroup.add(pistonR);
 
       // --- Needle ---
+
       const needleGroup = new THREE.Group();
       const needleMat = new THREE.MeshPhongMaterial({ 
         color: 0xffffff, // Brighter white metal
@@ -218,8 +360,8 @@
         eyeGlowMat.opacity = 0.15 + Math.sin(time * 5) * 0.1;
 
         // Subtle antenna jiggle
-        antenna.rotation.x = Math.sin(time * 10) * 0.02;
-        antTip.position.x = 0.52 + Math.sin(time * 10) * 0.01;
+        antennaGroup.rotation.x = Math.sin(time * 10) * 0.02;
+        antTip.position.x = Math.sin(time * 10) * 0.01;
 
         if (!hideNeedle) {
           // Update Thread Geometry (Downward Spiral + Needle at Bottom)
