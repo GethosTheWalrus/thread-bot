@@ -54,10 +54,10 @@ update-k8s-images:
     - git config user.name "gitlab-ci"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
   script:
-    - sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml
-    - sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml
-    - sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml
+    - 'sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml'
+    - 'sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml'
+    - 'sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml'
     - git add k8s/deployment.yaml
     - if git diff --cached --quiet; then exit 0; fi
-    - git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"
+    - 'git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"'
     - git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"
