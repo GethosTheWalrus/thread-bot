@@ -47,6 +47,8 @@ class ThreadResponse(BaseModel):
     updated_at: datetime
     messages: list[MessageResponse] = []
     is_generating: bool = False
+    estimated_tokens: int = 0
+    context_window: int = 8192
 
     model_config = {"from_attributes": True}
 

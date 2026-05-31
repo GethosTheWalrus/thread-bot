@@ -3,12 +3,19 @@ import 'dart:convert';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 class ApiService {
   final String baseUrl;
 
   ApiService({String? baseUrl})
       : baseUrl = baseUrl ?? (kIsWeb ? Uri.base.origin : 'http://localhost:8000');
+
+  String get _wsBaseUrl {
+    final uri = Uri.parse(baseUrl);
+    final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
+    return uri.replace(scheme: scheme).toString();
+  }
 
   // ── Threads ───────────────────────────────────────────────────────
 
@@ -49,21 +56,27 @@ class ApiService {
     if (threadId != null) body['thread_id'] = threadId;
     if (overrides != null) body['tool_overrides'] = overrides;
 
-    final request = http.Request('POST', Uri.parse('$baseUrl/api/chat'));
-    request.headers['Content-Type'] = 'application/json';
-    request.body = jsonEncode(body);
-
-    final client = http.Client();
+    final channel = WebSocketChannel.connect(Uri.parse('$_wsBaseUrl/api/chat/ws'));
     try {
-      final response = await client.send(request);
-      if (response.statusCode != 200) {
-        throw Exception('Failed to send message: ${response.statusCode}');
-      }
-      await for (final chunk in response.stream.transform(utf8.decoder)) {
-        yield chunk;
+      channel.sink.add(jsonEncode(body));
+      await for (final message in channel.stream) {
+        final text = message is String ? message : utf8.decode(message as List<int>);
+        final event = jsonDecode(text) as Map<String, dynamic>;
+        final type = event['type'] as String?;
+        if (type == 'thread') {
+          yield 'THREAD_ID:${event['thread_id']}\n\n';
+        } else if (type == 'done') {
+          yield '[DONE]';
+          break;
+        } else if (type == 'error') {
+          yield '[ERROR] ${event['content'] ?? 'Unknown error'}';
+          break;
+        } else {
+          yield text;
+        }
       }
     } finally {
-      client.close();
+      await channel.sink.close();
     }
   }
 
@@ -75,23 +88,26 @@ class ApiService {
   }
 
   Stream<String> _reconnectStreamImpl(String threadId) async* {
-    final request = http.Request('GET', Uri.parse('$baseUrl/api/threads/$threadId/stream'));
-
-    final client = http.Client();
+    final channel = WebSocketChannel.connect(Uri.parse('$_wsBaseUrl/api/threads/$threadId/ws'));
     try {
-      final response = await client.send(request);
-      if (response.statusCode == 204) {
-        // Not generating — no stream to reconnect to
-        return;
-      }
-      if (response.statusCode != 200) {
-        throw Exception('Failed to reconnect: ${response.statusCode}');
-      }
-      await for (final chunk in response.stream.transform(utf8.decoder)) {
-        yield chunk;
+      await for (final message in channel.stream) {
+        final text = message is String ? message : utf8.decode(message as List<int>);
+        final event = jsonDecode(text) as Map<String, dynamic>;
+        final type = event['type'] as String?;
+        if (type == 'thread') {
+          continue;
+        } else if (type == 'done') {
+          yield '[DONE]';
+          break;
+        } else if (type == 'error') {
+          yield '[ERROR] ${event['content'] ?? 'Unknown error'}';
+          break;
+        } else {
+          yield text;
+        }
       }
     } finally {
-      client.close();
+      await channel.sink.close();
     }
   }
 

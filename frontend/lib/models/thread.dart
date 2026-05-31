@@ -8,6 +8,8 @@ class Thread {
   final DateTime updatedAt;
   final List<Message> messages;
   final bool isGenerating;
+  final int estimatedTokens;
+  final int contextWindow;
 
   Thread({
     required this.id,
@@ -17,6 +19,8 @@ class Thread {
     required this.updatedAt,
     this.messages = const [],
     this.isGenerating = false,
+    this.estimatedTokens = 0,
+    this.contextWindow = 8192,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -33,6 +37,8 @@ class Thread {
       updatedAt: DateTime.parse(json['updated_at'] as String),
       messages: messages,
       isGenerating: json['is_generating'] as bool? ?? false,
+      estimatedTokens: json['estimated_tokens'] as int? ?? 0,
+      contextWindow: json['context_window'] as int? ?? 8192,
     );
   }
 

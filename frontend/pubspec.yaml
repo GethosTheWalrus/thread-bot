@@ -13,6 +13,7 @@ dependencies:
   web: ^1.0.0
   cupertino_icons: ^1.0.8
   http: ^1.2.1
+  web_socket_channel: ^3.0.1
   intl: ^0.19.0
   flutter_markdown: ^0.7.1
   url_launcher: ^6.3.0

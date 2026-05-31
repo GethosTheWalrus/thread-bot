@@ -35,12 +35,13 @@ from app.models.schemas import (
     AvailableServer,
     AvailableTool,
 )
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.config import get_settings, get_llm_config, get_redis_url, update_settings
+from app.config import get_settings, get_llm_config, update_settings
 from temporalio.client import Client as TemporalClient
+from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
 
 router = APIRouter(prefix="/api", tags=["chatbot"])
@@ -55,6 +56,89 @@ def set_temporal_client(client: TemporalClient):
     router._temporal_client = client
 
 
+async def _active_thread_workflow_id(client: TemporalClient, thread_id: UUID) -> str | None:
+    query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "thread-{thread_id}-"'
+    async for execution in client.list_workflows(query=query, limit=1):
+        return execution.id
+    return None
+
+
+async def _thread_is_generating(thread_id: UUID) -> bool:
+    client = get_temporal_client()
+    if not client:
+        return False
+    return await _active_thread_workflow_id(client, thread_id) is not None
+
+
+async def _relay_workflow_stream(
+    websocket: WebSocket,
+    temporal_client: TemporalClient,
+    workflow_id: str,
+    *,
+    from_offset: int = 0,
+) -> None:
+    stream = WorkflowStreamClient.create(temporal_client, workflow_id)
+    async for item in stream.subscribe(None, from_offset=from_offset, result_type=dict):
+        if item.topic == "threadbot-model-events":
+            raw = item.data
+            if raw.get("type") != "response.output_text.delta":
+                continue
+            content = raw.get("delta") or ""
+            if not content:
+                continue
+            event = {"type": "token", "content": content, "offset": item.offset}
+        elif item.topic == "events":
+            event = item.data
+            # UI token frames are relayed from the SDK raw stream above so they
+            # arrive while the model is generating, not after workflow replay.
+            if event.get("type") == "token":
+                continue
+            event["offset"] = item.offset
+        else:
+            continue
+        await websocket.send_json(event)
+        if event.get("type") in {"done", "error"}:
+            break
+
+
+async def _send_workflow_terminal_event(
+    websocket: WebSocket,
+    temporal_client: TemporalClient,
+    workflow_id: str,
+) -> None:
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    try:
+        await handle.result()
+        await websocket.send_json({"type": "done"})
+    except Exception as e:
+        await websocket.send_json({"type": "error", "content": str(e)})
+
+
+async def _relay_workflow_until_complete(
+    websocket: WebSocket,
+    temporal_client: TemporalClient,
+    workflow_id: str,
+    *,
+    from_offset: int = 0,
+) -> None:
+    import asyncio
+
+    relay_task = asyncio.create_task(
+        _relay_workflow_stream(websocket, temporal_client, workflow_id, from_offset=from_offset)
+    )
+    completion_task = asyncio.create_task(
+        _send_workflow_terminal_event(websocket, temporal_client, workflow_id)
+    )
+    done, pending = await asyncio.wait(
+        {relay_task, completion_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
+    for task in done:
+        task.result()
+
+
 def _build_message_response(m) -> MessageResponse:
     return MessageResponse(
         id=m.id,
@@ -66,8 +150,19 @@ def _build_message_response(m) -> MessageResponse:
     )
 
 
+def _estimate_context_tokens(messages) -> int:
+    total_chars = 0
+    for message in messages or []:
+        role = getattr(message, "role", None)
+        if role == "thinking":
+            continue
+        total_chars += len(getattr(message, "content", None) or "")
+    return int(total_chars / 4)
+
+
 def _build_thread_response(thread, messages=None, is_generating=False) -> ThreadResponse:
     msgs = messages or []
+    config = get_llm_config()
     return ThreadResponse(
         id=thread.id,
         title=thread.title,
@@ -76,6 +171,8 @@ def _build_thread_response(thread, messages=None, is_generating=False) -> Thread
         updated_at=thread.updated_at,
         messages=[_build_message_response(m) for m in msgs],
         is_generating=is_generating,
+        estimated_tokens=_estimate_context_tokens(msgs),
+        context_window=config.get("context_window", 8192),
     )
 
 
@@ -105,27 +202,41 @@ async def chat_endpoint(
     fastapi_request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    from app.database import AsyncSessionLocal
+    raise HTTPException(status_code=426, detail="Chat streaming now uses /api/chat/ws WebSocket")
+
+
+@router.websocket("/chat/ws")
+async def chat_websocket(websocket: WebSocket):
+    await websocket.accept()
 
     temporal_client = get_temporal_client()
     if not temporal_client:
-        raise HTTPException(status_code=503, detail="Temporal client not available")
+        await websocket.send_json({"type": "error", "content": "Temporal client not available"})
+        await websocket.close(code=1011)
+        return
+
+    try:
+        payload = await websocket.receive_json()
+        request = ChatRequest(**payload)
+    except Exception as e:
+        await websocket.send_json({"type": "error", "content": f"Invalid chat request: {e}"})
+        await websocket.close(code=1003)
+        return
+
+    from app.database import AsyncSessionLocal
 
     settings = get_settings()
-
-    # LLM config comes entirely from server-side settings (env + DB overrides)
     llm_config = get_llm_config().copy()
 
-    # Create thread and user message in a committed session so workflow can see them
     async with AsyncSessionLocal() as setup_db:
         if request.thread_id:
-            # Continue existing thread
             thread = await get_thread(setup_db, UUID(request.thread_id))
             if not thread:
-                raise HTTPException(status_code=404, detail="Thread not found")
+                await websocket.send_json({"type": "error", "content": "Thread not found"})
+                await websocket.close(code=1008)
+                return
             thread_id = thread.id
         elif request.parent_id:
-            # Branch from parent
             thread = await create_thread(setup_db, "Reply", parent_id=request.parent_id)
             thread_id = thread.id
             if request.tool_overrides:
@@ -139,7 +250,6 @@ async def chat_endpoint(
                 ]
                 await set_thread_tool_overrides(setup_db, thread_id, overrides)
         else:
-            # New root thread
             thread = await create_thread(setup_db, "New Thread", parent_id=None)
             thread_id = thread.id
             if request.tool_overrides:
@@ -169,30 +279,9 @@ async def chat_endpoint(
 
         await setup_db.commit()
 
-    import asyncio
     import uuid as uuid_mod
-    from fastapi.responses import StreamingResponse
-    from temporalio.client import WorkflowFailureError
 
     run_id = f"thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
-    channel = f"stream:{run_id}"
-
-    # Pass redis_url so the worker activity can publish directly to Redis
-    redis_url = get_redis_url()
-    llm_config["redis_url"] = redis_url
-    llm_config["stream_channel"] = channel
-
-    # Subscribe to Redis BEFORE starting the workflow to avoid race condition.
-    # Redis pub/sub doesn't buffer — if the worker publishes before we subscribe,
-    # those messages (including [DONE]) are lost and the stream hangs forever.
-    import redis.asyncio as aioredis
-
-    r = aioredis.from_url(redis_url)
-    pubsub = r.pubsub()
-    await pubsub.subscribe(channel)
-
-    # Mark this thread as actively generating so reconnect works after page refresh
-    await r.set(f"generating:{thread_id}", channel, ex=600)
 
     try:
         await temporal_client.start_workflow(
@@ -201,85 +290,34 @@ async def chat_endpoint(
             id=run_id,
             task_queue=settings.TEMPORAL_TASK_QUEUE,
         )
+        await websocket.send_json({"type": "thread", "thread_id": str(thread_id), "workflow_id": run_id})
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        await pubsub.unsubscribe(channel)
-        await pubsub.close()
-        await r.close()
-        raise HTTPException(status_code=502, detail=f"Failed to start workflow: {str(e)}")
+        await websocket.send_json({"type": "error", "content": f"Failed to start workflow: {e}"})
+        await websocket.close(code=1011)
+        return
 
-    async def stream_generator():
+    async def receive_controls():
         try:
-            # Yield the thread_id as the first chunk so the frontend knows the new thread ID
-            yield f"THREAD_ID:{thread_id}\n\n".encode("utf-8")
-
-            events_key = f"events:{channel}"
-            cursor = 0
-
             while True:
-                try:
-                    # 1. Try to get a live message from Pub/Sub
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5),
-                        timeout=1.0,
-                    )
-                    
-                    if msg:
-                        data = msg["data"]
-                        if isinstance(data, str):
-                            data = data.encode("utf-8")
-                        
-                        if data == b"[DONE]":
-                            break
-                        if data.startswith(b"[ERROR]"):
-                            yield data
-                            break
-                        yield data
-                        continue
-
-                    # 2. Fallback: Check the events list in Redis (reliable buffer)
-                    # This ensures we don't miss [DONE] if Pub/Sub flickers.
-                    events = await r.lrange(events_key, cursor, -1)
-                    if events:
-                        done_found = False
-                        for event_data in events:
-                            if event_data == b"[DONE]":
-                                done_found = True
-                                break
-                            if event_data.startswith(b"[ERROR]"):
-                                yield event_data
-                                done_found = True
-                                break
-                            yield event_data
-                        
-                        cursor += len(events)
-                        if done_found:
-                            break
-                    else:
-                        # No new events — send heartbeat
-                        yield b"\x00"
-                        await asyncio.sleep(0.5)
-
-                except asyncio.TimeoutError:
-                    yield b"\x00"
-                except Exception as e:
-                    yield f"[ERROR] Stream interrupted: {str(e)}".encode("utf-8")
+                msg = await websocket.receive_json()
+                if msg.get("type") == "cancel":
+                    handle = temporal_client.get_workflow_handle(run_id)
+                    await handle.cancel()
+                    await websocket.send_json({"type": "error", "content": "Generation cancelled"})
                     break
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.close()
-            await r.close()
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            return
 
-    return StreamingResponse(
-        stream_generator(),
-        media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+    import asyncio
+    control_task = asyncio.create_task(receive_controls())
+    try:
+        await _relay_workflow_until_complete(websocket, temporal_client, run_id)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        control_task.cancel()
 
 
 @router.get("/threads", response_model=ThreadListResponse)
@@ -315,85 +353,50 @@ async def get_thread_endpoint(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    # Check if this thread is actively generating
-    import redis.asyncio as aioredis
-    redis_url = get_redis_url()
-    r = aioredis.from_url(redis_url)
-    try:
-        channel = await r.get(f"generating:{thread_id}")
-        is_generating = channel is not None
-    finally:
-        await r.close()
+    is_generating = await _thread_is_generating(thread_id)
 
     return _build_thread_response(thread, thread.messages, is_generating=is_generating)
 
 
-@router.get("/threads/{thread_id}/stream")
-async def reconnect_stream_endpoint(
-    thread_id: UUID,
-):
-    """Reconnect to an in-progress generation stream.
-    
-    Uses the Redis event buffer (list) to replay all events from the beginning,
-    then polls for new events until [DONE]. This allows the frontend to resume
-    streaming after a page refresh without losing any events.
-    
-    Returns 204 if the thread is not currently generating.
-    """
-    import asyncio
-    import redis.asyncio as aioredis
-    from fastapi.responses import StreamingResponse, Response
+@router.websocket("/threads/{thread_id}/ws")
+async def reconnect_thread_websocket(websocket: WebSocket, thread_id: UUID, offset: int = 0):
+    await websocket.accept()
+    temporal_client = get_temporal_client()
+    if not temporal_client:
+        await websocket.send_json({"type": "error", "content": "Temporal client not available"})
+        await websocket.close(code=1011)
+        return
 
-    redis_url = get_redis_url()
-    r = aioredis.from_url(redis_url)
+    workflow_id = await _active_thread_workflow_id(temporal_client, thread_id)
+    if not workflow_id:
+        await websocket.send_json({"type": "done"})
+        await websocket.close()
+        return
 
-    try:
-        channel = await r.get(f"generating:{thread_id}")
-    except Exception:
-        await r.close()
-        return Response(status_code=204)
+    await websocket.send_json({"type": "thread", "thread_id": str(thread_id), "workflow_id": workflow_id})
 
-    if not channel:
-        await r.close()
-        return Response(status_code=204)
-
-    # Decode channel name (Redis returns bytes)
-    if isinstance(channel, bytes):
-        channel = channel.decode("utf-8")
-
-    events_key = f"events:{channel}"
-
-    async def stream_generator():
+    async def receive_controls():
         try:
-            cursor = 0
             while True:
-                # Get all events from cursor position onward
-                events = await r.lrange(events_key, cursor, -1)
-                if events:
-                    for event_data in events:
-                        if event_data == b"[DONE]":
-                            return
-                        if event_data.startswith(b"[ERROR]"):
-                            yield event_data
-                            return
-                        yield event_data
-                    cursor += len(events)
-                else:
-                    # No new events — send heartbeat and wait
-                    yield b"\x00"
-                    await asyncio.sleep(0.2)
-        finally:
-            await r.close()
+                msg = await websocket.receive_json()
+                if msg.get("type") == "cancel":
+                    handle = temporal_client.get_workflow_handle(workflow_id)
+                    await handle.cancel()
+                    await websocket.send_json({"type": "error", "content": "Generation cancelled"})
+                    break
+        except WebSocketDisconnect:
+            return
+        except Exception:
+            return
 
-    return StreamingResponse(
-        stream_generator(),
-        media_type="application/octet-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+    import asyncio
+    control_task = asyncio.create_task(receive_controls())
+    try:
+        await _relay_workflow_until_complete(websocket, temporal_client, workflow_id, from_offset=offset)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        control_task.cancel()
 
 
 @router.get("/threads/{thread_id}/replies", response_model=list[ThreadListItem])
@@ -465,6 +468,7 @@ async def get_settings_endpoint():
     config = get_llm_config()
     return {
         "llm_model": config["model"],
+        "llm_provider": config["provider"],
         "llm_api_url": config["api_url"],
         "llm_api_key": config["api_key"],
         "llm_temperature": config["temperature"],
@@ -487,6 +491,7 @@ async def update_settings_endpoint(
         "llm_api_url": "llm_api_url",
         "llm_api_key": "llm_api_key",
         "llm_model": "llm_model",
+        "llm_provider": "llm_provider",
         "llm_temperature": "llm_temperature",
         "llm_max_tokens": "llm_max_tokens",
         "llm_stream_timeout": "llm_stream_timeout",
@@ -505,6 +510,7 @@ async def update_settings_endpoint(
     config = get_llm_config()
     return {
         "llm_model": config["model"],
+        "llm_provider": config["provider"],
         "llm_api_url": config["api_url"],
         "llm_temperature": config["temperature"],
         "llm_max_tokens": config["max_tokens"],
