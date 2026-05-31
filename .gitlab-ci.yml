@@ -3,10 +3,9 @@ stages:
   - update-manifests
 
 variables:
-  DOCKER_HOST: tcp://docker:2375
-  DOCKER_TLS_CERTDIR: ""
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
   REGISTRY_IMAGE: "$CI_REGISTRY_IMAGE"
+  BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
 
 workflow:
   rules:
@@ -18,9 +17,6 @@ workflow:
 build-images:
   stage: build
   image: docker:27
-  services:
-    - name: docker:27-dind
-      command: ["--tls=false"]
   rules:
     - changes:
         - backend/**/*
@@ -29,13 +25,14 @@ build-images:
         - docker-compose.yml
         - .gitlab-ci.yml
   before_script:
-    - docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - docker info
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
     - docker run --privileged --rm tonistiigi/binfmt --install all
-    - docker buildx create --use --name threadbot-builder || docker buildx use threadbot-builder
+    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID" || docker buildx use "threadbot-builder-$CI_PROJECT_ID"
     - docker buildx inspect --bootstrap
   script:
-    - docker buildx build --platform linux/amd64,linux/arm64 -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
-    - docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
 
 update-k8s-images:
   stage: update-manifests
