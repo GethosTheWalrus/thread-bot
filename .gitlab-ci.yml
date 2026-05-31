@@ -28,11 +28,14 @@ build-images:
     - docker info
     - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
     - docker run --privileged --rm tonistiigi/binfmt --install all
-    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID" || docker buildx use "threadbot-builder-$CI_PROJECT_ID"
+    - printf '[registry."%s"]\n  http = true\n  insecure = true\n' "$CI_REGISTRY" > /tmp/buildkitd.toml
+    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" --driver docker-container --config /tmp/buildkitd.toml
     - docker buildx inspect --bootstrap
   script:
     - docker buildx build --platform "$BUILDX_PLATFORMS" -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
     - docker buildx build --platform "$BUILDX_PLATFORMS" -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+  after_script:
+    - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" || true
 
 update-k8s-images:
   stage: update-manifests
