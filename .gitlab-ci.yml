@@ -1,0 +1,63 @@
+stages:
+  - build
+  - update-manifests
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  REGISTRY_IMAGE: "$CI_REGISTRY_IMAGE"
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /\[skip ci\]/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - when: never
+
+build-images:
+  stage: build
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      command: ["--tls=false"]
+  rules:
+    - changes:
+        - backend/**/*
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD"
+    - docker run --privileged --rm tonistiigi/binfmt --install all
+    - docker buildx create --use --name threadbot-builder || docker buildx use threadbot-builder
+    - docker buildx inspect --bootstrap
+  script:
+    - docker buildx build --platform linux/amd64,linux/arm64 -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
+    - docker buildx build --platform linux/amd64,linux/arm64 -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+
+update-k8s-images:
+  stage: update-manifests
+  image: alpine:3.20
+  needs:
+    - build-images
+  rules:
+    - changes:
+        - backend/**/*
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - apk add --no-cache git
+    - git config user.name "gitlab-ci"
+    - git config user.email "gitlab-ci@$CI_SERVER_HOST"
+  script:
+    - sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml
+    - sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml
+    - sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml
+    - git add k8s/deployment.yaml
+    - if git diff --cached --quiet; then exit 0; fi
+    - git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"
+    - git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"
