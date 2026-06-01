@@ -94,9 +94,6 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         from app.discord_integration import start_thread_from_discord_prompt
 
         try:
-            channel_id = str(message.channel.id)
-            if isinstance(message.channel, discord.Thread) and message.channel.parent_id:
-                channel_id = str(message.channel.parent_id)
             guild_id = str(message.guild.id) if message.guild else config.get("guild_id")
             sender_name = message.author.global_name or message.author.name or "Discord user"
             await start_thread_from_discord_prompt(
@@ -105,7 +102,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                 sender_name,
                 source_message_id=str(message.id),
                 source_message_link=_message_link(message),
-                channel_id=channel_id,
+                channel_id=str(message.channel.id),
                 guild_id=guild_id,
             )
         except Exception as exc:

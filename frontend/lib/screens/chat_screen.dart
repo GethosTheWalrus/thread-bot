@@ -673,8 +673,89 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         return;
       }
 
+      final result = await showDialog<Map<String, String?>>(
+        context: context,
+        builder: (ctx) {
+          final nameController = TextEditingController(text: 'ThreadBot Thread');
+          final guildController = TextEditingController(text: settings['guild_id']);
+          final channelController = TextEditingController(text: settings['channel_id']);
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E2E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text(
+              'New Discord Thread',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Discord thread name',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: guildController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Server ID (optional)',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: channelController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Channel ID (optional)',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, {
+                  'name': nameController.text,
+                  'guildId': guildController.text,
+                  'channelId': channelController.text,
+                }),
+                child: const Text('Create', style: TextStyle(color: Color(0xFF8B5CF6))),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (result == null || !mounted) return;
+
       final thread = await _api.createThread(title: 'New Thread');
-      final link = await _api.shareThreadToDiscord(thread.id, name: 'ThreadBot Thread');
+      final link = await _api.shareThreadToDiscord(
+        thread.id,
+        name: result['name'] ?? 'ThreadBot Thread',
+        guildId: result['guildId'],
+        channelId: result['channelId'],
+      );
 
       if (!mounted) return;
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/${thread.id}'));
@@ -793,7 +874,88 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
 
       final title = _threads.where((t) => t.id == _activeThreadId).firstOrNull?.title;
-      final link = await _api.shareThreadToDiscord(_activeThreadId!, name: title);
+      final result = await showDialog<Map<String, String?>>(
+        context: context,
+        builder: (ctx) {
+          final nameController = TextEditingController(text: title ?? 'ThreadBot Thread');
+          final guildController = TextEditingController(text: settings['guild_id']);
+          final channelController = TextEditingController(text: settings['channel_id']);
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E2E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text(
+              'Share Thread to Discord',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Discord thread name',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: guildController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Server ID (optional)',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: channelController,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
+                      labelText: 'Channel ID (optional)',
+                      labelStyle: TextStyle(color: Colors.white70),
+                      filled: true,
+                      fillColor: Color(0xFF2A2A3C),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, {
+                  'name': nameController.text,
+                  'guildId': guildController.text,
+                  'channelId': channelController.text,
+                }),
+                child: const Text('Share', style: TextStyle(color: Color(0xFF8B5CF6))),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (result == null || !mounted) return;
+
+      final link = await _api.shareThreadToDiscord(
+        _activeThreadId!,
+        name: result['name'] ?? title,
+        guildId: result['guildId'],
+        channelId: result['channelId'],
+      );
       if (mounted) {
         setState(() => _discordLink = link);
         _loadThreads();
