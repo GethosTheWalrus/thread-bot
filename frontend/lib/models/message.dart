@@ -32,6 +32,34 @@ class Message {
   bool get isToolResult => role == 'tool_result';
   bool get isSystem => role == 'system';
   bool get isThinking => role == 'thinking';
+  bool get isFromDiscord => metadata?['source'] == 'discord';
+
+  String get senderLabel {
+    if (isUser) {
+      final senderName = metadata?['sender_name'] as String?;
+      if (senderName != null && senderName.isNotEmpty) return senderName;
+      final legacyDiscordSeparator = content.indexOf(' (Discord): ');
+      if (legacyDiscordSeparator > 0) return content.substring(0, legacyDiscordSeparator);
+      return 'User';
+    }
+    if (isAssistant) return 'ThreadBot';
+    return role;
+  }
+
+  String get displayContent {
+    final legacyDiscordSeparator = content.indexOf(' (Discord): ');
+    if (!isFromDiscord && legacyDiscordSeparator <= 0) return content;
+    final senderName = metadata?['sender_name'] as String?;
+    if (senderName != null && senderName.isNotEmpty) {
+      final prefix = '$senderName (Discord): ';
+      if (content.startsWith(prefix)) return content.substring(prefix.length);
+    }
+    if (legacyDiscordSeparator > 0) {
+      return content.substring(legacyDiscordSeparator + ' (Discord): '.length);
+    }
+    return content;
+  }
+
   bool get isCompactionSummary =>
       role == 'system' &&
       (metadata?['type'] == 'compaction_summary' ||

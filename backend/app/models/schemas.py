@@ -39,6 +39,17 @@ class MessageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DiscordThreadLinkResponse(BaseModel):
+    thread_id: UUID
+    guild_id: str
+    channel_id: str
+    discord_thread_id: str
+    discord_thread_name: str
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
 class ThreadResponse(BaseModel):
     id: UUID
     title: str
@@ -47,6 +58,7 @@ class ThreadResponse(BaseModel):
     updated_at: datetime
     messages: list[MessageResponse] = []
     is_generating: bool = False
+    discord_link: Optional[DiscordThreadLinkResponse] = None
 
     model_config = {"from_attributes": True}
 
@@ -58,6 +70,7 @@ class ThreadListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
     message_count: int = 0
+    is_discord_thread: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -121,3 +134,26 @@ class AvailableServer(BaseModel):
 class ToolOverridesResponse(BaseModel):
     servers: list[AvailableServer] = []
     overrides: list[ToolOverrideItem] = []
+
+
+class DiscordSettingsResponse(BaseModel):
+    enabled: bool = False
+    has_bot_token: bool = False
+    guild_id: str = ""
+    channel_id: str = ""
+    poll_interval_seconds: int = 10
+
+
+class DiscordSettingsRequest(BaseModel):
+    enabled: Optional[bool] = None
+    bot_token: Optional[str] = None
+    guild_id: Optional[str] = None
+    channel_id: Optional[str] = None
+    poll_interval_seconds: Optional[int] = None
+
+
+class DiscordShareRequest(BaseModel):
+    guild_id: Optional[str] = None
+    channel_id: Optional[str] = None
+    name: Optional[str] = None
+

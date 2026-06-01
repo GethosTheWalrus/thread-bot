@@ -24,7 +24,7 @@ class RunThreadWorkflow:
                 generate_title, save_message, get_messages, update_title,
                 compact_history, delete_messages_before, publish_done,
                 publish_title, discover_tools, llm_turn, execute_tools,
-                stream_response, publish_error,
+                stream_response, publish_error, sync_discord_title,
             )
         thread_id = input["thread_id"]
         message = input["message"]
@@ -376,24 +376,16 @@ class RunThreadWorkflow:
             # ── Save final assistant response ────────────────────────────
             await execute_activity(
                 save_message,
-                {"thread_id": thread_id, "role": "assistant", "content": llm_response},
+                {
+                    "thread_id": thread_id,
+                    "role": "assistant",
+                    "content": llm_response,
+                    "discord": llm_config.get("discord"),
+                },
                 start_to_close_timeout=timedelta(seconds=10),
             )
 
-            # ── Signal frontend: all messages persisted ──────────────────
-            # We do this BEFORE titling to minimize UI perceived latency.
-            await execute_activity(
-                publish_done,
-                {
-                    "redis_url": llm_config.get("redis_url"),
-                    "stream_channel": llm_config.get("stream_channel"),
-                    "thread_id": thread_id,
-                },
-                start_to_close_timeout=timedelta(seconds=5),
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            )
-
-            # ── Auto-title (Non-blocking for the chat stream) ────────────
+            # ── Auto-title ───────────────────────────────────────────────
             if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
                 readable = [
                     m for m in chat_history[-5:]
@@ -421,15 +413,38 @@ class RunThreadWorkflow:
                     start_to_close_timeout=timedelta(seconds=10),
                 )
                 await execute_activity(
+                    sync_discord_title,
+                    {
+                        "thread_id": thread_id,
+                        "title": title_text,
+                        "discord": llm_config.get("discord"),
+                    },
+                    start_to_close_timeout=timedelta(seconds=20),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                await execute_activity(
                     publish_title,
                     {
                         "redis_url": llm_config.get("redis_url"),
                         "stream_channel": llm_config.get("stream_channel"),
+                        "thread_id": thread_id,
                         "title": title_text,
                     },
                     start_to_close_timeout=timedelta(seconds=5),
                     retry_policy=RetryPolicy(maximum_attempts=2),
                 )
+
+            # ── Signal frontend: all messages/title persisted ────────────
+            await execute_activity(
+                publish_done,
+                {
+                    "redis_url": llm_config.get("redis_url"),
+                    "stream_channel": llm_config.get("stream_channel"),
+                    "thread_id": thread_id,
+                },
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
 
             return {
                 "thread_id": thread_id,

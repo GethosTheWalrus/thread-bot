@@ -58,6 +58,22 @@ docker buildx build \
 echo -e "\n${BLUE}Applying Kubernetes manifests...${NC}"
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/rbac.yaml
+
+# Copy Temporal codec encryption secret into ThreadBot's namespace. Kubernetes
+# secrets are namespace-scoped, so ThreadBot cannot mount temporal/codec-encryption-key directly.
+if kubectl get secret codec-encryption-key -n temporal >/dev/null 2>&1; then
+  kubectl get secret codec-encryption-key -n temporal -o json | python3 -c '
+import json, sys
+secret = json.load(sys.stdin)
+secret["metadata"] = {"name": "codec-encryption-key", "namespace": "threadbot"}
+for key in ("status", "immutable"):
+    secret.pop(key, None)
+print(json.dumps(secret))
+' | kubectl apply -f -
+else
+  echo -e "${RED}Warning: temporal/codec-encryption-key not found. Payload codec pods will not start until threadbot/codec-encryption-key exists.${NC}"
+fi
+
 kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml
 kubectl apply -f k8s/cronjob-mcp-cleanup.yaml
 

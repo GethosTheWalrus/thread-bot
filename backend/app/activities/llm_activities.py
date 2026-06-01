@@ -40,6 +40,8 @@ async def _save_inline(thread_id: str, role: str, content: str, metadata: dict |
     async with AsyncSessionLocal() as db:
         await add_message(db, UUID(thread_id), role, content, metadata=metadata)
         await db.commit()
+    from app.discord_integration import sync_message_to_discord
+    await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -816,6 +818,7 @@ async def publish_title(args: dict) -> None:
     import json
     redis_url = args.get("redis_url")
     stream_channel = args.get("stream_channel")
+    thread_id = args.get("thread_id")
     title = args.get("title", "")
     if not redis_url or not stream_channel:
         return
@@ -823,7 +826,7 @@ async def publish_title(args: dict) -> None:
     import redis.asyncio as aioredis
     r = aioredis.from_url(redis_url)
     try:
-        event = json.dumps({"type": "title", "content": title})
+        event = json.dumps({"type": "title", "content": title, "thread_id": thread_id})
         data = event.encode("utf-8")
         await r.publish(stream_channel, data)
         events_key = f"events:{stream_channel}"
@@ -844,9 +847,12 @@ async def save_message(args: dict) -> None:
     role = args["role"]
     content = args["content"]
     metadata = args.get("metadata")
+    discord_config = args.get("discord")
     async with AsyncSessionLocal() as db:
         await add_message(db, UUID(thread_id), role, content, metadata=metadata)
         await db.commit()
+    from app.discord_integration import sync_message_to_discord
+    await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata, discord_config=discord_config)
 
 
 @defn
@@ -901,6 +907,18 @@ async def update_title(args: dict) -> None:
     async with AsyncSessionLocal() as db:
         await update_thread_title(db, UUID(thread_id), title)
         await db.commit()
+
+
+@defn
+async def sync_discord_title(args: dict) -> None:
+    """Update linked Discord thread name after ThreadBot auto-title generation."""
+    from uuid import UUID
+
+    thread_id = args["thread_id"]
+    title = args["title"]
+    discord_config = args.get("discord")
+    from app.discord_integration import sync_title_to_discord
+    await sync_title_to_discord(UUID(thread_id), title, discord_config=discord_config)
 
 
 @defn

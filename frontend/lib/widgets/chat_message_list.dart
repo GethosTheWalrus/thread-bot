@@ -1182,6 +1182,14 @@ class _ChatBubble extends StatefulWidget {
 class _ChatBubbleState extends State<_ChatBubble> {
   bool _stepsExpanded = false;
 
+  String _formatMessageTime(DateTime value) {
+    final local = value.toLocal();
+    final hour = local.hour == 0 ? 12 : (local.hour > 12 ? local.hour - 12 : local.hour);
+    final minute = local.minute.toString().padLeft(2, '0');
+    final period = local.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$minute $period';
+  }
+
   @override
   Widget build(BuildContext context) {
     final isUser = widget.message.isUser;
@@ -1239,15 +1247,51 @@ class _ChatBubbleState extends State<_ChatBubble> {
   Widget _buildContent(BuildContext context, bool isUser) {
     final isWide = MediaQuery.of(context).size.width > 768;
     final hasTimeline = !isUser && widget.timelineSteps.length > 1;
-    final headerLabel = Text(
-      (isUser ? 'You' : 'ThreadBot').toUpperCase(),
-      style: TextStyle(
-        fontSize: 10,
-        fontWeight: FontWeight.w800,
-        letterSpacing: 1.5,
-        color: (isUser ? const Color(0xFF3B82F6) : const Color(0xFF8B5CF6))
-            .withValues(alpha: 0.9),
-      ),
+    final headerLabel = Row(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+      children: [
+        Text(
+          widget.message.senderLabel.toUpperCase(),
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.5,
+            color: (isUser ? const Color(0xFF3B82F6) : const Color(0xFF8B5CF6))
+                .withValues(alpha: 0.9),
+          ),
+        ),
+        if (widget.message.isFromDiscord) ...[
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(4),
+              color: const Color(0xFF5865F2).withValues(alpha: 0.14),
+              border: Border.all(color: const Color(0xFF5865F2).withValues(alpha: 0.25)),
+            ),
+            child: const Text(
+              'DISCORD',
+              style: TextStyle(
+                fontSize: 8,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 0.8,
+                color: Color(0xFF8EA1FF),
+              ),
+            ),
+          ),
+        ],
+        const SizedBox(width: 8),
+        Text(
+          _formatMessageTime(widget.message.createdAt),
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.2,
+            color: Colors.white.withValues(alpha: 0.32),
+          ),
+        ),
+      ],
     );
 
     return Column(
@@ -1348,11 +1392,11 @@ class _ChatBubbleState extends State<_ChatBubble> {
     );
 
     if (!isUser && widget.message.id.startsWith('temp-ast-')) {
-      return _AnimatedMarkdown(data: widget.message.content, styleSheet: style);
+      return _AnimatedMarkdown(data: widget.message.displayContent, styleSheet: style);
     }
 
     return MarkdownBody(
-      data: widget.message.content,
+      data: widget.message.displayContent,
       selectable: true,
       onTapLink: (text, href, title) {
         if (href != null) launchUrl(Uri.parse(href));

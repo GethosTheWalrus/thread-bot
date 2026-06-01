@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -34,10 +35,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String? _error;
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
+  DiscordThreadLink? _discordLink;
   List<Map<String, dynamic>>? _pendingToolOverrides;
   bool _isAtBottom = true; // auto-scroll when anchored to bottom
   int _contextEstimatedTokens = 0;
   int _contextWindow = 8192;
+  Timer? _threadRefreshTimer;
 
   // Animation
   late final AnimationController _fadeController;
@@ -62,10 +65,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _loadThread(widget.initialThreadId!);
       }
     });
+    _threadRefreshTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _loadThreads(silent: true),
+    );
   }
 
   @override
   void dispose() {
+    _threadRefreshTimer?.cancel();
     _fadeController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
@@ -84,13 +92,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   // ── Data Loading ──────────────────────────────────────────────────
 
-  Future<void> _loadThreads() async {
-    setState(() => _isLoadingThreads = true);
+  Future<void> _loadThreads({bool silent = false}) async {
+    if (!silent) setState(() => _isLoadingThreads = true);
     try {
       final threads = await _api.getThreads();
-      if (mounted) setState(() { _threads = threads; _isLoadingThreads = false; });
+      if (mounted) {
+        setState(() {
+          _threads = threads;
+          if (!silent) _isLoadingThreads = false;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() { _error = 'Failed to load threads'; _isLoadingThreads = false; });
+      if (mounted && !silent) {
+        setState(() { _error = 'Failed to load threads'; _isLoadingThreads = false; });
+      }
     }
   }
 
@@ -100,7 +115,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$threadId'));
       final thread = await _api.getThread(threadId);
       if (mounted) {
-        setState(() { _messages = thread.messages; _isLoadingMessages = false; });
+        setState(() { _messages = thread.messages; _discordLink = thread.discordLink; _isLoadingMessages = false; });
         _scrollToBottom(force: true);
 
         // Check if this thread has any tool overrides
@@ -302,7 +317,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           }
         }
 
-        if (event == null) break;
         chunkBuffer = chunkBuffer.substring(consumed);
 
         _handleStreamEvent(event, tempIds);
@@ -533,7 +547,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'title':
         // Update the thread title in the sidebar immediately
         setState(() {
-          final thread = _threads.where((t) => t.id == _activeThreadId).firstOrNull;
+          final eventThreadId = event['thread_id'] as String? ?? _activeThreadId;
+          final thread = _threads.where((t) => t.id == eventThreadId).firstOrNull;
           if (thread != null) {
             thread.title = content;
           }
@@ -575,7 +590,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _startNewChat() async {
+  Future<void> _startRegularNewChat() async {
     SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
     setState(() {
       _activeThreadId = null;
@@ -584,7 +599,107 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _contextEstimatedTokens = 0;
       _pendingToolOverrides = null;
       _hasToolOverrides = false;
+      _discordLink = null;
     });
+  }
+
+  Future<void> _startNewChat() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: const Color(0xFF16161E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(2),
+                    color: Colors.white.withValues(alpha: 0.2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                'Start a new thread',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Choose where this conversation should live.',
+                style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.45)),
+              ),
+              const SizedBox(height: 18),
+              _NewThreadChoiceTile(
+                icon: Icons.chat_bubble_outline,
+                title: 'Regular Thread',
+                subtitle: 'Private ThreadBot conversation',
+                onTap: () => Navigator.pop(context, 'regular'),
+              ),
+              const SizedBox(height: 10),
+              _NewThreadChoiceTile(
+                icon: Icons.forum_outlined,
+                title: 'Discord Thread',
+                subtitle: 'Create and sync a Discord thread now',
+                badgeText: 'D',
+                onTap: () => Navigator.pop(context, 'discord'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (choice == 'discord') {
+      await _startDiscordNewChat();
+    } else if (choice == 'regular') {
+      await _startRegularNewChat();
+    }
+  }
+
+  Future<void> _startDiscordNewChat() async {
+    try {
+      final settings = await _api.getDiscordSettings();
+      if (settings['enabled'] != true || settings['has_bot_token'] != true) {
+        if (mounted) _showDiscordSetupSnack();
+        return;
+      }
+
+      final thread = await _api.createThread(title: 'New Thread');
+      final link = await _api.shareThreadToDiscord(thread.id, name: 'ThreadBot Thread');
+
+      if (!mounted) return;
+      SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/${thread.id}'));
+      setState(() {
+        _activeThreadId = thread.id;
+        _messages = [];
+        _error = null;
+        _contextEstimatedTokens = 0;
+        _pendingToolOverrides = null;
+        _hasToolOverrides = false;
+        _discordLink = link;
+      });
+      _loadThreads();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to create Discord thread: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _deleteThread(String threadId) async {
@@ -592,7 +707,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       await _api.deleteThread(threadId);
       if (_activeThreadId == threadId) {
         SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
-        setState(() { _activeThreadId = null; _messages = []; });
+        setState(() { _activeThreadId = null; _messages = []; _discordLink = null; });
       }
       _loadThreads();
     } catch (e) {
@@ -608,7 +723,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       await _api.deleteAllThreads();
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
-      setState(() { _activeThreadId = null; _messages = []; });
+      setState(() { _activeThreadId = null; _messages = []; _discordLink = null; });
       _loadThreads();
     } catch (e) {
       if (mounted) {
@@ -655,6 +770,65 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   void _openSettings() {
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+  }
+
+  Future<void> _toggleDiscordShare() async {
+    if (_activeThreadId == null) return;
+
+    try {
+      if (_discordLink?.isActive == true) {
+        await _api.unshareThreadFromDiscord(_activeThreadId!);
+        if (mounted) {
+          setState(() => _discordLink = null);
+          _loadThreads();
+        }
+        return;
+      }
+
+      final settings = await _api.getDiscordSettings();
+      if (settings['enabled'] != true || settings['has_bot_token'] != true) {
+        if (mounted) _showDiscordSetupSnack();
+        return;
+      }
+
+      final title = _threads.where((t) => t.id == _activeThreadId).firstOrNull?.title;
+      final link = await _api.shareThreadToDiscord(_activeThreadId!, name: title);
+      if (mounted) {
+        setState(() => _discordLink = link);
+        _loadThreads();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Thread shared to Discord'),
+            backgroundColor: const Color(0xFF16161E),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Discord sync failed: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    }
+  }
+
+  void _showDiscordSetupSnack() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Configure Discord in Settings first'),
+        backgroundColor: const Color(0xFF16161E),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        action: SnackBarAction(label: 'Settings', onPressed: _openSettings),
+      ),
     );
   }
 
@@ -801,6 +975,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            Tooltip(
+              message: _discordLink?.isActive == true ? 'Disable Discord sync' : 'Share to Discord',
+              child: IconButton(
+                onPressed: _toggleDiscordShare,
+                icon: _DiscordShareIcon(active: _discordLink?.isActive == true),
+              ),
+            ),
           ] else
             const Spacer(),
         ],
@@ -935,6 +1116,107 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   color: Colors.white.withValues(alpha: 0.7),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DiscordShareIcon extends StatelessWidget {
+  final bool active;
+
+  const _DiscordShareIcon({required this.active});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 22,
+      height: 22,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: active ? const Color(0xFF5865F2) : Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(
+          color: active ? const Color(0xFF5865F2) : Colors.white.withValues(alpha: 0.12),
+        ),
+      ),
+      child: Text(
+        'D',
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+          color: active ? Colors.white : Colors.white.withValues(alpha: 0.45),
+        ),
+      ),
+    );
+  }
+}
+
+class _NewThreadChoiceTile extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final String? badgeText;
+  final VoidCallback onTap;
+
+  const _NewThreadChoiceTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+    this.badgeText,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            color: Colors.white.withValues(alpha: 0.03),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 38,
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(11),
+                  gradient: badgeText == null
+                      ? const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)])
+                      : const LinearGradient(colors: [Color(0xFF5865F2), Color(0xFF4752C4)]),
+                ),
+                child: badgeText == null
+                    ? Icon(icon, size: 18, color: Colors.white)
+                    : Text(
+                        badgeText!,
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white),
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 3),
+                    Text(
+                      subtitle,
+                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45)),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, color: Colors.white.withValues(alpha: 0.35)),
             ],
           ),
         ),

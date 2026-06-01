@@ -282,18 +282,20 @@ class Sidebar extends StatelessWidget {
                 SizedBox(
                   width: 14,
                   height: 14,
-                  child: thread.title == 'New Thread'
-                      ? const CircularProgressIndicator(
+                    child: thread.title == 'New Thread'
+                        ? const CircularProgressIndicator(
                           strokeWidth: 1.5,
                           valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
                         )
-                      : Icon(
-                          Icons.chat_bubble_outline,
-                          size: 14,
-                          color: isActive
-                              ? const Color(0xFF8B5CF6)
-                              : Colors.white.withValues(alpha: 0.3),
-                        ),
+                        : thread.isDiscordThread
+                            ? _DiscordGlyph(isActive: isActive)
+                            : Icon(
+                                Icons.chat_bubble_outline,
+                                size: 14,
+                                color: isActive
+                                    ? const Color(0xFF8B5CF6)
+                                    : Colors.white.withValues(alpha: 0.3),
+                              ),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -445,6 +447,29 @@ class Sidebar extends StatelessWidget {
             child: const Text('Delete All'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DiscordGlyph extends StatelessWidget {
+  final bool isActive;
+
+  const _DiscordGlyph({required this.isActive});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 14,
+      height: 14,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: (isActive ? const Color(0xFF5865F2) : Colors.white).withValues(alpha: isActive ? 1 : 0.25),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: const Text(
+        'D',
+        style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: Colors.white),
       ),
     );
   }

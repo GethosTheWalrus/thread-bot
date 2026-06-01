@@ -47,3 +47,19 @@ CREATE TABLE IF NOT EXISTS thread_tool_overrides (
 );
 
 CREATE INDEX IF NOT EXISTS idx_thread_tool_overrides_thread_id ON thread_tool_overrides(thread_id);
+
+CREATE TABLE IF NOT EXISTS discord_thread_links (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    thread_id UUID NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
+    guild_id VARCHAR(255) NOT NULL,
+    channel_id VARCHAR(255) NOT NULL,
+    discord_thread_id VARCHAR(255) NOT NULL UNIQUE,
+    discord_thread_name VARCHAR(255) NOT NULL,
+    last_discord_message_id VARCHAR(255),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_discord_thread_links_thread_id ON discord_thread_links(thread_id);
+CREATE INDEX IF NOT EXISTS idx_discord_thread_links_discord_thread_id ON discord_thread_links(discord_thread_id);

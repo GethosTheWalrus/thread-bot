@@ -28,6 +28,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: threadbot-config
+          env:
+            - name: TEMPORAL_PAYLOAD_CODEC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codec-encryption-key
+                  key: key
           resources:
             requests:
               memory: "128Mi"
@@ -90,6 +96,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: threadbot-config
+          env:
+            - name: TEMPORAL_PAYLOAD_CODEC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codec-encryption-key
+                  key: key
           resources:
             requests:
               memory: "128Mi"

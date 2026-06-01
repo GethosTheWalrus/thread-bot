@@ -1,30 +1,36 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.config import get_settings, load_settings_from_db
+from app.config import load_settings_from_db
 from app.api.routes import router, set_temporal_client
-from temporalio.client import Client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-
-    # Ensure the settings table exists (idempotent)
-    from app.database import engine
-    from app.models.models import Base
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Ensure tables and additive schema updates exist (idempotent)
+    from app.database import ensure_database_schema
+    await ensure_database_schema()
 
     # Load persisted settings from DB into override dict
     await load_settings_from_db()
 
-    client = await Client.connect(
-        target_host=f"{settings.TEMPORAL_HOST}:{settings.TEMPORAL_PORT}",
-        namespace=settings.TEMPORAL_NAMESPACE,
-    )
+    from app.temporal_client import connect_temporal_client
+    client = await connect_temporal_client()
     set_temporal_client(client)
-    yield
+    import asyncio
+    from app.discord_bot import run_discord_bot
+    from app.discord_integration import discord_poll_loop
+    discord_task = asyncio.create_task(discord_poll_loop(client))
+    discord_bot_task = asyncio.create_task(run_discord_bot(client))
+    try:
+        yield
+    finally:
+        for task in (discord_task, discord_bot_task):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(

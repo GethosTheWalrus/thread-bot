@@ -17,7 +17,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _contextWindowController = TextEditingController();
   final _preserveRecentController = TextEditingController();
   final _toolResultMaxCharsController = TextEditingController();
+  final _discordTokenController = TextEditingController();
+  final _discordGuildController = TextEditingController();
+  final _discordChannelController = TextEditingController();
+  final _discordPollController = TextEditingController();
   double _compactionThreshold = 0.75;
+  bool _discordEnabled = false;
 
   bool _isLoading = true;
   bool _isSaving = false;
@@ -46,6 +51,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           (settings['llm_tool_result_max_chars'] ?? 0).toString();
       _compactionThreshold =
           (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
+      final discord = settings['discord'] as Map<String, dynamic>? ?? {};
+      _discordEnabled = discord['enabled'] as bool? ?? false;
+      _discordTokenController.text = '';
+      _discordGuildController.text = discord['guild_id'] as String? ?? '';
+      _discordChannelController.text = discord['channel_id'] as String? ?? '';
+      _discordPollController.text = (discord['poll_interval_seconds'] ?? 10).toString();
     } catch (_) {
       _apiUrlController.text = '';
       _modelController.text = 'llama3.1';
@@ -53,6 +64,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _maxIterationsController.text = '25';
       _preserveRecentController.text = '10';
       _toolResultMaxCharsController.text = '0';
+      _discordTokenController.text = '';
+      _discordGuildController.text = '';
+      _discordChannelController.text = '';
+      _discordPollController.text = '10';
     }
 
     if (mounted) setState(() => _isLoading = false);
@@ -67,6 +82,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final maxIterations = int.tryParse(_maxIterationsController.text) ?? 25;
       final preserveRecent = int.tryParse(_preserveRecentController.text) ?? 10;
       final toolResultMaxChars = int.tryParse(_toolResultMaxCharsController.text) ?? 0;
+      final discordPoll = int.tryParse(_discordPollController.text) ?? 10;
 
       // Build the settings payload — only include API key if user entered one
       final payload = <String, dynamic>{
@@ -77,9 +93,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_compaction_threshold': _compactionThreshold,
         'llm_preserve_recent': preserveRecent,
         'llm_tool_result_max_chars': toolResultMaxChars,
+        'discord_enabled': _discordEnabled,
+        'discord_guild_id': _discordGuildController.text,
+        'discord_channel_id': _discordChannelController.text,
+        'discord_poll_interval_seconds': discordPoll,
       };
       if (_apiKeyController.text.isNotEmpty) {
         payload['llm_api_key'] = _apiKeyController.text;
+      }
+      if (_discordTokenController.text.isNotEmpty) {
+        payload['discord_bot_token'] = _discordTokenController.text;
       }
 
       await api.saveSettingsToBackend(payload);
@@ -119,6 +142,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _contextWindowController.dispose();
     _preserveRecentController.dispose();
     _toolResultMaxCharsController.dispose();
+    _discordTokenController.dispose();
+    _discordGuildController.dispose();
+    _discordChannelController.dispose();
+    _discordPollController.dispose();
     super.dispose();
   }
 
@@ -301,6 +328,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                               ],
                             ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 32),
+                      _buildSection(
+                        'Discord Integration',
+                        'Share selected ThreadBot conversations to Discord threads',
+                        Icons.forum_outlined,
+                        [
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            value: _discordEnabled,
+                            onChanged: (v) => setState(() => _discordEnabled = v),
+                            activeColor: const Color(0xFF8B5CF6),
+                            title: const Text('Enable Discord sync'),
+                            subtitle: Text(
+                              'Requires a Discord bot token with channel, thread, and message permissions.',
+                              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          _buildField(
+                            controller: _discordTokenController,
+                            label: 'Discord Bot Token',
+                            hint: 'Leave blank to keep current token',
+                            icon: Icons.key_rounded,
+                            obscure: true,
+                          ),
+                          const SizedBox(height: 16),
+                          _buildField(
+                            controller: _discordGuildController,
+                            label: 'Default Server ID',
+                            hint: 'Discord guild/server ID',
+                            icon: Icons.groups_outlined,
+                          ),
+                          const SizedBox(height: 16),
+                          _buildField(
+                            controller: _discordChannelController,
+                            label: 'Default Channel ID',
+                            hint: 'Channel where ThreadBot creates Discord threads',
+                            icon: Icons.tag_rounded,
+                          ),
+                          const SizedBox(height: 16),
+                          _buildField(
+                            controller: _discordPollController,
+                            label: 'Reply Poll Interval (seconds)',
+                            hint: '10',
+                            icon: Icons.sync_rounded,
+                            keyboardType: TextInputType.number,
                           ),
                         ],
                       ),

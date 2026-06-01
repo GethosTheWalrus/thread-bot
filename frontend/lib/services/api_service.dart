@@ -291,4 +291,55 @@ class ApiService {
       throw Exception('Failed to save tool overrides: ${response.statusCode}');
     }
   }
+
+  // ── Discord Integration ───────────────────────────────────────────
+
+  Future<Map<String, dynamic>> getDiscordSettings() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/discord/settings'));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load Discord settings: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> saveDiscordSettings(Map<String, dynamic> settings) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/api/discord/settings'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(settings),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to save Discord settings: ${response.statusCode}');
+  }
+
+  Future<DiscordThreadLink> shareThreadToDiscord(
+    String threadId, {
+    String? guildId,
+    String? channelId,
+    String? name,
+  }) async {
+    final body = <String, dynamic>{};
+    if (guildId != null && guildId.isNotEmpty) body['guild_id'] = guildId;
+    if (channelId != null && channelId.isNotEmpty) body['channel_id'] = channelId;
+    if (name != null && name.isNotEmpty) body['name'] = name;
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/threads/$threadId/discord'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    if (response.statusCode == 200) {
+      return DiscordThreadLink.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to share to Discord: ${response.statusCode} ${response.body}');
+  }
+
+  Future<void> unshareThreadFromDiscord(String threadId) async {
+    final response = await http.delete(Uri.parse('$baseUrl/api/threads/$threadId/discord'));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to disable Discord sync: ${response.statusCode}');
+    }
+  }
 }

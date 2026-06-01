@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     TEMPORAL_PORT: int = 7233
     TEMPORAL_NAMESPACE: str = "default"
     TEMPORAL_TASK_QUEUE: str = "chatbot-task-queue"
+    TEMPORAL_PAYLOAD_CODEC_ENABLED: bool = False
+    TEMPORAL_PAYLOAD_CODEC_KEY: str = ""
+    TEMPORAL_PAYLOAD_CODEC_KEY_FILE: str = ""
 
     # LLM API
     LLM_API_URL: str = "http://host.docker.internal:11434/v1"
@@ -37,6 +40,13 @@ class Settings(BaseSettings):
 
     # App
     APP_NAME: str = "ThreadBot"
+
+    # Discord integration (optional)
+    DISCORD_ENABLED: bool = False
+    DISCORD_BOT_TOKEN: str = ""
+    DISCORD_GUILD_ID: str = ""
+    DISCORD_CHANNEL_ID: str = ""
+    DISCORD_POLL_INTERVAL_SECONDS: int = 10
 
     model_config = {"extra": "ignore"}
 
@@ -96,6 +106,8 @@ async def load_settings_from_db() -> None:
         "llm_compaction_threshold": float,
         "llm_preserve_recent": int,
         "llm_tool_result_max_chars": int,
+        "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "discord_poll_interval_seconds": int,
     }
     for key, value in rows.items():
         coerce = _type_map.get(key)
@@ -121,6 +133,17 @@ def get_llm_config() -> dict:
         "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
         "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
         "tool_result_max_chars": get_setting("LLM_TOOL_RESULT_MAX_CHARS"),
+    }
+
+
+def get_discord_config() -> dict:
+    """Get current Discord integration config with overrides applied."""
+    return {
+        "enabled": bool(get_setting("DISCORD_ENABLED")),
+        "bot_token": get_setting("DISCORD_BOT_TOKEN") or "",
+        "guild_id": get_setting("DISCORD_GUILD_ID") or "",
+        "channel_id": get_setting("DISCORD_CHANNEL_ID") or "",
+        "poll_interval_seconds": int(get_setting("DISCORD_POLL_INTERVAL_SECONDS") or 10),
     }
 
 

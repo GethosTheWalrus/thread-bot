@@ -1,7 +1,7 @@
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Thread, Message, MCPServer, Setting, ThreadToolOverride
+from app.models.models import Thread, Message, MCPServer, Setting, ThreadToolOverride, DiscordThreadLink
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
@@ -95,6 +95,63 @@ async def get_message_count(db: AsyncSession, thread_id: UUID) -> int:
         select(func.count(Message.id)).where(Message.thread_id == thread_id)
     )
     return result.scalar_one()
+
+
+# ── Discord Thread Links ──────────────────────────────────────────────
+
+async def get_discord_link(db: AsyncSession, thread_id: UUID) -> DiscordThreadLink | None:
+    result = await db.execute(
+        select(DiscordThreadLink).where(DiscordThreadLink.thread_id == thread_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_active_discord_links(db: AsyncSession) -> list[DiscordThreadLink]:
+    result = await db.execute(
+        select(DiscordThreadLink).where(DiscordThreadLink.is_active == True)
+    )
+    return list(result.scalars().all())
+
+
+async def create_discord_link(
+    db: AsyncSession,
+    thread_id: UUID,
+    guild_id: str,
+    channel_id: str,
+    discord_thread_id: str,
+    discord_thread_name: str,
+) -> DiscordThreadLink:
+    link = DiscordThreadLink(
+        thread_id=thread_id,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        discord_thread_id=discord_thread_id,
+        discord_thread_name=discord_thread_name,
+    )
+    db.add(link)
+    await db.flush()
+    await db.refresh(link)
+    return link
+
+
+async def update_discord_link_cursor(
+    db: AsyncSession,
+    link: DiscordThreadLink,
+    last_discord_message_id: str | None,
+) -> DiscordThreadLink:
+    link.last_discord_message_id = last_discord_message_id
+    await db.flush()
+    await db.refresh(link)
+    return link
+
+
+async def set_discord_link_active(db: AsyncSession, thread_id: UUID, is_active: bool) -> DiscordThreadLink | None:
+    link = await get_discord_link(db, thread_id)
+    if link:
+        link.is_active = is_active
+        await db.flush()
+        await db.refresh(link)
+    return link
 
 
 async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None, args: dict | None = None) -> MCPServer:

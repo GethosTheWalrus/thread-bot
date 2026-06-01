@@ -13,3 +13,4 @@ redis>=5.0.0
 cryptography
 docker
 mcp
+discord.py>=2.3.2

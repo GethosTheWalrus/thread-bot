@@ -16,6 +16,9 @@ from app.database.crud import (
     upsert_settings,
     get_thread_tool_overrides,
     set_thread_tool_overrides,
+    get_discord_link,
+    create_discord_link,
+    set_discord_link_active,
 )
 from app.models.models import Thread, Message
 from app.models.schemas import (
@@ -34,12 +37,16 @@ from app.models.schemas import (
     ToolOverrideItem,
     AvailableServer,
     AvailableTool,
+    DiscordSettingsRequest,
+    DiscordSettingsResponse,
+    DiscordShareRequest,
+    DiscordThreadLinkResponse,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.config import get_settings, get_llm_config, get_redis_url, update_settings
+from app.config import get_settings, get_llm_config, get_redis_url, update_settings, get_discord_config
 from temporalio.client import Client as TemporalClient
 from app.workflows.thread_workflow import RunThreadWorkflow
 
@@ -66,7 +73,39 @@ def _build_message_response(m) -> MessageResponse:
     )
 
 
-def _build_thread_response(thread, messages=None, is_generating=False) -> ThreadResponse:
+def _build_discord_link_response(link) -> DiscordThreadLinkResponse | None:
+    if not link:
+        return None
+    return DiscordThreadLinkResponse(
+        thread_id=link.thread_id,
+        guild_id=link.guild_id,
+        channel_id=link.channel_id,
+        discord_thread_id=link.discord_thread_id,
+        discord_thread_name=link.discord_thread_name,
+        is_active=link.is_active,
+    )
+
+
+async def _get_discord_link_for_thread(db: AsyncSession, thread_id: UUID):
+    return await get_discord_link(db, thread_id)
+
+
+def _build_workflow_discord_config(discord_config: dict, link) -> dict | None:
+    if not link or not link.is_active:
+        return None
+    if not discord_config.get("enabled") or not discord_config.get("bot_token"):
+        return None
+    return {
+        "enabled": discord_config.get("enabled"),
+        "bot_token": discord_config.get("bot_token"),
+        "guild_id": link.guild_id,
+        "channel_id": link.channel_id,
+        "discord_thread_id": link.discord_thread_id,
+        "discord_thread_name": link.discord_thread_name,
+    }
+
+
+def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None) -> ThreadResponse:
     msgs = messages or []
     return ThreadResponse(
         id=thread.id,
@@ -76,6 +115,7 @@ def _build_thread_response(thread, messages=None, is_generating=False) -> Thread
         updated_at=thread.updated_at,
         messages=[_build_message_response(m) for m in msgs],
         is_generating=is_generating,
+        discord_link=_build_discord_link_response(discord_link),
     )
 
 
@@ -167,7 +207,22 @@ async def chat_endpoint(
                 for o in thread_overrides
             ]
 
+        discord_link = await get_discord_link(setup_db, thread_id)
+        workflow_discord_config = _build_workflow_discord_config(get_discord_config(), discord_link)
+        if workflow_discord_config:
+            llm_config["discord"] = workflow_discord_config
+
         await setup_db.commit()
+
+    from app.discord_integration import sync_message_to_discord
+    discord_message_id = await sync_message_to_discord(
+        thread_id,
+        "user",
+        request.content,
+        discord_config=llm_config.get("discord"),
+    )
+    if discord_message_id and llm_config.get("discord"):
+        llm_config["discord"]["reply_to_message_id"] = discord_message_id
 
     import asyncio
     import uuid as uuid_mod
@@ -295,6 +350,7 @@ async def list_threads_endpoint(
             select(func.count(Message.id)).where(Message.thread_id == t.id)
         )
         msg_count = msg_count_result.scalar_one()
+        discord_link = await _get_discord_link_for_thread(db, t.id)
         thread_items.append(ThreadListItem(
             id=t.id,
             title=t.title,
@@ -302,6 +358,7 @@ async def list_threads_endpoint(
             created_at=t.created_at,
             updated_at=t.updated_at,
             message_count=msg_count,
+            is_discord_thread=bool(discord_link and discord_link.is_active),
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -325,7 +382,8 @@ async def get_thread_endpoint(
     finally:
         await r.close()
 
-    return _build_thread_response(thread, thread.messages, is_generating=is_generating)
+    discord_link = await _get_discord_link_for_thread(db, thread_id)
+    return _build_thread_response(thread, thread.messages, is_generating=is_generating, discord_link=discord_link)
 
 
 @router.get("/threads/{thread_id}/stream")
@@ -405,6 +463,7 @@ async def get_thread_replies_endpoint(
     items = []
     for t in replies:
         cnt = await db.execute(select(func.count(Message.id)).where(Message.thread_id == t.id))
+        discord_link = await _get_discord_link_for_thread(db, t.id)
         items.append(ThreadListItem(
             id=t.id,
             title=t.title,
@@ -412,6 +471,7 @@ async def get_thread_replies_endpoint(
             created_at=t.created_at,
             updated_at=t.updated_at,
             message_count=cnt.scalar_one(),
+            is_discord_thread=bool(discord_link and discord_link.is_active),
         ))
     return items
 
@@ -429,7 +489,11 @@ async def update_thread_endpoint(
     msg_result = await db.execute(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at))
     messages = list(msg_result.scalars().all())
 
-    return _build_thread_response(thread, messages)
+    from app.discord_integration import sync_title_to_discord
+    await sync_title_to_discord(thread_id, request.title)
+
+    discord_link = await _get_discord_link_for_thread(db, thread_id)
+    return _build_thread_response(thread, messages, discord_link=discord_link)
 
 
 @router.delete("/threads/{thread_id}")
@@ -437,6 +501,28 @@ async def delete_thread_endpoint(
     thread_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
+    discord_link = await get_discord_link(db, thread_id)
+    if discord_link and discord_link.is_active:
+        from app.discord_integration import DiscordIntegrationError, delete_discord_thread
+        try:
+            await delete_discord_thread(discord_link.discord_thread_id)
+        except DiscordIntegrationError as e:
+            print(
+                f"[discord] failed to delete Discord thread {discord_link.discord_thread_id} "
+                f"for local thread {thread_id}: {e}",
+                flush=True,
+            )
+            if e.status == 403 and e.discord_code == 50013:
+                raise HTTPException(status_code=409, detail=str(e)) from e
+            raise HTTPException(status_code=502, detail=f"Failed to delete Discord thread: {e}") from e
+        except Exception as e:
+            print(
+                f"[discord] failed to delete Discord thread {discord_link.discord_thread_id} "
+                f"for local thread {thread_id}: {e}",
+                flush=True,
+            )
+            raise HTTPException(status_code=502, detail=f"Failed to delete Discord thread: {e}") from e
+
     deleted = await delete_thread(db, thread_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Thread not found")
@@ -448,10 +534,17 @@ async def delete_all_threads_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     # Delete all threads (cascades to messages)
-    await db.execute(select(Thread))
     result = await db.execute(select(Thread))
     threads = result.scalars().all()
+    from app.discord_integration import delete_discord_thread
+
     for t in threads:
+        discord_link = await get_discord_link(db, t.id)
+        if discord_link and discord_link.is_active:
+            try:
+                await delete_discord_thread(discord_link.discord_thread_id)
+            except Exception as exc:
+                print(f"[discord] failed to delete Discord thread {discord_link.discord_thread_id}: {exc}", flush=True)
         await db.delete(t)
     await db.commit()
     return {"detail": "All threads deleted"}
@@ -475,6 +568,13 @@ async def get_settings_endpoint():
         "llm_compaction_threshold": config["compaction_threshold"],
         "llm_preserve_recent": config["preserve_recent"],
         "has_api_key": bool(config["api_key"]),
+        "discord": DiscordSettingsResponse(
+            enabled=get_discord_config()["enabled"],
+            has_bot_token=bool(get_discord_config()["bot_token"]),
+            guild_id=get_discord_config()["guild_id"],
+            channel_id=get_discord_config()["channel_id"],
+            poll_interval_seconds=get_discord_config()["poll_interval_seconds"],
+        ).model_dump(),
     }
 
 
@@ -495,6 +595,11 @@ async def update_settings_endpoint(
         "llm_compaction_threshold": "llm_compaction_threshold",
         "llm_preserve_recent": "llm_preserve_recent",
         "llm_tool_result_max_chars": "llm_tool_result_max_chars",
+        "discord_enabled": "discord_enabled",
+        "discord_bot_token": "discord_bot_token",
+        "discord_guild_id": "discord_guild_id",
+        "discord_channel_id": "discord_channel_id",
+        "discord_poll_interval_seconds": "discord_poll_interval_seconds",
     }
     updates = {valid_keys[k]: v for k, v in request.items() if k in valid_keys}
     if updates:
@@ -516,6 +621,114 @@ async def update_settings_endpoint(
         "llm_tool_result_max_chars": config["tool_result_max_chars"],
         "has_api_key": bool(config["api_key"]),
     }
+
+
+# ── Discord Integration ──────────────────────────────────────────────
+
+
+@router.get("/discord/settings", response_model=DiscordSettingsResponse)
+async def get_discord_settings_endpoint():
+    from app.config import load_settings_from_db
+    await load_settings_from_db()
+    config = get_discord_config()
+    return DiscordSettingsResponse(
+        enabled=config["enabled"],
+        has_bot_token=bool(config["bot_token"]),
+        guild_id=config["guild_id"],
+        channel_id=config["channel_id"],
+        poll_interval_seconds=config["poll_interval_seconds"],
+    )
+
+
+@router.patch("/discord/settings", response_model=DiscordSettingsResponse)
+async def update_discord_settings_endpoint(
+    request: DiscordSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    updates = {}
+    if request.enabled is not None:
+        updates["discord_enabled"] = request.enabled
+    if request.bot_token:
+        updates["discord_bot_token"] = request.bot_token
+    if request.guild_id is not None:
+        updates["discord_guild_id"] = request.guild_id
+    if request.channel_id is not None:
+        updates["discord_channel_id"] = request.channel_id
+    if request.poll_interval_seconds is not None:
+        updates["discord_poll_interval_seconds"] = request.poll_interval_seconds
+
+    if updates:
+        update_settings(**updates)
+        await upsert_settings(db, {k: str(v) for k, v in updates.items()})
+
+    config = get_discord_config()
+    return DiscordSettingsResponse(
+        enabled=config["enabled"],
+        has_bot_token=bool(config["bot_token"]),
+        guild_id=config["guild_id"],
+        channel_id=config["channel_id"],
+        poll_interval_seconds=config["poll_interval_seconds"],
+    )
+
+
+@router.post("/threads/{thread_id}/discord", response_model=DiscordThreadLinkResponse)
+async def share_thread_to_discord_endpoint(
+    thread_id: UUID,
+    request: DiscordShareRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.discord_integration import create_discord_thread, post_existing_thread_to_discord
+
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    existing = await get_discord_link(db, thread_id)
+    if existing:
+        if not existing.is_active:
+            existing.is_active = True
+            await db.commit()
+            await db.refresh(existing)
+        return _build_discord_link_response(existing)
+
+    config = get_discord_config()
+    if not config["enabled"] or not config["bot_token"]:
+        raise HTTPException(status_code=400, detail="Discord integration is not enabled or configured")
+
+    guild_id = request.guild_id or config["guild_id"]
+    channel_id = request.channel_id or config["channel_id"]
+    if not guild_id or not channel_id:
+        raise HTTPException(status_code=400, detail="Discord guild and channel are required")
+
+    name = (request.name or thread.title or "ThreadBot Thread")[:100]
+    try:
+        discord_thread = await create_discord_thread(channel_id, name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    link = await create_discord_link(
+        db,
+        thread_id,
+        guild_id,
+        channel_id,
+        str(discord_thread["id"]),
+        str(discord_thread.get("name") or name),
+    )
+    await db.commit()
+    await post_existing_thread_to_discord(thread_id)
+    return _build_discord_link_response(link)
+
+
+@router.delete("/threads/{thread_id}/discord")
+async def unshare_thread_from_discord_endpoint(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    link = await set_discord_link_active(db, thread_id, False)
+    if not link:
+        raise HTTPException(status_code=404, detail="Discord link not found")
+    await db.commit()
+    return {"detail": "Discord sync disabled for thread"}
 
 
 @router.get("/mcp", response_model=list[MCPServerResponse])
