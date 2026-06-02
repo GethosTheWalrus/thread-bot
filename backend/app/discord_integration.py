@@ -176,7 +176,7 @@ async def _claim_discord_event(
             task_queue=settings.TEMPORAL_TASK_QUEUE,
             schedule_to_close_timeout=timedelta(seconds=10),
             id_reuse_policy=ActivityIDReusePolicy.REJECT_DUPLICATE,
-            id_conflict_policy=ActivityIDConflictPolicy.USE_EXISTING,
+            id_conflict_policy=ActivityIDConflictPolicy.FAIL,
         )
         return True
     except ActivityAlreadyStartedError:
