@@ -253,7 +253,10 @@ async def apply_discord_server_tool_defaults(db, thread_id, guild_id: str) -> No
         if server_id not in servers_with_tool_overrides:
             continue
 
-        for tool in server.cached_tools or []:
+        cached_tools = server.cached_tools or []
+        if isinstance(cached_tools, dict):
+            cached_tools = cached_tools.get("tools") or []
+        for tool in cached_tools:
             tool_name = tool.get("name") if isinstance(tool, dict) else None
             if tool_name and not tool_enabled.get((server_id, tool_name), False):
                 thread_overrides.append({
@@ -651,6 +654,9 @@ async def reply_to_existing_discord_thread(
     *,
     discord_thread_id: str,
     guild_id: str,
+    channel_id: str | None = None,
+    guild_name: str | None = None,
+    discord_thread_name: str | None = None,
     sender_name: str,
     prompt: str,
     source_message_id: str | None,
@@ -659,16 +665,20 @@ async def reply_to_existing_discord_thread(
 ) -> dict | None:
     """Reply to a user message that was sent inside an existing Discord thread.
 
-    Looks up the existing ``discord_thread_links`` row by ``discord_thread_id``,
-    records the user message against the linked ThreadBot thread, and starts a
-    reply workflow that posts back to the same Discord thread. Returns
-    ``None`` if no active link exists for that thread.
+    Looks up the existing ``discord_thread_links`` row by ``discord_thread_id``.
+    If the Discord thread has not been linked yet, adopt it by creating a local
+    ThreadBot thread/link without creating a new Discord thread. Then record the
+    user message and start a reply workflow that posts back to the same Discord
+    thread.
     """
     from app.database import AsyncSessionLocal
     from app.database.crud import (
         add_message,
+        create_discord_link,
+        create_thread,
         get_discord_link_by_discord_thread_id,
         update_discord_link_cursor,
+        upsert_discord_server,
     )
 
     claimed = await _claim_discord_event(
@@ -683,12 +693,29 @@ async def reply_to_existing_discord_thread(
     async with AsyncSessionLocal() as db:
         link = await get_discord_link_by_discord_thread_id(db, discord_thread_id)
         if link is None:
+            if not guild_name:
+                try:
+                    config = await _load_fresh_discord_config()
+                    guild_info = await get_discord_guild(guild_id, config)
+                    guild_name = str(guild_info.get("name") or guild_id)
+                except Exception:
+                    guild_name = guild_id
+            thread = await create_thread(db, "Discord Thread", parent_id=None)
+            await upsert_discord_server(db, guild_id, guild_name, channel_id or discord_thread_id)
+            await apply_discord_server_tool_defaults(db, thread.id, guild_id)
+            link = await create_discord_link(
+                db,
+                thread.id,
+                guild_id,
+                channel_id or discord_thread_id,
+                discord_thread_id,
+                discord_thread_name or "Discord Thread",
+            )
             print(
-                f"[discord] no active link for discord thread {discord_thread_id}; "
-                "falling back to creating a new thread",
+                f"[discord] adopted existing discord thread {discord_thread_id} "
+                f"as ThreadBot thread {thread.id}",
                 flush=True,
             )
-            return None
         local_content = f"{sender_name} (Discord): {prompt}"
         metadata = {
             "source": "discord",
@@ -717,6 +744,8 @@ async def reply_to_existing_discord_thread(
         local_content,
         reply_to_message_id=source_message_id,
     )
+    from app.api.routes import broadcast_thread_updated
+    await broadcast_thread_updated(str(link_snapshot.thread_id))
     return {
         "thread_id": str(link_snapshot.thread_id),
         "discord_thread_id": link_snapshot.discord_thread_id,

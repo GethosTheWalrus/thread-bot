@@ -73,9 +73,10 @@ def set_temporal_client(client: TemporalClient):
 
 
 async def _active_thread_workflow_id(client: TemporalClient, thread_id: UUID) -> str | None:
-    query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "thread-{thread_id}-"'
-    async for execution in client.list_workflows(query=query, limit=1):
-        return execution.id
+    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-"):
+        query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "{prefix}"'
+        async for execution in client.list_workflows(query=query, limit=1):
+            return execution.id
     return None
 
 
@@ -233,13 +234,20 @@ def _build_discord_server_response(server, thread_count: int = 0) -> DiscordServ
 
 
 def _build_available_server(server) -> AvailableServer:
-    tools = []
-    if server.cached_tools and isinstance(server.cached_tools, list):
-        tools = [
-            AvailableTool(name=t["name"], description=t.get("description", ""))
-            for t in server.cached_tools
-        ]
+    tools = _available_tools_from_cache(server.cached_tools)
     return AvailableServer(id=str(server.id), name=server.name, tools=tools)
+
+
+def _available_tools_from_cache(cached_tools) -> list[AvailableTool]:
+    if isinstance(cached_tools, dict):
+        cached_tools = cached_tools.get("tools") or []
+    if not isinstance(cached_tools, list):
+        return []
+    return [
+        AvailableTool(name=t["name"], description=t.get("description", ""))
+        for t in cached_tools
+        if isinstance(t, dict) and t.get("name")
+    ]
 
 
 async def _get_discord_link_for_thread(db: AsyncSession, thread_id: UUID):
@@ -1052,16 +1060,10 @@ async def get_global_tool_overrides(db: AsyncSession = Depends(get_db)):
 
     servers = []
     for server in active_servers:
-        tools = []
-        if server.cached_tools and isinstance(server.cached_tools, list):
-            tools = [
-                AvailableTool(name=t["name"], description=t.get("description", ""))
-                for t in server.cached_tools
-            ]
         servers.append(AvailableServer(
             id=str(server.id),
             name=server.name,
-            tools=tools,
+            tools=_available_tools_from_cache(server.cached_tools),
         ))
 
     return ToolOverridesResponse(servers=servers, overrides=[])
@@ -1087,16 +1089,10 @@ async def get_tool_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)
 
     servers = []
     for server in active_servers:
-        tools = []
-        if server.cached_tools and isinstance(server.cached_tools, list):
-            tools = [
-                AvailableTool(name=t["name"], description=t.get("description", ""))
-                for t in server.cached_tools
-            ]
         servers.append(AvailableServer(
             id=str(server.id),
             name=server.name,
-            tools=tools,
+            tools=_available_tools_from_cache(server.cached_tools),
         ))
 
     # Get existing overrides for this thread

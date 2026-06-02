@@ -56,27 +56,19 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
             invoked_channel = interaction.channel
             if isinstance(invoked_channel, discord.Thread):
                 # Slash command invoked inside an existing thread — reply there.
-                result = await reply_to_existing_discord_thread(
+                await reply_to_existing_discord_thread(
                     temporal_client,
                     discord_thread_id=str(invoked_channel.id),
                     guild_id=guild_id,
+                    channel_id=str(getattr(invoked_channel, "parent_id", None) or channel_id),
+                    guild_name=guild_name,
+                    discord_thread_name=invoked_channel.name,
                     sender_name=sender_name,
                     prompt=prompt,
-                    source_message_id=str(interaction.id),
+                    source_message_id=None,
                     source_message_link=None,
                     source_event_id=str(interaction.id),
                 )
-                if result is None:
-                    parent_id = getattr(invoked_channel, "parent_id", None) or channel_id
-                    await start_thread_from_discord_prompt(
-                        temporal_client,
-                        prompt,
-                        sender_name,
-                        source_event_id=str(interaction.id),
-                        channel_id=str(parent_id),
-                        guild_id=guild_id,
-                        guild_name=guild_name,
-                    )
             else:
                 await start_thread_from_discord_prompt(
                     temporal_client,
@@ -135,31 +127,19 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
             # If the mention happened inside an existing Discord thread, post
             # the user message there instead of creating a new thread.
             if isinstance(message.channel, discord.Thread):
-                result = await reply_to_existing_discord_thread(
+                await reply_to_existing_discord_thread(
                     temporal_client,
                     discord_thread_id=str(message.channel.id),
                     guild_id=guild_id,
+                    channel_id=str(getattr(message.channel, "parent_id", None) or config.get("channel_id")),
+                    guild_name=guild_name,
+                    discord_thread_name=message.channel.name,
                     sender_name=sender_name,
                     prompt=prompt,
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
                     source_event_id=f"mention-{message.id}",
                 )
-                if result is None:
-                    # No active link for that thread; fall back to creating a
-                    # new ThreadBot thread under the parent channel.
-                    parent_id = getattr(message.channel, "parent_id", None) or config.get("channel_id")
-                    await start_thread_from_discord_prompt(
-                        temporal_client,
-                        prompt,
-                        sender_name,
-                        source_message_id=str(message.id),
-                        source_message_link=_message_link(message),
-                        source_event_id=f"mention-{message.id}",
-                        channel_id=str(parent_id),
-                        guild_id=guild_id,
-                        guild_name=guild_name,
-                    )
             else:
                 await start_thread_from_discord_prompt(
                     temporal_client,

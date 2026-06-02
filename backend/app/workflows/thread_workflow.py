@@ -504,6 +504,7 @@ class RunThreadWorkflow:
 
         except Exception as e:
             await self._publish_event(llm_config, {"type": "error", "content": str(e)})
+            raise
 
     def _kick_off_title(self, thread_id: str, chat_history: list, llm_config: dict) -> None:
         """Schedule auto-title generation in the background.

@@ -1,5 +1,6 @@
 from temporalio.activity import defn, heartbeat
 import asyncio
+import os
 
 
 @defn
@@ -7,8 +8,8 @@ async def claim_discord_event(args: dict) -> dict:
     """Standalone activity used to deduplicate Discord gateway/poll events.
 
     Started with ActivityIDReusePolicy.REJECT_DUPLICATE and
-    ActivityIDConflictPolicy.USE_EXISTING, so a second concurrent backend
-    replica joins the first caller's result instead of raising.
+    ActivityIDConflictPolicy.FAIL, so a second concurrent backend replica is
+    rejected instead of processing the same Discord event again.
     """
     return {"claimed": True, "event_id": args.get("event_id")}
 
