@@ -1,0 +1,63 @@
+stages:
+  - build
+  - update-manifests
+
+variables:
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  REGISTRY_IMAGE: "$CI_REGISTRY_IMAGE"
+  BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_MESSAGE =~ /\[skip ci\]/'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - when: never
+
+build-images:
+  stage: build
+  image: docker:27
+  rules:
+    - changes:
+        - backend/**/*
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - docker info
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+    - docker run --privileged --rm tonistiigi/binfmt --install all
+    - printf '[registry."%s"]\n  http = true\n  insecure = true\n' "$CI_REGISTRY" > /tmp/buildkitd.toml
+    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" --driver docker-container --config /tmp/buildkitd.toml
+    - docker buildx inspect --bootstrap
+  script:
+    - docker buildx build --platform "$BUILDX_PLATFORMS" -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+  after_script:
+    - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" || true
+
+update-k8s-images:
+  stage: update-manifests
+  image: alpine:3.20
+  needs:
+    - build-images
+  rules:
+    - changes:
+        - backend/**/*
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - apk add --no-cache git
+    - git config user.name "gitlab-ci"
+    - git config user.email "gitlab-ci@$CI_SERVER_HOST"
+  script:
+    - 'sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml'
+    - 'sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml'
+    - 'sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml'
+    - git add k8s/deployment.yaml
+    - if git diff --cached --quiet; then exit 0; fi
+    - 'git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"'
+    - git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"

@@ -110,12 +110,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
-    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; _contextEstimatedTokens = 0; });
+    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; });
     try {
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$threadId'));
       final thread = await _api.getThread(threadId);
       if (mounted) {
-        setState(() { _messages = thread.messages; _discordLink = thread.discordLink; _isLoadingMessages = false; });
+       setState(() {
+          _messages = thread.messages;
+          _discordLink = thread.discordLink;
+          _contextEstimatedTokens = thread.estimatedTokens;
+          _contextWindow = thread.contextWindow;
+          _isLoadingMessages = false;
+        });
         _scrollToBottom(force: true);
 
         // Check if this thread has any tool overrides
@@ -151,7 +157,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final thread = await _api.getThread(_activeThreadId!);
       if (mounted) {
-        setState(() { _messages = thread.messages; });
+        setState(() {
+          _messages = thread.messages;
+          _contextEstimatedTokens = thread.estimatedTokens;
+          _contextWindow = thread.contextWindow;
+        });
         _scrollToBottom();
       }
     } catch (_) {

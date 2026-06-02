@@ -9,6 +9,8 @@ class Thread {
   final List<Message> messages;
   final bool isGenerating;
   final DiscordThreadLink? discordLink;
+  final int estimatedTokens;
+  final int contextWindow;
 
   Thread({
     required this.id,
@@ -19,6 +21,8 @@ class Thread {
     this.messages = const [],
     this.isGenerating = false,
     this.discordLink,
+    this.estimatedTokens = 0,
+    this.contextWindow = 8192,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -38,6 +42,8 @@ class Thread {
       discordLink: json['discord_link'] != null
           ? DiscordThreadLink.fromJson(json['discord_link'] as Map<String, dynamic>)
           : null,
+      estimatedTokens: json['estimated_tokens'] as int? ?? 0,
+      contextWindow: json['context_window'] as int? ?? 8192,
     );
   }
 

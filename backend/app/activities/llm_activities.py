@@ -1,32 +1,30 @@
 from temporalio.activity import defn, heartbeat
 
 
-# ── Redis publish helper (used by multiple activities) ────────────────
+# ── Workflow stream publish helper (used by multiple activities) ──────
 async def _publish(redis_url: str, stream_channel: str, event):
-    """Publish a structured JSON event (or raw sentinel) to Redis.
+    """Publish a structured event to the parent workflow stream.
 
-    Events are both PUBLISHed (for the live SSE connection) and RPUSHed
-    to an events list (for reconnect after page refresh).
+    The first two parameters are ignored and kept only for compatibility with
+    older call sites.
     """
-    if not redis_url or not stream_channel:
-        return
-    import json as _json
-    import redis.asyncio as aioredis
-
-    r = aioredis.from_url(redis_url)
-    try:
-        if isinstance(event, dict):
-            data = _json.dumps(event).encode("utf-8")
-        elif isinstance(event, str):
-            data = event.encode("utf-8")
+    if not isinstance(event, dict):
+        if isinstance(event, str) and event.startswith("[ERROR]"):
+            event = {"type": "error", "content": event[7:].strip()}
+        elif event == "[DONE]":
+            event = {"type": "done"}
         else:
-            data = event
-        events_key = f"events:{stream_channel}"
-        await r.publish(stream_channel, data)
-        await r.rpush(events_key, data)
-        await r.expire(events_key, 600)
-    finally:
-        await r.close()
+            return
+
+    try:
+        from temporalio.contrib.workflow_streams import WorkflowStreamClient
+
+        client = WorkflowStreamClient.from_within_activity(max_batch_size=1)
+        events = client.topic("events", type=dict)
+        async with client:
+            events.publish(event, force_flush=True)
+    except Exception as e:
+        print(f"[stream] Failed to publish workflow stream event: {e}", flush=True)
 
 
 # ── Inline DB save helper (used by multiple activities) ───────────────
@@ -44,8 +42,305 @@ async def _save_inline(thread_id: str, role: str, content: str, metadata: dict |
     await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata)
 
 
+def _agents_model_settings(config: dict, *, temperature: float | None = None, max_tokens: int | None = None):
+    from agents import ModelSettings
+
+    return ModelSettings(
+        temperature=config.get("temperature", 0.7) if temperature is None else temperature,
+        max_tokens=config.get("max_tokens", 2048) if max_tokens is None else max_tokens,
+        include_usage=True,
+    )
+
+
+def _agents_provider_and_model(config: dict):
+    """Build an OpenAI Agents SDK model, using local providers when configured."""
+    from app.agents_provider import build_agents_model_provider
+
+    provider = build_agents_model_provider(config)
+    return provider, provider.get_model(config.get("model"))
+
+
+async def _close_agents_provider(provider) -> None:
+    close = getattr(provider, "aclose", None) or getattr(provider, "close", None)
+    if close:
+        result = close()
+        if hasattr(result, "__await__"):
+            await result
+
+
+def _agents_tools(openai_tools: list[dict], mcp_tools_map: dict | None = None, thread_id: str | None = None, config: dict | None = None) -> list:
+    from agents import FunctionTool
+
+    mcp_tools_map = mcp_tools_map or {}
+    config = config or {}
+    tools = []
+    for tool_def in openai_tools:
+        fn = tool_def.get("function", {})
+        tool_name = fn.get("name", "")
+
+        async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
+            return await _execute_agent_tool(name, args, ctx.tool_call_id, mcp_tools_map, thread_id, config)
+
+        tools.append(
+            FunctionTool(
+                name=tool_name,
+                description=fn.get("description") or "",
+                params_json_schema=fn.get("parameters") or {"type": "object", "properties": {}},
+                on_invoke_tool=invoke_tool,
+                strict_json_schema=False,
+            )
+        )
+    return tools
+
+
+def _dump_agents_item(item) -> dict:
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    if hasattr(item, "dict"):
+        return item.dict()
+    return item if isinstance(item, dict) else {}
+
+
+def _extract_agents_response(response) -> dict:
+    content_parts = []
+    reasoning_parts = []
+    tool_calls = []
+
+    for item in response.output:
+        data = _dump_agents_item(item)
+        item_type = data.get("type")
+
+        if item_type == "message":
+            for part in data.get("content") or []:
+                if part.get("type") == "output_text":
+                    content_parts.append(part.get("text") or "")
+                elif part.get("type") == "refusal":
+                    content_parts.append(part.get("refusal") or "")
+
+        elif item_type == "reasoning":
+            for summary in data.get("summary") or []:
+                text = summary.get("text")
+                if text:
+                    reasoning_parts.append(text)
+            for part in data.get("content") or []:
+                text = part.get("text")
+                if text:
+                    reasoning_parts.append(text)
+
+        elif item_type == "function_call":
+            call_id = data.get("call_id") or data.get("id") or f"call_{len(tool_calls) + 1}"
+            tool_calls.append({
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": data.get("name") or "",
+                    "arguments": data.get("arguments") or "{}",
+                },
+            })
+
+    usage = getattr(response, "usage", None)
+    total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+    content = "".join(content_parts)
+    reasoning = "\n".join(reasoning_parts)
+    message = {
+        "role": "assistant",
+        "content": content if content else None,
+    }
+    if reasoning:
+        message["reasoning"] = reasoning
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+
+    return {
+        "message": message,
+        "content": content,
+        "reasoning": reasoning,
+        "tool_calls": tool_calls,
+        "total_tokens": total_tokens,
+    }
+
+
+async def _agents_chat_completion(
+    messages: list[dict],
+    config: dict,
+    *,
+    openai_tools: list[dict] | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> dict:
+    from agents.models.interface import ModelTracing
+
+    provider, model = _agents_provider_and_model(config)
+    try:
+        response = await model.get_response(
+            system_instructions=None,
+            input=messages,
+            model_settings=_agents_model_settings(config, temperature=temperature, max_tokens=max_tokens),
+            tools=_agents_tools(openai_tools or []),
+            output_schema=None,
+            handoffs=[],
+            tracing=ModelTracing.DISABLED,
+            previous_response_id=None,
+            conversation_id=None,
+            prompt=None,
+        )
+        return _extract_agents_response(response)
+    finally:
+        await _close_agents_provider(provider)
+
+
+async def _execute_agent_tool(
+    tool_name: str,
+    arguments: str,
+    tool_call_id: str,
+    mcp_tools_map: dict,
+    thread_id: str | None,
+    config: dict,
+) -> str:
+    import json
+
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+    from app.mcp_helper import get_mcp_server_params
+
+    redis_url = config.get("redis_url")
+    stream_channel = config.get("stream_channel")
+    builtin_tools = {
+        "continue_thinking", "web_fetch", "current_datetime", "calculator",
+        "json_parse", "text_count", "base64_decode", "base64_encode",
+    }
+    tool_args = json.loads(arguments or "{}")
+    tool_call = {
+        "id": tool_call_id,
+        "type": "function",
+        "function": {"name": tool_name, "arguments": arguments or "{}"},
+    }
+
+    if tool_name in builtin_tools:
+        display_name = f"built-in:{tool_name}"
+        if tool_name != "continue_thinking":
+            await _save_inline(
+                thread_id,
+                "tool_call",
+                f"Calling {display_name}",
+                metadata={"tool_calls": [tool_call]},
+            )
+            await _publish(redis_url, stream_channel, {
+                "type": "tool_call",
+                "content": f"Calling {display_name}",
+                "tools": [display_name],
+                "tool_calls": [tool_call],
+            })
+
+        result_text = await _execute_builtin(tool_name, tool_args, thread_id, redis_url, stream_channel)
+        if tool_name != "continue_thinking":
+            await _save_inline(
+                thread_id,
+                "tool_result",
+                result_text,
+                metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+            )
+            await _publish(redis_url, stream_channel, {
+                "type": "tool_result",
+                "tool": display_name,
+                "content": result_text,
+                "success": True,
+            })
+        return result_text
+
+    if tool_name not in mcp_tools_map:
+        not_found = "Tool not found"
+        await _save_inline(
+            thread_id,
+            "tool_result",
+            not_found,
+            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+        )
+        await _publish(redis_url, stream_channel, {
+            "type": "tool_result",
+            "tool": tool_name,
+            "content": not_found,
+            "success": False,
+        })
+        return not_found
+
+    info = mcp_tools_map[tool_name]
+    display_name = f"{info['server_name']}:{info['original_name']}"
+    await _save_inline(
+        thread_id,
+        "tool_call",
+        f"Calling {display_name}",
+        metadata={"tool_calls": [tool_call]},
+    )
+    await _publish(redis_url, stream_channel, {
+        "type": "tool_call",
+        "content": f"Calling {display_name}",
+        "tools": [display_name],
+        "tool_calls": [tool_call],
+    })
+
+    try:
+        exec_params = get_mcp_server_params(info["image"], info["env_vars"], info.get("args"))
+        async with stdio_client(exec_params) as (read, write):
+            async with ClientSession(read, write) as mcp_session:
+                await mcp_session.initialize()
+                result = await mcp_session.call_tool(info["original_name"], tool_args)
+                result_text = "\n".join([c.text for c in result.content if hasattr(c, "text")])
+    except Exception as e:
+        result_text = f"Error executing tool: {str(e)}"
+        await _save_inline(
+            thread_id,
+            "tool_result",
+            result_text,
+            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+        )
+        await _publish(redis_url, stream_channel, {
+            "type": "tool_result",
+            "tool": display_name,
+            "content": result_text,
+            "success": False,
+        })
+        return result_text
+
+    await _save_inline(
+        thread_id,
+        "tool_result",
+        result_text,
+        metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+    )
+    await _publish(redis_url, stream_channel, {
+        "type": "tool_result",
+        "tool": display_name,
+        "content": result_text,
+        "success": True,
+    })
+
+    max_chars = config.get("tool_result_max_chars", 0)
+    if max_chars and len(result_text) > max_chars:
+        return (
+            result_text[:max_chars]
+            + f"\n\n[TRUNCATED — result was {len(result_text):,} chars, "
+            f"showing first {max_chars:,}. "
+            "Consider using more specific parameters to narrow results.]"
+        )
+    return result_text
+
+
+@defn
+async def execute_agent_tool_activity(args: dict) -> str:
+    """Execute one Agents SDK tool call as a Temporal activity."""
+    return await _execute_agent_tool(
+        args["tool_name"],
+        args.get("arguments") or "{}",
+        args.get("tool_call_id") or "",
+        args.get("mcp_tools_map") or {},
+        args.get("thread_id"),
+        args.get("llm_config") or {},
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  NEW DECOMPOSED ACTIVITIES — agent loop split into discrete steps
+#  Tool discovery and OpenAI Agents SDK runner
 # ═══════════════════════════════════════════════════════════════════════
 
 @defn
@@ -178,6 +473,100 @@ async def discover_tools(args: dict) -> dict:
 
 
 @defn
+async def run_agent_response(args: dict) -> dict:
+    """Run the OpenAI Agents SDK loop and stream ThreadBot-compatible events."""
+    from agents import Agent, Runner, set_tracing_disabled
+
+    messages = args.get("messages", [])
+    config = args.get("llm_config", {})
+    openai_tools = args.get("openai_tools", [])
+    mcp_tools_map = args.get("mcp_tools_map", {})
+    thread_id = args.get("thread_id")
+    redis_url = config.get("redis_url")
+    stream_channel = config.get("stream_channel")
+    max_turns = config.get("max_iterations", 25)
+
+    heartbeat({"step": "agent_run", "max_turns": max_turns})
+    set_tracing_disabled(True)
+
+    provider, model = _agents_provider_and_model(config)
+    agent = Agent(
+        name="ThreadBot",
+        instructions=(
+            "You are a helpful assistant. Use tools as many times as needed to thoroughly "
+            "answer the user's question. Gather information, verify it, and refine your "
+            "answer before providing a final response."
+        ),
+        model=model,
+        model_settings=_agents_model_settings(config),
+        tools=_agents_tools(openai_tools, mcp_tools_map, thread_id, config),
+    )
+
+    full_response_content = ""
+    reasoning_buffer = ""
+    token_count = 0
+
+    try:
+        result = Runner.run_streamed(agent, messages, max_turns=max_turns)
+        async for event in result.stream_events():
+            if event.type == "raw_response_event":
+                raw = event.data
+                raw_type = getattr(raw, "type", None)
+                if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
+                    token = getattr(raw, "delta", "")
+                    if token:
+                        full_response_content += token
+                        token_count += 1
+                        await _publish(redis_url, stream_channel, {"type": "token", "content": token})
+                        if token_count % 50 == 0:
+                            heartbeat({"step": "agent_streaming", "tokens": token_count})
+                elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
+                    reasoning_buffer += getattr(raw, "delta", "") or ""
+                elif raw_type == "response.completed":
+                    usage = getattr(raw.response, "usage", None)
+                    total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+                    if total_tokens:
+                        await _publish(redis_url, stream_channel, {
+                            "type": "context",
+                            "estimated_tokens": total_tokens,
+                            "context_window": config.get("context_window", 8192),
+                        })
+
+            elif event.type == "run_item_stream_event" and event.name == "reasoning_item_created":
+                data = _dump_agents_item(event.item.raw_item)
+                parts = []
+                for summary in data.get("summary") or []:
+                    text = summary.get("text")
+                    if text:
+                        parts.append(text)
+                for part in data.get("content") or []:
+                    text = part.get("text")
+                    if text:
+                        parts.append(text)
+                thinking = "\n".join(parts).strip()
+                if thinking:
+                    await _save_inline(thread_id, "thinking", thinking)
+                    await _publish(redis_url, stream_channel, {"type": "thinking", "content": thinking})
+
+        if result.run_loop_exception:
+            raise result.run_loop_exception
+
+        final_output = "" if result.final_output is None else str(result.final_output)
+        if reasoning_buffer.strip():
+            await _save_inline(thread_id, "thinking", reasoning_buffer.strip())
+            await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning_buffer.strip()})
+        if final_output and not full_response_content:
+            await _publish(redis_url, stream_channel, {"type": "text", "content": final_output})
+        heartbeat({"step": "agent_done", "tokens": token_count})
+        return {"content": final_output or full_response_content}
+    except Exception as e:
+        await _publish(redis_url, stream_channel, f"[ERROR] Agent run failed: {str(e)}")
+        raise
+    finally:
+        await _close_agents_provider(provider)
+
+
+@defn
 async def llm_turn(args: dict) -> dict:
     """Execute a single LLM call (non-streaming).
 
@@ -193,8 +582,6 @@ async def llm_turn(args: dict) -> dict:
         thinking_content: str | None
         text_content: str | None — non-streaming fallback content (used if streaming fails)
     """
-    import aiohttp
-
     messages = args.get("messages", [])
     config = args.get("llm_config", {})
     thread_id = args.get("thread_id")
@@ -207,85 +594,70 @@ async def llm_turn(args: dict) -> dict:
     heartbeat({"step": "llm_call", "iteration": iteration})
     print(f"[agent-loop] iteration {iteration}/{max_iterations} | messages={len(messages)}", flush=True)
 
-    api_url = config["api_url"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config['api_key']}",
-    }
+    try:
+        completion = await _agents_chat_completion(
+            messages,
+            config,
+            openai_tools=openai_tools,
+        )
+    except Exception as e:
+        await _publish(redis_url, stream_channel, f"[ERROR] LLM API error: {str(e)}")
+        raise
 
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": config.get("temperature", 0.7),
-        "max_tokens": config.get("max_tokens", 2048),
-    }
-    if openai_tools:
-        payload["tools"] = openai_tools
+    message = completion["message"]
 
-    timeout = aiohttp.ClientTimeout(total=config.get("stream_timeout", 600))
+    # Publish context usage estimate
+    context_window = config.get("context_window", 8192)
+    response_chars = len(message.get("content", "") or "")
+    total_chars = sum(len(m.get("content", "") or "") for m in messages) + response_chars
+    estimated_tokens = completion.get("total_tokens") or int(total_chars / 4)
+    await _publish(redis_url, stream_channel, {
+        "type": "context",
+        "estimated_tokens": estimated_tokens,
+        "context_window": context_window,
+    })
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(api_url, headers=headers, json=payload, timeout=timeout) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                await _publish(redis_url, stream_channel, f"[ERROR] {resp.status}: {error_text}")
-                raise RuntimeError(f"LLM API error {resp.status}: {error_text}")
+    if message.get("tool_calls"):
+        print(f"[agent-loop] LLM requested {len(message['tool_calls'])} tool call(s)", flush=True)
+        thinking_content = message.get("content") or message.get("reasoning") or ""
 
-            data = await resp.json()
-            choice = data["choices"][0]
-            message = choice["message"]
+        # Publish thinking event if LLM returned content alongside tool_calls
+        if thinking_content:
+            await _save_inline(thread_id, "thinking", thinking_content)
+            await _publish(redis_url, stream_channel, {"type": "thinking", "content": thinking_content})
 
-            # Publish context usage estimate
-            context_window = config.get("context_window", 8192)
-            response_chars = len(message.get("content", "") or "")
-            total_chars = sum(len(m.get("content", "") or "") for m in messages) + response_chars
-            await _publish(redis_url, stream_channel, {
-                "type": "context",
-                "estimated_tokens": int(total_chars / 4),
-                "context_window": context_window,
-            })
+        heartbeat({"step": "llm_call_done", "iteration": iteration, "tool_calls": len(message["tool_calls"])})
 
-            if message.get("tool_calls"):
-                print(f"[agent-loop] LLM requested {len(message['tool_calls'])} tool call(s)", flush=True)
-                thinking_content = message.get("content") or message.get("reasoning") or ""
+        return {
+            "has_tool_calls": True,
+            "llm_message": message,
+            "tool_calls": message["tool_calls"],
+            "thinking_content": thinking_content,
+            "text_content": None,
+        }
+    else:
+        print(
+            f"[agent-loop] completed after {iteration} iteration(s) | "
+            f"streaming final response",
+            flush=True,
+        )
 
-                # Publish thinking event if LLM returned content alongside tool_calls
-                if thinking_content:
-                    await _save_inline(thread_id, "thinking", thinking_content)
-                    await _publish(redis_url, stream_channel, {"type": "thinking", "content": thinking_content})
+        # Publish reasoning here — stream_response re-issues the call
+        # but streaming APIs may not return reasoning deltas.
+        reasoning = message.get("reasoning") or ""
+        if reasoning:
+            await _save_inline(thread_id, "thinking", reasoning)
+            await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning})
 
-                heartbeat({"step": "llm_call_done", "iteration": iteration, "tool_calls": len(message["tool_calls"])})
+        heartbeat({"step": "llm_call_done", "iteration": iteration, "tool_calls": 0})
 
-                return {
-                    "has_tool_calls": True,
-                    "llm_message": message,
-                    "tool_calls": message["tool_calls"],
-                    "thinking_content": thinking_content,
-                    "text_content": None,
-                }
-            else:
-                print(
-                    f"[agent-loop] completed after {iteration} iteration(s) | "
-                    f"streaming final response",
-                    flush=True,
-                )
-
-                # Publish reasoning here — stream_response re-issues the call
-                # but streaming APIs may not return reasoning deltas.
-                reasoning = message.get("reasoning") or ""
-                if reasoning:
-                    await _save_inline(thread_id, "thinking", reasoning)
-                    await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning})
-
-                heartbeat({"step": "llm_call_done", "iteration": iteration, "tool_calls": 0})
-
-                return {
-                    "has_tool_calls": False,
-                    "llm_message": message,
-                    "tool_calls": None,
-                    "thinking_content": reasoning or None,
-                    "text_content": message.get("content", ""),
-                }
+        return {
+            "has_tool_calls": False,
+            "llm_message": message,
+            "tool_calls": None,
+            "thinking_content": reasoning or None,
+            "text_content": message.get("content", ""),
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -313,6 +685,11 @@ async def _execute_builtin(
         url = tool_args.get("url", "")
         start_index = int(tool_args.get("start_index", 0))
         max_chars = int(tool_args.get("max_chars", 5000))
+        query = str(tool_args.get("query") or "")
+        use_regex = bool(tool_args.get("use_regex", False))
+        context_chars = int(tool_args.get("context_chars", 800))
+        max_matches = int(tool_args.get("max_matches", 5))
+        case_sensitive = bool(tool_args.get("case_sensitive", False))
         if not url.startswith(("http://", "https://")):
             return "Error: URL must start with http:// or https://"
         try:
@@ -325,6 +702,54 @@ async def _execute_builtin(
                     if "text" in content_type or "json" in content_type or "xml" in content_type:
                         text = await resp.text()
                         total_len = len(text)
+                        if query:
+                            matches = []
+                            if use_regex:
+                                import re
+
+                                try:
+                                    flags = 0 if case_sensitive else re.IGNORECASE
+                                    pattern = re.compile(query, flags)
+                                except re.error as e:
+                                    return f"Error: invalid regex query {query!r}: {e}"
+
+                                for match in pattern.finditer(text):
+                                    matches.append((match.start(), match.end()))
+                                    if len(matches) >= max(1, max_matches):
+                                        break
+                            else:
+                                haystack = text if case_sensitive else text.lower()
+                                needle = query if case_sensitive else query.lower()
+                                pos = haystack.find(needle)
+                                while pos != -1 and len(matches) < max(1, max_matches):
+                                    matches.append((pos, pos + len(query)))
+                                    pos = haystack.find(needle, pos + max(1, len(needle)))
+
+                            if not matches:
+                                return (
+                                    f"[Page content: {total_len:,} chars total. No matches found for "
+                                    f"{'regex' if use_regex else 'query'} {query!r}. Try a different query "
+                                    "or use pagination with start_index "
+                                    "and max_chars to inspect the page manually.]"
+                                )
+
+                            snippets = []
+                            context_chars = max(0, min(context_chars, 5000))
+                            for idx, (match_start, match_end) in enumerate(matches, start=1):
+                                snippet_start = max(0, match_start - context_chars)
+                                snippet_end = min(total_len, match_end + context_chars)
+                                snippet = text[snippet_start:snippet_end]
+                                snippets.append(
+                                    f"[Match {idx} at chars {match_start:,}-{match_end:,}; "
+                                    f"showing chars {snippet_start:,}-{snippet_end:,}]\n{snippet}"
+                                )
+
+                            header = (
+                                f"[Page content: {total_len:,} chars total. Found {len(matches)} "
+                                f"match(es) for {'regex' if use_regex else 'query'} {query!r}.]"
+                            )
+                            return header + "\n\n" + "\n\n---\n\n".join(snippets)
+
                         # Clamp start_index
                         start_index = max(0, min(start_index, total_len))
                         end_index = min(start_index + max_chars, total_len)
@@ -429,7 +854,7 @@ async def execute_tools(args: dict) -> dict:
     """Execute MCP tool calls and publish results.
 
     Launches ephemeral containers for each tool call, publishes tool_call
-    and tool_result events to Redis, and saves intermediate messages to DB.
+    and tool_result events to the workflow stream, and saves intermediate messages to DB.
 
     Returns:
         tool_messages: list[dict]  — tool role messages to append to LLM context
@@ -626,14 +1051,13 @@ async def execute_tools(args: dict) -> dict:
 async def stream_response(args: dict) -> dict:
     """Re-issue the final LLM call with stream:true for token-by-token output.
 
-    Publishes each token to Redis. Falls back to the non-streaming text
+    Publishes each token to the workflow stream. Falls back to the non-streaming text
     if the streaming call fails.
 
     Returns:
         content: str  — the full response text
     """
-    import aiohttp
-    import json as _json
+    from agents.models.interface import ModelTracing
 
     messages = args.get("messages", [])
     config = args.get("llm_config", {})
@@ -644,59 +1068,38 @@ async def stream_response(args: dict) -> dict:
 
     heartbeat({"step": "streaming", "tokens": 0})
 
-    api_url = config["api_url"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config['api_key']}",
-    }
-
-    # Omit tools — we already know this is the final text response,
-    # and sending tool schemas forces the model to re-process them
-    # for no reason, adding significant latency.
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": config.get("temperature", 0.7),
-        "max_tokens": config.get("max_tokens", 2048),
-        "stream": True,
-    }
-
-    timeout = aiohttp.ClientTimeout(total=config.get("stream_timeout", 600))
     full_response_content = ""
     token_count = 0
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, headers=headers, json=payload, timeout=timeout) as resp:
-                if resp.status != 200:
-                    # Fall back to the non-streaming response we already have
-                    full_response_content = fallback_content
-                    await _publish(redis_url, stream_channel, {"type": "text", "content": full_response_content})
-                    return {"content": full_response_content}
-
-                buffer = ""
-                async for raw_chunk in resp.content.iter_any():
-                    buffer += raw_chunk.decode("utf-8", errors="replace")
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[len("data: "):]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk_data = _json.loads(data_str)
-                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
-                            token = delta.get("content")
-                            if token:
-                                full_response_content += token
-                                token_count += 1
-                                await _publish(redis_url, stream_channel, {"type": "token", "content": token})
-                                if token_count % 50 == 0:
-                                    heartbeat({"step": "streaming", "tokens": token_count})
-                        except (ValueError, KeyError, IndexError):
-                            continue
+        provider, model = _agents_provider_and_model(config)
+        try:
+            async for event in model.stream_response(
+                system_instructions=None,
+                input=messages,
+                model_settings=_agents_model_settings(config),
+                tools=[],
+                output_schema=None,
+                handoffs=[],
+                tracing=ModelTracing.DISABLED,
+                previous_response_id=None,
+                conversation_id=None,
+                prompt=None,
+            ):
+                event_type = getattr(event, "type", None)
+                if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+                    token = getattr(event, "delta", "")
+                    if token:
+                        full_response_content += token
+                        token_count += 1
+                        await _publish(redis_url, stream_channel, {"type": "token", "content": token})
+                        if token_count % 50 == 0:
+                            heartbeat({"step": "streaming", "tokens": token_count})
+                elif event_type == "response.completed" and not full_response_content:
+                    extracted = _extract_agents_response(event.response)
+                    full_response_content = extracted.get("content") or ""
+        finally:
+            await _close_agents_provider(provider)
     except Exception as e:
         print(f"[stream_response] Streaming failed, using fallback: {e}", flush=True)
         if not full_response_content:
@@ -717,126 +1120,20 @@ async def generate_title(args: dict) -> dict:
     """Simple LLM call without tools or streaming.
 
     Used exclusively for auto-title generation and other simple LLM tasks
-    that don't need MCP tools, Redis streaming, or the agent loop.
+    that don't need MCP tools, workflow streaming, or the agent loop.
 
     Returns:
         content: str  — the LLM response text
     """
-    import aiohttp
-
     messages = args.get("messages", [])
     config = args.get("llm_config", {})
-
-    api_url = config["api_url"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config['api_key']}",
-    }
-    payload = {
-        "model": config["model"],
-        "messages": messages,
-        "temperature": config.get("temperature", 0.7),
-        "max_tokens": config.get("max_tokens", 2048),
-    }
-
-    timeout = aiohttp.ClientTimeout(total=config.get("stream_timeout", 60))
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(api_url, headers=headers, json=payload, timeout=timeout) as resp:
-            if resp.status != 200:
-                error_text = await resp.text()
-                raise RuntimeError(f"LLM API error {resp.status}: {error_text}")
-
-            data = await resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return {"content": content}
+    completion = await _agents_chat_completion(messages, config)
+    return {"content": completion.get("content", "")}
 
 
 # ═══════════════════════════════════════════════════════════════════════
 #  EXISTING ACTIVITIES — unchanged
 # ═══════════════════════════════════════════════════════════════════════
-
-@defn
-async def publish_done(args: dict) -> None:
-    """Publish [DONE] sentinel to Redis stream channel.
-
-    Called by the workflow AFTER all messages are saved to DB,
-    so the frontend can safely reload from DB when it receives this.
-    Also buffers [DONE] in the events list and cleans up the generating flag.
-    """
-    redis_url = args.get("redis_url")
-    stream_channel = args.get("stream_channel")
-    thread_id = args.get("thread_id")
-    if not redis_url or not stream_channel:
-        return
-
-    import redis.asyncio as aioredis
-    r = aioredis.from_url(redis_url)
-    try:
-        events_key = f"events:{stream_channel}"
-        await r.publish(stream_channel, b"[DONE]")
-        await r.rpush(events_key, b"[DONE]")
-        # Keep events list for 60s so a reconnecting client can still read it
-        await r.expire(events_key, 60)
-        # Clear the generating flag
-        if thread_id:
-            await r.delete(f"generating:{thread_id}")
-    finally:
-        await r.close()
-
-
-@defn
-async def publish_error(args: dict) -> None:
-    """Publish [ERROR] sentinel to Redis stream channel if workflow crashes.
-    """
-    redis_url = args.get("redis_url")
-    stream_channel = args.get("stream_channel")
-    thread_id = args.get("thread_id")
-    error_msg = args.get("error", "Unknown error")
-    if not redis_url or not stream_channel:
-        return
-
-    import redis.asyncio as aioredis
-    r = aioredis.from_url(redis_url)
-    try:
-        events_key = f"events:{stream_channel}"
-        error_payload = f"[ERROR] Workflow crashed: {error_msg}".encode("utf-8")
-        await r.publish(stream_channel, error_payload)
-        await r.rpush(events_key, error_payload)
-        # Keep events list for 60s so a reconnecting client can still read it
-        await r.expire(events_key, 60)
-        # Clear the generating flag
-        if thread_id:
-            await r.delete(f"generating:{thread_id}")
-    finally:
-        await r.close()
-
-
-@defn
-async def publish_title(args: dict) -> None:
-    """Publish a title event to Redis so the frontend sidebar updates in real-time."""
-    import json
-    redis_url = args.get("redis_url")
-    stream_channel = args.get("stream_channel")
-    thread_id = args.get("thread_id")
-    title = args.get("title", "")
-    if not redis_url or not stream_channel:
-        return
-
-    import redis.asyncio as aioredis
-    r = aioredis.from_url(redis_url)
-    try:
-        event = json.dumps({"type": "title", "content": title, "thread_id": thread_id})
-        data = event.encode("utf-8")
-        await r.publish(stream_channel, data)
-        events_key = f"events:{stream_channel}"
-        await r.rpush(events_key, data)
-        await r.expire(events_key, 600)
-    finally:
-        await r.close()
-
-
-@defn
 async def save_message(args: dict) -> None:
     """Save a message to the database."""
     from uuid import UUID
@@ -931,8 +1228,6 @@ async def compact_history(args: dict) -> dict:
         messages: list[dict]  — new message list to send to the LLM
         compacted_count: int
     """
-    import aiohttp
-
     messages = args["messages"]
     config = args["llm_config"]
     context_window = args.get("context_window", 8192)
@@ -1004,31 +1299,20 @@ async def compact_history(args: dict) -> dict:
         }
     ]
 
-    api_url = config["api_url"].rstrip("/") + "/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {config['api_key']}",
-    }
-    payload = {
-        "model": config["model"],
-        "messages": summary_prompt,
-        "temperature": 0.3,
-        "max_tokens": 1024,
-    }
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(api_url, headers=headers, json=payload,
-                                    timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    print(f"Compaction LLM call failed ({resp.status}): {error_text}", flush=True)
-                    return {"compacted": False, "summary": None, "messages": messages, "compacted_count": 0}
-
-                data = await resp.json()
-                summary = data["choices"][0]["message"]["content"]
+        completion = await _agents_chat_completion(
+            summary_prompt,
+            config,
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        summary = completion.get("content", "")
     except Exception as e:
         print(f"Compaction failed with exception: {e}", flush=True)
+        return {"compacted": False, "summary": None, "messages": messages, "compacted_count": 0}
+
+    if not summary:
+        print("Compaction failed: summarizer returned empty content", flush=True)
         return {"compacted": False, "summary": None, "messages": messages, "compacted_count": 0}
 
     print(f"Compaction summary generated ({len(summary)} chars)", flush=True)

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     LLM_API_URL: str = "http://host.docker.internal:11434/v1"
     LLM_API_KEY: str = "ollama"
     LLM_MODEL: str = "llama3.1"
+    LLM_PROVIDER: str = "auto"  # auto, ollama, llama_cpp, openai
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
     LLM_STREAM_TIMEOUT: int = 600
@@ -28,10 +29,6 @@ class Settings(BaseSettings):
     LLM_COMPACTION_THRESHOLD: float = 0.75
     LLM_PRESERVE_RECENT: int = 10
     LLM_TOOL_RESULT_MAX_CHARS: int = 0  # 0 = no truncation
-
-    # Redis
-    REDIS_URL: str = "redis://redis:6379"
-    REDIS_DB: int = 0
 
     # Server
     HOST: str = "0.0.0.0"
@@ -125,6 +122,7 @@ def get_llm_config() -> dict:
         "api_url": get_setting("LLM_API_URL"),
         "api_key": get_setting("LLM_API_KEY"),
         "model": get_setting("LLM_MODEL"),
+        "provider": get_setting("LLM_PROVIDER"),
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),
         "stream_timeout": get_setting("LLM_STREAM_TIMEOUT"),
@@ -151,7 +149,6 @@ def get_redis_url() -> str:
     """Build the effective Redis URL, appending REDIS_DB if not already in the URL."""
     url = get_setting("REDIS_URL")
     db = get_setting("REDIS_DB")
-    # If the URL already has a path (db number), use it as-is
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.path and parsed.path not in ("", "/"):
