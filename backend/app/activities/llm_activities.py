@@ -1134,6 +1134,8 @@ async def generate_title(args: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 #  EXISTING ACTIVITIES — unchanged
 # ═══════════════════════════════════════════════════════════════════════
+
+@defn
 async def save_message(args: dict) -> None:
     """Save a message to the database."""
     from uuid import UUID

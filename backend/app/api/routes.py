@@ -324,7 +324,7 @@ async def chat_websocket(websocket: WebSocket):
 
         await setup_db.commit()
 
-   from app.discord_integration import sync_message_to_discord
+    from app.discord_integration import sync_message_to_discord
     discord_message_id = await sync_message_to_discord(
         thread_id,
         "user",
