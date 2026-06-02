@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 from uuid import UUID
 
 import aiohttp
@@ -147,7 +148,7 @@ async def _keep_discord_typing_until_done(workflow_handle, discord_config: dict)
             result_task.cancel()
 
 
-def _discord_event_workflow_id(guild_id: str, channel_id: str, event_id: str) -> str:
+def _discord_event_activity_id(guild_id: str, channel_id: str, event_id: str) -> str:
     return f"discord-event-{guild_id}-{channel_id}-{event_id}"
 
 
@@ -161,30 +162,29 @@ async def _claim_discord_event(
     if not event_id:
         return True
 
-    from temporalio.common import WorkflowIDReusePolicy
-    from temporalio.exceptions import WorkflowAlreadyStartedError
-    from temporalio.service import RPCError, RPCStatusCode
-    from app.workflows.thread_workflow import ClaimDiscordEventWorkflow
+    from temporalio.common import ActivityIDConflictPolicy, ActivityIDReusePolicy
+    from temporalio.exceptions import ActivityAlreadyStartedError
+    from app.activities.llm_activities import claim_discord_event
 
     settings = get_settings()
-    workflow_id = _discord_event_workflow_id(guild_id, channel_id, event_id)
+    activity_id = _discord_event_activity_id(guild_id, channel_id, event_id)
     try:
-        await temporal_client.start_workflow(
-            ClaimDiscordEventWorkflow.run,
+        await temporal_client.start_activity(
+            claim_discord_event,
             {"event_id": event_id, "guild_id": guild_id, "channel_id": channel_id},
-            id=workflow_id,
+            id=activity_id,
             task_queue=settings.TEMPORAL_TASK_QUEUE,
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+            schedule_to_close_timeout=timedelta(seconds=10),
+            id_reuse_policy=ActivityIDReusePolicy.REJECT_DUPLICATE,
+            id_conflict_policy=ActivityIDConflictPolicy.USE_EXISTING,
         )
         return True
-    except WorkflowAlreadyStartedError:
-        print(f"[discord] duplicate event ignored: {workflow_id}", flush=True)
+    except ActivityAlreadyStartedError:
+        print(f"[discord] duplicate event ignored: {activity_id}", flush=True)
         return False
-    except RPCError as exc:
-        if exc.status == RPCStatusCode.ALREADY_EXISTS:
-            print(f"[discord] duplicate event ignored: {workflow_id}", flush=True)
-            return False
-        raise
+    except Exception as exc:
+        print(f"[discord] claim activity failed for {activity_id}: {exc}", flush=True)
+        return False
 
 
 async def get_bot_user_id() -> str | None:

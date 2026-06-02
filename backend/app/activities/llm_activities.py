@@ -2,6 +2,17 @@ from temporalio.activity import defn, heartbeat
 import asyncio
 
 
+@defn
+async def claim_discord_event(args: dict) -> dict:
+    """Standalone activity used to deduplicate Discord gateway/poll events.
+
+    Started with ActivityIDReusePolicy.REJECT_DUPLICATE and
+    ActivityIDConflictPolicy.USE_EXISTING, so a second concurrent backend
+    replica joins the first caller's result instead of raising.
+    """
+    return {"claimed": True, "event_id": args.get("event_id")}
+
+
 # ── Workflow stream publish helper (used by multiple activities) ──────
 async def _publish(redis_url: str, stream_channel: str, event):
     """Publish a structured event to the parent workflow stream.
