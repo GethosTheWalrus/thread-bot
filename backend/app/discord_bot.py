@@ -48,6 +48,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         try:
             channel_id = str(interaction.channel_id) if interaction.channel_id else config.get("channel_id")
             guild_id = str(interaction.guild_id) if interaction.guild_id else config.get("guild_id")
+            guild_name = interaction.guild.name if interaction.guild else None
             sender_name = interaction.user.global_name or interaction.user.name or "Discord user"
             await start_thread_from_discord_prompt(
                 temporal_client,
@@ -55,6 +56,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                 sender_name,
                 channel_id=channel_id,
                 guild_id=guild_id,
+                guild_name=guild_name,
             )
             try:
                 await interaction.delete_original_response()
@@ -95,6 +97,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
 
         try:
             guild_id = str(message.guild.id) if message.guild else config.get("guild_id")
+            guild_name = message.guild.name if message.guild else None
             sender_name = message.author.global_name or message.author.name or "Discord user"
             await start_thread_from_discord_prompt(
                 temporal_client,
@@ -104,6 +107,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                 source_message_link=_message_link(message),
                 channel_id=str(message.channel.id),
                 guild_id=guild_id,
+                guild_name=guild_name,
             )
         except Exception as exc:
             print(f"[discord] mention handling failed: {exc}", flush=True)

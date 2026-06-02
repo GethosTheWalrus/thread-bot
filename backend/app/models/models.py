@@ -71,6 +71,30 @@ class DiscordThreadLink(Base):
     thread = relationship("Thread", foreign_keys=[thread_id])
 
 
+class DiscordServer(Base):
+    __tablename__ = "discord_servers"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    guild_id = Column(String(255), nullable=False, unique=True)
+    guild_name = Column(String(255), nullable=False)
+    default_channel_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DiscordServerToolOverride(Base):
+    __tablename__ = "discord_server_tool_overrides"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    guild_id = Column(String(255), ForeignKey("discord_servers.guild_id", ondelete="CASCADE"), nullable=False)
+    server_id = Column(UUID(as_uuid=True), ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False)
+    tool_name = Column(String(255), nullable=True)  # null = server-level override
+    enabled = Column(Boolean, nullable=False, default=False)
+
+    guild = relationship("DiscordServer", foreign_keys=[guild_id])
+    server = relationship("MCPServer", foreign_keys=[server_id])
+
+
 class ThreadToolOverride(Base):
     __tablename__ = "thread_tool_overrides"
 

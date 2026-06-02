@@ -81,3 +81,50 @@ async def ensure_database_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_discord_thread_links_discord_thread_id "
             "ON discord_thread_links(discord_thread_id)"
         ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS discord_servers (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                guild_id VARCHAR(255) NOT NULL UNIQUE,
+                guild_name VARCHAR(255) NOT NULL,
+                default_channel_id VARCHAR(255),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text(
+            "ALTER TABLE discord_servers ALTER COLUMN id SET DEFAULT gen_random_uuid()"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_discord_servers_guild_id "
+            "ON discord_servers(guild_id)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS discord_server_tool_overrides (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                guild_id VARCHAR(255) NOT NULL REFERENCES discord_servers(guild_id) ON DELETE CASCADE,
+                server_id UUID NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+                tool_name VARCHAR(255),
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                UNIQUE (guild_id, server_id, tool_name)
+            )
+        """))
+        await conn.execute(text(
+            "ALTER TABLE discord_server_tool_overrides ADD COLUMN IF NOT EXISTS tool_name VARCHAR(255)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE discord_server_tool_overrides "
+            "DROP CONSTRAINT IF EXISTS discord_server_tool_overrides_guild_id_server_id_key"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE discord_server_tool_overrides ALTER COLUMN id SET DEFAULT gen_random_uuid()"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_discord_server_tool_overrides_guild_id "
+            "ON discord_server_tool_overrides(guild_id)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO discord_servers (id, guild_id, guild_name) "
+            "SELECT gen_random_uuid(), guild_id, guild_id FROM "
+            "(SELECT DISTINCT guild_id FROM discord_thread_links) linked_guilds "
+            "ON CONFLICT (guild_id) DO NOTHING"
+        ))

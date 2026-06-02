@@ -159,3 +159,24 @@ class DiscordShareRequest(BaseModel):
     channel_id: Optional[str] = None
     name: Optional[str] = None
 
+
+class DiscordServerResponse(BaseModel):
+    guild_id: str
+    guild_name: str
+    default_channel_id: Optional[str] = None
+    thread_count: int = 0
+
+
+class DiscordServerListResponse(BaseModel):
+    servers: list[DiscordServerResponse] = []
+
+
+class DiscordServerMcpOverridesResponse(BaseModel):
+    guild_id: str
+    guild_name: str
+    servers: list[AvailableServer] = []
+    overrides: list[ToolOverrideItem] = []
+
+
+class DiscordServerMcpOverridesRequest(BaseModel):
+    overrides: list[ToolOverrideItem] = []

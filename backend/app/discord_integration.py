@@ -87,6 +87,19 @@ async def get_bot_user_id() -> str | None:
     return str(data.get("id")) if isinstance(data, dict) else None
 
 
+async def get_discord_guild(guild_id: str, discord_config: dict | None = None) -> dict:
+    config = discord_config or await _load_fresh_discord_config()
+    if not _discord_enabled(config):
+        return {"id": guild_id, "name": guild_id}
+    try:
+        data = await _request("GET", f"/guilds/{guild_id}", discord_config=config)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"id": guild_id, "name": guild_id}
+
+
 async def create_discord_thread(channel_id: str, name: str) -> dict:
     payload = {
         "name": name[:100] or "ThreadBot Thread",
@@ -97,6 +110,52 @@ async def create_discord_thread(channel_id: str, name: str) -> dict:
     if not isinstance(data, dict):
         raise DiscordIntegrationError("Discord did not return a thread object")
     return data
+
+
+async def apply_discord_server_tool_defaults(db, thread_id, guild_id: str) -> None:
+    from app.database.crud import (
+        get_discord_server_tool_overrides,
+        get_mcp_servers,
+        set_thread_tool_overrides,
+    )
+
+    discord_overrides = await get_discord_server_tool_overrides(db, guild_id)
+    server_enabled = {
+        str(o.server_id): bool(o.enabled)
+        for o in discord_overrides
+        if o.tool_name is None
+    }
+    tool_enabled = {
+        (str(o.server_id), o.tool_name): bool(o.enabled)
+        for o in discord_overrides
+        if o.tool_name is not None
+    }
+    servers_with_tool_overrides = {server_id for server_id, _ in tool_enabled}
+    servers = await get_mcp_servers(db)
+    thread_overrides = []
+    for server in servers:
+        server_id = str(server.id)
+        if not server_enabled.get(server_id, False):
+            thread_overrides.append({
+                "server_id": server.id,
+                "tool_name": None,
+                "enabled": False,
+            })
+            continue
+
+        if server_id not in servers_with_tool_overrides:
+            continue
+
+        for tool in server.cached_tools or []:
+            tool_name = tool.get("name") if isinstance(tool, dict) else None
+            if tool_name and not tool_enabled.get((server_id, tool_name), False):
+                thread_overrides.append({
+                    "server_id": server.id,
+                    "tool_name": tool_name,
+                    "enabled": False,
+                })
+
+    await set_thread_tool_overrides(db, thread_id, thread_overrides)
 
 
 async def update_discord_thread_name(discord_thread_id: str, name: str, discord_config: dict | None = None) -> None:
@@ -308,14 +367,14 @@ async def start_thread_from_discord_prompt(
     source_message_link: str | None = None,
     channel_id: str | None = None,
     guild_id: str | None = None,
+    guild_name: str | None = None,
 ) -> dict:
     from app.database import AsyncSessionLocal
     from app.database.crud import (
         add_message,
         create_discord_link,
         create_thread,
-        get_mcp_servers,
-        set_thread_tool_overrides,
+        upsert_discord_server,
         update_discord_link_cursor,
     )
 
@@ -324,24 +383,16 @@ async def start_thread_from_discord_prompt(
     guild_id = guild_id or config.get("guild_id")
     if not channel_id or not guild_id:
         raise DiscordIntegrationError("Discord guild and channel are required")
+    if not guild_name:
+        guild_info = await get_discord_guild(guild_id, config)
+        guild_name = str(guild_info.get("name") or guild_id)
 
     title_seed = " ".join(prompt.split()[:6]).strip() or "Discord Thread"
 
     async with AsyncSessionLocal() as db:
         thread = await create_thread(db, "Discord Thread", parent_id=None)
-        mcp_servers = await get_mcp_servers(db)
-        await set_thread_tool_overrides(
-            db,
-            thread.id,
-            [
-                {
-                    "server_id": server.id,
-                    "tool_name": None,
-                    "enabled": False,
-                }
-                for server in mcp_servers
-            ],
-        )
+        await upsert_discord_server(db, guild_id, guild_name, channel_id)
+        await apply_discord_server_tool_defaults(db, thread.id, guild_id)
         discord_thread = await create_discord_thread(channel_id, title_seed[:100] or "ThreadBot Thread")
         link = await create_discord_link(
             db,
@@ -402,6 +453,8 @@ async def start_thread_from_discord_prompt(
 async def poll_discord_commands_once(temporal_client: TemporalClient, bot_user_id: str | None = None) -> None:
     from app.database import AsyncSessionLocal
     from app.database.crud import upsert_settings
+    from app.models.models import Setting
+    from sqlalchemy import select
 
     config = await _load_fresh_discord_config()
     if not _discord_enabled(config) or not config.get("channel_id"):

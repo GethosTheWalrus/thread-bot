@@ -1,7 +1,16 @@
 from uuid import UUID
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.models.models import Thread, Message, MCPServer, Setting, ThreadToolOverride, DiscordThreadLink
+from app.models.models import (
+    Thread,
+    Message,
+    MCPServer,
+    Setting,
+    ThreadToolOverride,
+    DiscordThreadLink,
+    DiscordServer,
+    DiscordServerToolOverride,
+)
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
@@ -152,6 +161,81 @@ async def set_discord_link_active(db: AsyncSession, thread_id: UUID, is_active: 
         await db.flush()
         await db.refresh(link)
     return link
+
+
+# ── Discord Servers ───────────────────────────────────────────────────
+
+async def upsert_discord_server(
+    db: AsyncSession,
+    guild_id: str,
+    guild_name: str,
+    default_channel_id: str | None = None,
+) -> DiscordServer:
+    result = await db.execute(select(DiscordServer).where(DiscordServer.guild_id == guild_id))
+    server = result.scalar_one_or_none()
+    if server:
+        server.guild_name = guild_name
+        if default_channel_id is not None:
+            server.default_channel_id = default_channel_id
+    else:
+        server = DiscordServer(
+            guild_id=guild_id,
+            guild_name=guild_name,
+            default_channel_id=default_channel_id,
+        )
+        db.add(server)
+    await db.flush()
+    await db.refresh(server)
+    return server
+
+
+async def get_discord_servers(db: AsyncSession) -> list[DiscordServer]:
+    result = await db.execute(select(DiscordServer).order_by(DiscordServer.updated_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_discord_server(db: AsyncSession, guild_id: str) -> DiscordServer | None:
+    result = await db.execute(select(DiscordServer).where(DiscordServer.guild_id == guild_id))
+    return result.scalar_one_or_none()
+
+
+async def get_discord_server_tool_overrides(db: AsyncSession, guild_id: str) -> list[DiscordServerToolOverride]:
+    result = await db.execute(
+        select(DiscordServerToolOverride).where(DiscordServerToolOverride.guild_id == guild_id)
+    )
+    return list(result.scalars().all())
+
+
+async def set_discord_server_tool_overrides(
+    db: AsyncSession,
+    guild_id: str,
+    overrides: list[dict],
+) -> list[DiscordServerToolOverride]:
+    from sqlalchemy import delete
+
+    await db.execute(delete(DiscordServerToolOverride).where(DiscordServerToolOverride.guild_id == guild_id))
+    new_overrides = []
+    for o in overrides:
+        override = DiscordServerToolOverride(
+            guild_id=guild_id,
+            server_id=o["server_id"],
+            tool_name=o.get("tool_name"),
+            enabled=o.get("enabled", False),
+        )
+        db.add(override)
+        new_overrides.append(override)
+    await db.flush()
+    for o in new_overrides:
+        await db.refresh(o)
+    return new_overrides
+
+
+async def get_discord_server_tool_override_map(db: AsyncSession, guild_id: str) -> dict[str, bool]:
+    overrides = await get_discord_server_tool_overrides(db, guild_id)
+    return {
+        f"{o.server_id}:{o.tool_name}" if o.tool_name is not None else str(o.server_id): bool(o.enabled)
+        for o in overrides
+    }
 
 
 async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None, args: dict | None = None) -> MCPServer:

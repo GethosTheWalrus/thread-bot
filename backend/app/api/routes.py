@@ -19,8 +19,13 @@ from app.database.crud import (
     get_discord_link,
     create_discord_link,
     set_discord_link_active,
+    upsert_discord_server,
+    get_discord_servers,
+    get_discord_server_tool_overrides,
+    set_discord_server_tool_overrides,
+    get_discord_server,
 )
-from app.models.models import Thread, Message
+from app.models.models import Thread, Message, DiscordThreadLink
 from app.models.schemas import (
     ThreadCreateRequest,
     ChatRequest,
@@ -41,6 +46,10 @@ from app.models.schemas import (
     DiscordSettingsResponse,
     DiscordShareRequest,
     DiscordThreadLinkResponse,
+    DiscordServerResponse,
+    DiscordServerListResponse,
+    DiscordServerMcpOverridesResponse,
+    DiscordServerMcpOverridesRequest,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy import select, func
@@ -192,6 +201,25 @@ def _build_discord_link_response(link) -> DiscordThreadLinkResponse | None:
         discord_thread_name=link.discord_thread_name,
         is_active=link.is_active,
     )
+
+
+def _build_discord_server_response(server, thread_count: int = 0) -> DiscordServerResponse:
+    return DiscordServerResponse(
+        guild_id=server.guild_id,
+        guild_name=server.guild_name,
+        default_channel_id=server.default_channel_id,
+        thread_count=thread_count,
+    )
+
+
+def _build_available_server(server) -> AvailableServer:
+    tools = []
+    if server.cached_tools and isinstance(server.cached_tools, list):
+        tools = [
+            AvailableTool(name=t["name"], description=t.get("description", ""))
+            for t in server.cached_tools
+        ]
+    return AvailableServer(id=str(server.id), name=server.name, tools=tools)
 
 
 async def _get_discord_link_for_thread(db: AsyncSession, thread_id: UUID):
@@ -714,13 +742,108 @@ async def update_discord_settings_endpoint(
     )
 
 
+@router.get("/discord/servers", response_model=DiscordServerListResponse)
+async def list_discord_servers_endpoint(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import func
+    from app.discord_integration import get_discord_guild
+
+    servers = await get_discord_servers(db)
+    response = []
+    changed = False
+    for server in servers:
+        guild_name = server.guild_name
+        if not guild_name or guild_name == server.guild_id:
+            guild = await get_discord_guild(server.guild_id)
+            guild_name = str(guild.get("name") or server.guild_id)
+            if guild_name != server.guild_name:
+                await upsert_discord_server(db, server.guild_id, guild_name, server.default_channel_id)
+                changed = True
+        cnt_result = await db.execute(
+            select(func.count(DiscordThreadLink.id)).where(DiscordThreadLink.guild_id == server.guild_id)
+        )
+        response.append(_build_discord_server_response(server, cnt_result.scalar_one()))
+    if changed:
+        await db.commit()
+    return DiscordServerListResponse(servers=response)
+
+
+@router.get("/discord/servers/{guild_id}/mcp-overrides", response_model=DiscordServerMcpOverridesResponse)
+async def get_discord_server_mcp_overrides_endpoint(guild_id: str, db: AsyncSession = Depends(get_db)):
+    from app.discord_integration import get_discord_guild
+    from app.database.crud import get_mcp_servers
+
+    server = await get_discord_server(db, guild_id)
+    if not server:
+        guild = await get_discord_guild(guild_id)
+        server = await upsert_discord_server(db, guild_id, str(guild.get("name") or guild_id))
+        await db.commit()
+
+    mcp_servers = await get_mcp_servers(db)
+    overrides = await get_discord_server_tool_overrides(db, guild_id)
+    return DiscordServerMcpOverridesResponse(
+        guild_id=server.guild_id,
+        guild_name=server.guild_name,
+        servers=[_build_available_server(mcp_server) for mcp_server in mcp_servers],
+        overrides=[
+            ToolOverrideItem(
+                server_id=str(o.server_id),
+                tool_name=o.tool_name,
+                enabled=o.enabled,
+            )
+            for o in overrides
+        ],
+    )
+
+
+@router.put("/discord/servers/{guild_id}/mcp-overrides", response_model=DiscordServerMcpOverridesResponse)
+async def set_discord_server_mcp_overrides_endpoint(
+    guild_id: str,
+    request: DiscordServerMcpOverridesRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.discord_integration import get_discord_guild
+    from app.database.crud import get_mcp_servers
+
+    server = await get_discord_server(db, guild_id)
+    if not server:
+        guild = await get_discord_guild(guild_id)
+        server = await upsert_discord_server(db, guild_id, str(guild.get("name") or guild_id))
+
+    await set_discord_server_tool_overrides(
+        db,
+        guild_id,
+        [
+            {
+                "server_id": UUID(item.server_id),
+                "tool_name": item.tool_name,
+                "enabled": item.enabled,
+            }
+            for item in request.overrides
+        ],
+    )
+    await db.commit()
+
+    mcp_servers = await get_mcp_servers(db)
+    return DiscordServerMcpOverridesResponse(
+        guild_id=server.guild_id,
+        guild_name=server.guild_name,
+        servers=[_build_available_server(mcp_server) for mcp_server in mcp_servers],
+        overrides=request.overrides,
+    )
+
+
 @router.post("/threads/{thread_id}/discord", response_model=DiscordThreadLinkResponse)
 async def share_thread_to_discord_endpoint(
     thread_id: UUID,
     request: DiscordShareRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    from app.discord_integration import create_discord_thread, post_existing_thread_to_discord
+    from app.discord_integration import (
+        apply_discord_server_tool_defaults,
+        create_discord_thread,
+        get_discord_guild,
+        post_existing_thread_to_discord,
+    )
 
     thread = await get_thread(db, thread_id)
     if not thread:
@@ -743,6 +866,9 @@ async def share_thread_to_discord_endpoint(
     if not guild_id or not channel_id:
         raise HTTPException(status_code=400, detail="Discord guild and channel are required")
 
+    guild = await get_discord_guild(guild_id)
+    await upsert_discord_server(db, guild_id, str(guild.get("name") or guild_id), channel_id)
+
     name = (request.name or thread.title or "ThreadBot Thread")[:100]
     try:
         discord_thread = await create_discord_thread(channel_id, name)
@@ -757,6 +883,7 @@ async def share_thread_to_discord_endpoint(
         str(discord_thread["id"]),
         str(discord_thread.get("name") or name),
     )
+    await apply_discord_server_tool_defaults(db, thread.id, guild_id)
     await db.commit()
     await post_existing_thread_to_discord(thread_id)
     return _build_discord_link_response(link)

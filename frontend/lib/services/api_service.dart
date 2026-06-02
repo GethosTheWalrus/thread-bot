@@ -330,6 +330,38 @@ class ApiService {
     throw Exception('Failed to save Discord settings: ${response.statusCode}');
   }
 
+  Future<List<Map<String, dynamic>>> getDiscordServers() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/discord/servers'));
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return (data['servers'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+    }
+    throw Exception('Failed to load Discord servers: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> getDiscordServerMcpOverrides(String guildId) async {
+    final response = await http.get(Uri.parse('$baseUrl/api/discord/servers/$guildId/mcp-overrides'));
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load Discord server overrides: ${response.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> saveDiscordServerMcpOverrides(
+    String guildId,
+    List<Map<String, dynamic>> overrides,
+  ) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/discord/servers/$guildId/mcp-overrides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'overrides': overrides}),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to save Discord server overrides: ${response.statusCode}');
+  }
+
   Future<DiscordThreadLink> shareThreadToDiscord(
     String threadId, {
     String? guildId,
