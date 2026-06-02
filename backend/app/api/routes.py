@@ -213,6 +213,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         discord_link=_build_discord_link_response(discord_link),
         estimated_tokens=_estimate_context_tokens(msgs),
         context_window=config.get("context_window", 8192),
+    )
 
 
 @router.post("/threads", response_model=ThreadResponse)
