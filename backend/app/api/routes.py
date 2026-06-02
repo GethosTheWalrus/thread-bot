@@ -46,7 +46,7 @@ from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSo
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from app.config import get_settings, get_llm_config, get_redis_url, update_settings, get_discord_config
+from app.config import get_settings, get_llm_config, update_settings, get_discord_config
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow

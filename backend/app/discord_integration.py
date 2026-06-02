@@ -4,7 +4,7 @@ from uuid import UUID
 import aiohttp
 from temporalio.client import Client as TemporalClient
 
-from app.config import get_discord_config, get_llm_config, get_settings, get_redis_url
+from app.config import get_discord_config, get_llm_config, get_settings
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -284,29 +284,6 @@ def _parse_threadbot_command(content: str) -> str | None:
     return None
 
 
-async def _get_command_cursor(redis_url: str, channel_id: str) -> str | None:
-    import redis.asyncio as aioredis
-
-    r = aioredis.from_url(redis_url)
-    try:
-        value = await r.get(f"discord:commands:{channel_id}:last_message_id")
-        if isinstance(value, bytes):
-            return value.decode("utf-8")
-        return value
-    finally:
-        await r.close()
-
-
-async def _set_command_cursor(redis_url: str, channel_id: str, message_id: str) -> None:
-    import redis.asyncio as aioredis
-
-    r = aioredis.from_url(redis_url)
-    try:
-        await r.set(f"discord:commands:{channel_id}:last_message_id", message_id)
-    finally:
-        await r.close()
-
-
 async def _start_thread_from_discord_command(
     temporal_client: TemporalClient,
     source_message: dict,
@@ -420,20 +397,28 @@ async def start_thread_from_discord_prompt(
 
 
 async def poll_discord_commands_once(temporal_client: TemporalClient, bot_user_id: str | None = None) -> None:
+    from app.database import AsyncSessionLocal
+    from app.database.crud import upsert_settings
+
     config = await _load_fresh_discord_config()
     if not _discord_enabled(config) or not config.get("channel_id"):
         return
 
     channel_id = config["channel_id"]
-    redis_url = get_redis_url()
-    cursor = await _get_command_cursor(redis_url, channel_id)
+
+    async with AsyncSessionLocal() as db:
+        row = await db.execute(select(Setting).where(Setting.key == "discord:commands:cursor"))
+        row = row.scalar_one_or_none()
+        cursor = row.value if row and row.value else None
+
     messages = await fetch_discord_messages(channel_id, cursor)
     if not messages:
         return
 
     last_seen = str(messages[-1].get("id"))
     if not cursor:
-        await _set_command_cursor(redis_url, channel_id, last_seen)
+        async with AsyncSessionLocal() as db:
+            await upsert_settings(db, {"discord:commands:cursor": last_seen})
         return
 
     for message in messages:
@@ -448,7 +433,8 @@ async def poll_discord_commands_once(temporal_client: TemporalClient, bot_user_i
             continue
         await _start_thread_from_discord_command(temporal_client, message, prompt)
 
-    await _set_command_cursor(redis_url, channel_id, last_seen)
+    async with AsyncSessionLocal() as db:
+        await upsert_settings(db, {"discord:commands:cursor": last_seen})
 
 
 async def start_discord_reply_workflow(
@@ -464,7 +450,6 @@ async def start_discord_reply_workflow(
     thread_id = link.thread_id
     settings = get_settings()
     llm_config = get_llm_config().copy()
-    llm_config["redis_url"] = get_redis_url()
     config = await _load_fresh_discord_config()
     llm_config["discord"] = {
         "enabled": config.get("enabled"),
