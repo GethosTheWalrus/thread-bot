@@ -79,7 +79,7 @@ update-k8s-images:
         - docker-compose.yml
         - .gitlab-ci.yml
   before_script:
-    - apk add --no-cache git curl
+    - apk add --no-cache git curl jq
     - git config user.name "gitlab-ci"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
   script:
@@ -88,12 +88,23 @@ update-k8s-images:
       # tag in the registry for each kind. If no build ran for this commit, the
       # tag does not exist and we must not stamp it (would leave pods referencing
       # a non-existent image).
-      backend_image_repo=$(printf %s "$REGISTRY_IMAGE/backend" | sed -E 's|.*/||')
-      frontend_image_repo=$(printf %s "$REGISTRY_IMAGE/frontend" | sed -E 's|.*/||')
-      api="https://${CI_SERVER_HOST}/api/v4/projects/${CI_PROJECT_ID}/registry/repositories"
+      api="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories"
+
+      registry_repo_id() {
+        local image="$1"
+        curl -fsS -u "gitlab-ci-token:${CI_JOB_TOKEN}" "${api}" \
+          | jq -r --arg image "$image" '.[] | select(.path == $image or .location == $image) | .id' \
+          | head -n 1
+      }
+
+      backend_image_repo=$(registry_repo_id "$REGISTRY_IMAGE/backend")
+      frontend_image_repo=$(registry_repo_id "$REGISTRY_IMAGE/frontend")
 
       has_tag() {
         local repo="$1" tag="$2"
+        if [ -z "$repo" ]; then
+          return 1
+        fi
         curl -sS -u "gitlab-ci-token:${CI_JOB_TOKEN}" \
           "${api}/${repo}/tags?search=${tag}" \
           | grep -q "\"name\":\"${tag}\""
