@@ -4,6 +4,7 @@ import os
 from typing import Iterable
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from google.protobuf.message import DecodeError
 from temporalio.api.common.v1 import Payload
 from temporalio.client import Client
 from temporalio.converter import PayloadCodec
@@ -13,6 +14,9 @@ from app.config import get_settings
 
 
 ENCRYPTED_ENCODING = b"binary/encrypted"
+ORIGINAL_ENCODING_METADATA_KEY = "encryption-original-encoding"
+LEGACY_ORIGINAL_ENCODING_METADATA_KEY = "original_encoding"
+DEFAULT_DECODED_ENCODING = b"json/plain"
 
 
 class AesGcmPayloadCodec(PayloadCodec):
@@ -25,9 +29,13 @@ class AesGcmPayloadCodec(PayloadCodec):
         encoded = []
         for payload in payloads:
             nonce = os.urandom(12)
-            ciphertext = self._aesgcm.encrypt(nonce, payload.SerializeToString(), None)
+            ciphertext = self._aesgcm.encrypt(nonce, payload.data, None)
+            metadata = {"encoding": ENCRYPTED_ENCODING}
+            original_encoding = payload.metadata.get("encoding")
+            if original_encoding:
+                metadata[ORIGINAL_ENCODING_METADATA_KEY] = original_encoding
             encoded.append(Payload(
-                metadata={"encoding": ENCRYPTED_ENCODING},
+                metadata=metadata,
                 data=nonce + ciphertext,
             ))
         return encoded
@@ -40,7 +48,27 @@ class AesGcmPayloadCodec(PayloadCodec):
                 continue
             nonce = payload.data[:12]
             ciphertext = payload.data[12:]
-            decoded.append(Payload.FromString(self._aesgcm.decrypt(nonce, ciphertext, None)))
+            plaintext = self._aesgcm.decrypt(nonce, ciphertext, None)
+            try:
+                # Backward compatibility for histories written before ThreadBot
+                # matched the cluster codec-server's data-only encryption format.
+                decoded_payload = Payload.FromString(plaintext)
+                if decoded_payload.metadata or decoded_payload.data:
+                    decoded.append(decoded_payload)
+                    continue
+            except DecodeError:
+                pass
+
+            decoded.append(Payload(
+                metadata={
+                    "encoding": (
+                        payload.metadata.get(ORIGINAL_ENCODING_METADATA_KEY)
+                        or payload.metadata.get(LEGACY_ORIGINAL_ENCODING_METADATA_KEY)
+                        or DEFAULT_DECODED_ENCODING
+                    ),
+                },
+                data=plaintext,
+            ))
         return decoded
 
 

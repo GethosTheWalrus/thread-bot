@@ -14,6 +14,19 @@ with workflow.unsafe.imports_passed_through():
 
 
 @defn
+class ClaimDiscordEventWorkflow:
+    """Short-lived workflow used as a Temporal-backed Discord event claim.
+
+    Starting this workflow with WorkflowIDReusePolicy.REJECT_DUPLICATE makes
+    Discord gateway/poll events idempotent across backend replicas.
+    """
+
+    @run
+    async def run(self, input: dict) -> dict:
+        return {"claimed": True, "event_id": input.get("event_id")}
+
+
+@defn
 class RunThreadWorkflow:
     """Main workflow for handling a chat interaction.
 

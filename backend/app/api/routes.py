@@ -92,8 +92,12 @@ async def _relay_workflow_stream(
     workflow_id: str,
     *,
     from_offset: int = 0,
+    discord_config: dict | None = None,
 ) -> None:
+    import time
+
     stream = WorkflowStreamClient.create(temporal_client, workflow_id)
+    last_typing_pulse = 0.0
     async for item in stream.subscribe(None, from_offset=from_offset, result_type=dict):
         if item.topic == "threadbot-model-events":
             raw = item.data
@@ -112,6 +116,15 @@ async def _relay_workflow_stream(
             event["offset"] = item.offset
         else:
             continue
+        if discord_config and event.get("type") == "token":
+            now = time.monotonic()
+            if now - last_typing_pulse >= 8:
+                last_typing_pulse = now
+                try:
+                    from app.discord_integration import send_discord_typing
+                    await send_discord_typing(discord_config["discord_thread_id"], discord_config=discord_config)
+                except Exception as exc:
+                    print(f"[discord] stream relay typing pulse failed: {exc}", flush=True)
         await websocket.send_json(event)
         if event.get("type") in {"done", "error"}:
             break
@@ -136,11 +149,18 @@ async def _relay_workflow_until_complete(
     workflow_id: str,
     *,
     from_offset: int = 0,
+    discord_config: dict | None = None,
 ) -> None:
     import asyncio
 
     relay_task = asyncio.create_task(
-        _relay_workflow_stream(websocket, temporal_client, workflow_id, from_offset=from_offset)
+        _relay_workflow_stream(
+            websocket,
+            temporal_client,
+            workflow_id,
+            from_offset=from_offset,
+            discord_config=discord_config,
+        )
     )
     completion_task = asyncio.create_task(
         _send_workflow_terminal_event(websocket, temporal_client, workflow_id)
@@ -404,12 +424,16 @@ async def chat_websocket(websocket: WebSocket):
     run_id = f"thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
 
     try:
-        await temporal_client.start_workflow(
+        workflow_handle = await temporal_client.start_workflow(
             RunThreadWorkflow.run,
             {"thread_id": str(thread_id), "message": request.content, "llm_config": llm_config},
             id=run_id,
             task_queue=settings.TEMPORAL_TASK_QUEUE,
         )
+        if llm_config.get("discord"):
+            import asyncio
+            from app.discord_integration import _keep_discord_typing_until_done
+            asyncio.create_task(_keep_discord_typing_until_done(workflow_handle, llm_config["discord"]))
         await websocket.send_json({"type": "thread", "thread_id": str(thread_id), "workflow_id": run_id})
     except Exception as e:
         await websocket.send_json({"type": "error", "content": f"Failed to start workflow: {e}"})
@@ -433,7 +457,12 @@ async def chat_websocket(websocket: WebSocket):
     import asyncio
     control_task = asyncio.create_task(receive_controls())
     try:
-        await _relay_workflow_until_complete(websocket, temporal_client, run_id)
+        await _relay_workflow_until_complete(
+            websocket,
+            temporal_client,
+            run_id,
+            discord_config=llm_config.get("discord"),
+        )
     except WebSocketDisconnect:
         pass
     finally:
@@ -496,6 +525,11 @@ async def reconnect_thread_websocket(websocket: WebSocket, thread_id: UUID, offs
         await websocket.close()
         return
 
+    from app.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        discord_link = await _get_discord_link_for_thread(db, thread_id)
+    discord_config = _build_workflow_discord_config(get_discord_config(), discord_link)
+
     await websocket.send_json({"type": "thread", "thread_id": str(thread_id), "workflow_id": workflow_id})
 
     async def receive_controls():
@@ -515,7 +549,13 @@ async def reconnect_thread_websocket(websocket: WebSocket, thread_id: UUID, offs
     import asyncio
     control_task = asyncio.create_task(receive_controls())
     try:
-        await _relay_workflow_until_complete(websocket, temporal_client, workflow_id, from_offset=offset)
+        await _relay_workflow_until_complete(
+            websocket,
+            temporal_client,
+            workflow_id,
+            from_offset=offset,
+            discord_config=discord_config,
+        )
     except WebSocketDisconnect:
         pass
     finally:

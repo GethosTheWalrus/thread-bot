@@ -1,4 +1,5 @@
 from temporalio.activity import defn, heartbeat
+import asyncio
 
 
 # ── Workflow stream publish helper (used by multiple activities) ──────
@@ -38,8 +39,35 @@ async def _save_inline(thread_id: str, role: str, content: str, metadata: dict |
     async with AsyncSessionLocal() as db:
         await add_message(db, UUID(thread_id), role, content, metadata=metadata)
         await db.commit()
-    from app.discord_integration import sync_message_to_discord
-    await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata)
+
+
+async def _typing_pulse(discord_config: dict | None) -> None:
+    if not discord_config or not discord_config.get("enabled"):
+        return
+    discord_thread_id = discord_config.get("discord_thread_id")
+    if not discord_thread_id:
+        return
+    from app.discord_integration import send_discord_typing
+    await send_discord_typing(discord_thread_id, discord_config=discord_config)
+
+
+async def _typing_loop(discord_config: dict | None, stop_event: asyncio.Event, interval_seconds: float = 8.0) -> None:
+    if not discord_config or not discord_config.get("enabled"):
+        return
+    discord_thread_id = discord_config.get("discord_thread_id")
+    if not discord_thread_id:
+        return
+    from app.discord_integration import send_discord_typing
+
+    while not stop_event.is_set():
+        try:
+            await send_discord_typing(discord_thread_id, discord_config=discord_config)
+        except Exception as exc:
+            print(f"[discord] typing pulse failed for {discord_thread_id}: {exc}", flush=True)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            continue
 
 
 def _agents_model_settings(config: dict, *, temperature: float | None = None, max_tokens: int | None = None):
@@ -205,6 +233,7 @@ async def _execute_agent_tool(
 
     redis_url = config.get("redis_url")
     stream_channel = config.get("stream_channel")
+    await _typing_pulse(config.get("discord"))
     builtin_tools = {
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode",
@@ -364,6 +393,7 @@ async def discover_tools(args: dict) -> dict:
 
     thread_id = args.get("thread_id")
     tool_overrides = args.get("tool_overrides", [])
+    await _typing_pulse((args.get("llm_config") or {}).get("discord"))
 
     active_servers = []
     async with AsyncSessionLocal() as db:
@@ -485,6 +515,7 @@ async def run_agent_response(args: dict) -> dict:
     redis_url = config.get("redis_url")
     stream_channel = config.get("stream_channel")
     max_turns = config.get("max_iterations", 25)
+    discord_config = config.get("discord")
 
     heartbeat({"step": "agent_run", "max_turns": max_turns})
     set_tracing_disabled(True)
@@ -505,6 +536,8 @@ async def run_agent_response(args: dict) -> dict:
     full_response_content = ""
     reasoning_buffer = ""
     token_count = 0
+    typing_stop = asyncio.Event()
+    typing_task = asyncio.create_task(_typing_loop(discord_config, typing_stop))
 
     try:
         result = Runner.run_streamed(agent, messages, max_turns=max_turns)
@@ -563,6 +596,14 @@ async def run_agent_response(args: dict) -> dict:
         await _publish(redis_url, stream_channel, f"[ERROR] Agent run failed: {str(e)}")
         raise
     finally:
+        typing_stop.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
         await _close_agents_provider(provider)
 
 
@@ -1065,11 +1106,14 @@ async def stream_response(args: dict) -> dict:
     thread_id = args.get("thread_id")
     redis_url = config.get("redis_url")
     stream_channel = config.get("stream_channel")
+    discord_config = config.get("discord")
 
     heartbeat({"step": "streaming", "tokens": 0})
 
     full_response_content = ""
     token_count = 0
+    typing_stop = asyncio.Event()
+    typing_task = asyncio.create_task(_typing_loop(discord_config, typing_stop))
 
     try:
         provider, model = _agents_provider_and_model(config)
@@ -1106,6 +1150,15 @@ async def stream_response(args: dict) -> dict:
             full_response_content = fallback_content
             if full_response_content:
                 await _publish(redis_url, stream_channel, {"type": "text", "content": full_response_content})
+    finally:
+        typing_stop.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     heartbeat({"step": "streaming_done", "tokens": token_count})
     return {"content": full_response_content}

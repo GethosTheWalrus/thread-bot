@@ -22,13 +22,13 @@ fi
 # Ask to replace registry prefix in k8s/deployment.yaml just in case it differs
 echo -e "\n${BLUE}Updating k8s/deployment.yaml with the selected registry prefix...${NC}"
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    sed -i '' -E "s|image: .*/backend:latest|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
-    sed -i '' -E "s|image: .*/worker:latest|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
-    sed -i '' -E "s|image: .*/frontend:latest|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
+    sed -i '' -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
+    sed -i '' -E "s|image: .*/worker:[^[:space:]]+|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
+    sed -i '' -E "s|image: .*/frontend:[^[:space:]]+|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
 else
-    sed -i -E "s|image: .*/backend:latest|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
-    sed -i -E "s|image: .*/worker:latest|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
-    sed -i -E "s|image: .*/frontend:latest|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
+    sed -i -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
+    sed -i -E "s|image: .*/worker:[^[:space:]]+|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
+    sed -i -E "s|image: .*/frontend:[^[:space:]]+|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
 fi
 
 # 2. Setup buildx

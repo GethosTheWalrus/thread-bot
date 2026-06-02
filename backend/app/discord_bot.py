@@ -54,6 +54,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                 temporal_client,
                 prompt,
                 sender_name,
+                source_event_id=str(interaction.id),
                 channel_id=channel_id,
                 guild_id=guild_id,
                 guild_name=guild_name,

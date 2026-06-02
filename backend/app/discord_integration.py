@@ -80,6 +80,113 @@ async def _request(
             return await resp.json()
 
 
+async def _send_discord_typing_quick(discord_thread_id: str, discord_channel_id: str | None, bot_token: str) -> None:
+    """Lightweight typing pulse — no config lookup, no full config loading.
+    Pulses in both the thread and the parent channel so typing is visible
+    regardless of whether the user is in the thread or the source channel.
+    """
+    if not discord_thread_id or not bot_token:
+        return
+    try:
+        async with aiohttp.ClientSession(headers=_headers(bot_token)) as session:
+            # Thread typing (always works when user is in the thread)
+            try:
+                async with session.post(f"{DISCORD_API_BASE}/channels/{discord_thread_id}/typing") as resp:
+                    if resp.status >= 400:
+                        print(f"[discord] thread typing failed: {resp.status} {await resp.text()}", flush=True)
+            except Exception:
+                pass
+            # Channel typing (so the indicator shows in the parent channel too)
+            if discord_channel_id and discord_channel_id != discord_thread_id:
+                try:
+                    async with session.post(f"{DISCORD_API_BASE}/channels/{discord_channel_id}/typing") as resp:
+                        if resp.status >= 400:
+                            print(f"[discord] channel typing failed: {resp.status} {await resp.text()}", flush=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass  # Typing is best-effort, non-critical
+
+
+async def send_discord_typing(
+    discord_thread_id: str,
+    discord_config: dict | None = None,
+) -> None:
+    config = discord_config or await _load_fresh_discord_config()
+    if not _discord_enabled(config):
+        return
+    await _send_discord_typing_quick(discord_thread_id, config.get("channel_id"), config.get("bot_token"))
+
+
+async def _keep_discord_typing_until_done(workflow_handle, discord_config: dict) -> None:
+    """Refresh Discord typing while a workflow is running.
+
+    Discord typing indicators expire after a few seconds, so this runs in the
+    Discord integration process that started the workflow and exits when the
+    Temporal workflow completes, fails, or is cancelled.
+    """
+    if not _discord_enabled(discord_config):
+        return
+    discord_thread_id = discord_config.get("discord_thread_id")
+    bot_token = discord_config.get("bot_token")
+    if not discord_thread_id or not bot_token:
+        return
+
+    result_task = asyncio.create_task(workflow_handle.result())
+    try:
+        while not result_task.done():
+            await _send_discord_typing_quick(discord_thread_id, discord_config.get("channel_id"), bot_token)
+            try:
+                await asyncio.wait_for(asyncio.shield(result_task), timeout=8)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                return
+    finally:
+        if not result_task.done():
+            result_task.cancel()
+
+
+def _discord_event_workflow_id(guild_id: str, channel_id: str, event_id: str) -> str:
+    return f"discord-event-{guild_id}-{channel_id}-{event_id}"
+
+
+async def _claim_discord_event(
+    temporal_client: TemporalClient,
+    *,
+    guild_id: str,
+    channel_id: str,
+    event_id: str | None,
+) -> bool:
+    if not event_id:
+        return True
+
+    from temporalio.common import WorkflowIDReusePolicy
+    from temporalio.exceptions import WorkflowAlreadyStartedError
+    from temporalio.service import RPCError, RPCStatusCode
+    from app.workflows.thread_workflow import ClaimDiscordEventWorkflow
+
+    settings = get_settings()
+    workflow_id = _discord_event_workflow_id(guild_id, channel_id, event_id)
+    try:
+        await temporal_client.start_workflow(
+            ClaimDiscordEventWorkflow.run,
+            {"event_id": event_id, "guild_id": guild_id, "channel_id": channel_id},
+            id=workflow_id,
+            task_queue=settings.TEMPORAL_TASK_QUEUE,
+            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
+        )
+        return True
+    except WorkflowAlreadyStartedError:
+        print(f"[discord] duplicate event ignored: {workflow_id}", flush=True)
+        return False
+    except RPCError as exc:
+        if exc.status == RPCStatusCode.ALREADY_EXISTS:
+            print(f"[discord] duplicate event ignored: {workflow_id}", flush=True)
+            return False
+        raise
+
+
 async def get_bot_user_id() -> str | None:
     if not _discord_enabled():
         return None
@@ -355,6 +462,7 @@ async def _start_thread_from_discord_command(
         prompt,
         username,
         source_message_id=str(source_message.get("id")),
+        source_event_id=str(source_message.get("id")),
     )
 
 
@@ -365,10 +473,11 @@ async def start_thread_from_discord_prompt(
     *,
     source_message_id: str | None = None,
     source_message_link: str | None = None,
+    source_event_id: str | None = None,
     channel_id: str | None = None,
     guild_id: str | None = None,
     guild_name: str | None = None,
-) -> dict:
+) -> dict | None:
     from app.database import AsyncSessionLocal
     from app.database.crud import (
         add_message,
@@ -383,6 +492,14 @@ async def start_thread_from_discord_prompt(
     guild_id = guild_id or config.get("guild_id")
     if not channel_id or not guild_id:
         raise DiscordIntegrationError("Discord guild and channel are required")
+    claimed = await _claim_discord_event(
+        temporal_client,
+        guild_id=guild_id,
+        channel_id=channel_id,
+        event_id=source_event_id or source_message_id,
+    )
+    if not claimed:
+        return None
     if not guild_name:
         guild_info = await get_discord_guild(guild_id, config)
         guild_name = str(guild_info.get("name") or guild_id)
@@ -520,12 +637,13 @@ async def start_discord_reply_workflow(
     if assistant_response_prefix:
         llm_config["discord"]["assistant_response_prefix"] = assistant_response_prefix
     run_id = f"discord-thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
-    await temporal_client.start_workflow(
+    handle = await temporal_client.start_workflow(
         RunThreadWorkflow.run,
         {"thread_id": str(thread_id), "message": message, "llm_config": llm_config},
         id=run_id,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
     )
+    asyncio.create_task(_keep_discord_typing_until_done(handle, llm_config["discord"]))
 
 
 async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | None = None) -> None:
@@ -550,6 +668,14 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                     continue
                 content = (message.get("content") or "").strip()
                 if not content:
+                    continue
+                claimed = await _claim_discord_event(
+                    temporal_client,
+                    guild_id=link.guild_id,
+                    channel_id=link.discord_thread_id,
+                    event_id=str(message.get("id")),
+                )
+                if not claimed:
                     continue
                 username = author.get("global_name") or author.get("username") or "Discord user"
                 local_content = f"{username} (Discord): {content}"
