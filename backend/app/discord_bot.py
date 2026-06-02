@@ -43,22 +43,50 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
     @app_commands.describe(prompt="The first message to send to ThreadBot")
     async def threadbot_command(interaction: discord.Interaction, prompt: str):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        from app.discord_integration import start_thread_from_discord_prompt
+        from app.discord_integration import (
+            reply_to_existing_discord_thread,
+            start_thread_from_discord_prompt,
+        )
 
         try:
             channel_id = str(interaction.channel_id) if interaction.channel_id else config.get("channel_id")
             guild_id = str(interaction.guild_id) if interaction.guild_id else config.get("guild_id")
             guild_name = interaction.guild.name if interaction.guild else None
             sender_name = interaction.user.global_name or interaction.user.name or "Discord user"
-            await start_thread_from_discord_prompt(
-                temporal_client,
-                prompt,
-                sender_name,
-                source_event_id=str(interaction.id),
-                channel_id=channel_id,
-                guild_id=guild_id,
-                guild_name=guild_name,
-            )
+            invoked_channel = interaction.channel
+            if isinstance(invoked_channel, discord.Thread):
+                # Slash command invoked inside an existing thread — reply there.
+                result = await reply_to_existing_discord_thread(
+                    temporal_client,
+                    discord_thread_id=str(invoked_channel.id),
+                    guild_id=guild_id,
+                    sender_name=sender_name,
+                    prompt=prompt,
+                    source_message_id=str(interaction.id),
+                    source_message_link=None,
+                    source_event_id=str(interaction.id),
+                )
+                if result is None:
+                    parent_id = getattr(invoked_channel, "parent_id", None) or channel_id
+                    await start_thread_from_discord_prompt(
+                        temporal_client,
+                        prompt,
+                        sender_name,
+                        source_event_id=str(interaction.id),
+                        channel_id=str(parent_id),
+                        guild_id=guild_id,
+                        guild_name=guild_name,
+                    )
+            else:
+                await start_thread_from_discord_prompt(
+                    temporal_client,
+                    prompt,
+                    sender_name,
+                    source_event_id=str(interaction.id),
+                    channel_id=channel_id,
+                    guild_id=guild_id,
+                    guild_name=guild_name,
+                )
             try:
                 await interaction.delete_original_response()
             except Exception:
@@ -94,25 +122,59 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
             await bot.process_commands(message)
             return
 
-        from app.discord_integration import start_thread_from_discord_prompt
+        guild_id = str(message.guild.id) if message.guild else config.get("guild_id")
+        guild_name = message.guild.name if message.guild else None
+        sender_name = message.author.global_name or message.author.name or "Discord user"
+
+        from app.discord_integration import (
+            reply_to_existing_discord_thread,
+            start_thread_from_discord_prompt,
+        )
 
         try:
-            guild_id = str(message.guild.id) if message.guild else config.get("guild_id")
-            guild_name = message.guild.name if message.guild else None
-            sender_name = message.author.global_name or message.author.name or "Discord user"
-            await start_thread_from_discord_prompt(
-                temporal_client,
-                prompt,
-                sender_name,
-                source_message_id=str(message.id),
-                source_message_link=_message_link(message),
-                channel_id=str(message.channel.id),
-                guild_id=guild_id,
-                guild_name=guild_name,
-            )
+            # If the mention happened inside an existing Discord thread, post
+            # the user message there instead of creating a new thread.
+            if isinstance(message.channel, discord.Thread):
+                result = await reply_to_existing_discord_thread(
+                    temporal_client,
+                    discord_thread_id=str(message.channel.id),
+                    guild_id=guild_id,
+                    sender_name=sender_name,
+                    prompt=prompt,
+                    source_message_id=str(message.id),
+                    source_message_link=_message_link(message),
+                    source_event_id=f"mention-{message.id}",
+                )
+                if result is None:
+                    # No active link for that thread; fall back to creating a
+                    # new ThreadBot thread under the parent channel.
+                    parent_id = getattr(message.channel, "parent_id", None) or config.get("channel_id")
+                    await start_thread_from_discord_prompt(
+                        temporal_client,
+                        prompt,
+                        sender_name,
+                        source_message_id=str(message.id),
+                        source_message_link=_message_link(message),
+                        source_event_id=f"mention-{message.id}",
+                        channel_id=str(parent_id),
+                        guild_id=guild_id,
+                        guild_name=guild_name,
+                    )
+            else:
+                await start_thread_from_discord_prompt(
+                    temporal_client,
+                    prompt,
+                    sender_name,
+                    source_message_id=str(message.id),
+                    source_message_link=_message_link(message),
+                    source_event_id=f"mention-{message.id}",
+                    channel_id=str(message.channel.id),
+                    guild_id=guild_id,
+                    guild_name=guild_name,
+                )
         except Exception as exc:
             print(f"[discord] mention handling failed: {exc}", flush=True)
-            await message.reply(f"Failed to start ThreadBot thread: {exc}")
+            await message.reply(f"Failed to handle mention: {exc}")
 
         await bot.process_commands(message)
 

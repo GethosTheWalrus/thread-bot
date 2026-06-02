@@ -646,6 +646,84 @@ async def start_discord_reply_workflow(
     asyncio.create_task(_keep_discord_typing_until_done(handle, llm_config["discord"]))
 
 
+async def reply_to_existing_discord_thread(
+    temporal_client: TemporalClient,
+    *,
+    discord_thread_id: str,
+    guild_id: str,
+    sender_name: str,
+    prompt: str,
+    source_message_id: str | None,
+    source_message_link: str | None = None,
+    source_event_id: str | None = None,
+) -> dict | None:
+    """Reply to a user message that was sent inside an existing Discord thread.
+
+    Looks up the existing ``discord_thread_links`` row by ``discord_thread_id``,
+    records the user message against the linked ThreadBot thread, and starts a
+    reply workflow that posts back to the same Discord thread. Returns
+    ``None`` if no active link exists for that thread.
+    """
+    from app.database import AsyncSessionLocal
+    from app.database.crud import (
+        add_message,
+        get_discord_link_by_discord_thread_id,
+        update_discord_link_cursor,
+    )
+
+    claimed = await _claim_discord_event(
+        temporal_client,
+        guild_id=guild_id,
+        channel_id=discord_thread_id,
+        event_id=source_event_id or source_message_id,
+    )
+    if not claimed:
+        return None
+
+    async with AsyncSessionLocal() as db:
+        link = await get_discord_link_by_discord_thread_id(db, discord_thread_id)
+        if link is None:
+            print(
+                f"[discord] no active link for discord thread {discord_thread_id}; "
+                "falling back to creating a new thread",
+                flush=True,
+            )
+            return None
+        local_content = f"{sender_name} (Discord): {prompt}"
+        metadata = {
+            "source": "discord",
+            "sender_name": sender_name,
+        }
+        if source_message_id:
+            metadata["discord_message_id"] = source_message_id
+        if source_message_link:
+            metadata["discord_message_link"] = source_message_link
+        await add_message(
+            db,
+            link.thread_id,
+            "user",
+            local_content,
+            metadata=metadata,
+        )
+        if source_message_id:
+            link.last_discord_message_id = source_message_id
+            await update_discord_link_cursor(db, link, source_message_id)
+        await db.commit()
+        link_snapshot = link
+
+    await start_discord_reply_workflow(
+        temporal_client,
+        link_snapshot,
+        local_content,
+        reply_to_message_id=source_message_id,
+    )
+    return {
+        "thread_id": str(link_snapshot.thread_id),
+        "discord_thread_id": link_snapshot.discord_thread_id,
+        "discord_thread_name": link_snapshot.discord_thread_name,
+    }
+
+
 async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | None = None) -> None:
     if not _discord_enabled():
         return

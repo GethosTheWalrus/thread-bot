@@ -122,6 +122,18 @@ async def get_active_discord_links(db: AsyncSession) -> list[DiscordThreadLink]:
     return list(result.scalars().all())
 
 
+async def get_discord_link_by_discord_thread_id(
+    db: AsyncSession, discord_thread_id: str
+) -> DiscordThreadLink | None:
+    result = await db.execute(
+        select(DiscordThreadLink).where(
+            DiscordThreadLink.discord_thread_id == discord_thread_id,
+            DiscordThreadLink.is_active == True,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_discord_link(
     db: AsyncSession,
     thread_id: UUID,
