@@ -6,6 +6,8 @@ variables:
   IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
   REGISTRY_IMAGE: "$CI_REGISTRY_IMAGE"
   BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
+  BACKEND_CACHE_IMAGE: "$CI_REGISTRY_IMAGE/backend:buildcache"
+  FRONTEND_CACHE_IMAGE: "$CI_REGISTRY_IMAGE/frontend:buildcache"
 
 workflow:
   rules:
@@ -14,7 +16,7 @@ workflow:
     - if: '$CI_COMMIT_BRANCH == "main"'
     - when: never
 
-build-images:
+build-backend-images:
   stage: build
   image: docker:27
   rules:
@@ -32,16 +34,39 @@ build-images:
     - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" --driver docker-container --config /tmp/buildkitd.toml
     - docker buildx inspect --bootstrap
   script:
-    - docker buildx build --platform "$BUILDX_PLATFORMS" -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
-    - docker buildx build --platform "$BUILDX_PLATFORMS" -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$BACKEND_CACHE_IMAGE" --cache-to type=registry,ref="$BACKEND_CACHE_IMAGE",mode=max -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
   after_script:
     - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" || true
+
+build-frontend-image:
+  stage: build
+  image: docker:27
+  rules:
+    - changes:
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - docker info
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+    - docker run --privileged --rm tonistiigi/binfmt --install all
+    - printf '[registry."%s"]\n  http = true\n  insecure = true\n' "$CI_REGISTRY" > /tmp/buildkitd.toml
+    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-frontend" --driver docker-container --config /tmp/buildkitd.toml
+    - docker buildx inspect --bootstrap
+  script:
+    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$FRONTEND_CACHE_IMAGE" --cache-to type=registry,ref="$FRONTEND_CACHE_IMAGE",mode=max -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+  after_script:
+    - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-frontend" || true
 
 update-k8s-images:
   stage: update-manifests
   image: alpine:3.20
   needs:
-    - build-images
+    - job: build-backend-images
+      optional: true
+    - job: build-frontend-image
+      optional: true
   rules:
     - changes:
         - backend/**/*
