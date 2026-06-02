@@ -64,9 +64,15 @@ update-k8s-images:
   image: alpine:3.20
   needs:
     - job: build-backend-images
+      optional: true
     - job: build-frontend-image
+      optional: true
   rules:
-    - changes:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - k8s/deployment.yaml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
         - backend/**/*
         - frontend/**/*
         - docker/**/*
@@ -77,10 +83,46 @@ update-k8s-images:
     - git config user.name "gitlab-ci"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
   script:
-    - 'sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml'
-    - 'sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml'
-    - 'sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml'
-    - git add k8s/deployment.yaml
-    - if git diff --cached --quiet; then exit 0; fi
-    - 'git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"'
-    - git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"
+    - |
+      # Only point the manifest at $IMAGE_TAG if a build actually produced that
+      # tag in the registry for each kind. If no build ran for this commit, the
+      # tag does not exist and we must not stamp it (would leave pods referencing
+      # a non-existent image).
+      backend_image_repo=$(printf %s "$REGISTRY_IMAGE/backend" | sed -E 's|.*/||')
+      frontend_image_repo=$(printf %s "$REGISTRY_IMAGE/frontend" | sed -E 's|.*/||')
+      api="https://${CI_SERVER_HOST}/api/v4/projects/${CI_PROJECT_ID}/registry/repositories"
+
+      has_tag() {
+        local repo="$1" tag="$2"
+        curl -sS -u "gitlab-ci-token:${CI_JOB_TOKEN}" \
+          "${api}/${repo}/tags?search=${tag}" \
+          | grep -q "\"name\":\"${tag}\""
+      }
+
+      want_backend=0
+      want_frontend=0
+      if has_tag "$backend_image_repo" "$IMAGE_TAG"; then
+        want_backend=1
+      fi
+      if has_tag "$frontend_image_repo" "$IMAGE_TAG"; then
+        want_frontend=1
+      fi
+
+      changed=0
+      if [ "$want_backend" = "1" ]; then
+        sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml
+        sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml
+        changed=1
+      fi
+      if [ "$want_frontend" = "1" ]; then
+        sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml
+        changed=1
+      fi
+      if [ "$changed" = "0" ]; then
+        echo "No images built for $IMAGE_TAG; leaving manifest unchanged."
+        exit 0
+      fi
+      git add k8s/deployment.yaml
+      if git diff --cached --quiet; then exit 0; fi
+      git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"
+      git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"
