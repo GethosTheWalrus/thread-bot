@@ -7,7 +7,7 @@ metadata:
   labels:
     app: threadbot-backend
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: threadbot-backend
@@ -21,7 +21,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: backend
-          image: git.home:5050/mike/thread-bot/backend:029b737f
+          image: git.home:5050/mike/thread-bot/backend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -90,7 +90,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: worker
-          image: git.home:5050/mike/thread-bot/worker:029b737f
+          image: git.home:5050/mike/thread-bot/worker:latest
           imagePullPolicy: Always
           command: ["python", "-m", "app.worker"]
           envFrom:
@@ -132,7 +132,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: frontend
-          image: git.home:5050/mike/thread-bot/frontend:029b737f
+          image: git.home:5050/mike/thread-bot/frontend:latest
           imagePullPolicy: Always
           ports:
             - containerPort: 80
@@ -226,7 +226,8 @@ data:
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header Connection '';
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
             proxy_buffering off;
             proxy_cache off;
             chunked_transfer_encoding on;
