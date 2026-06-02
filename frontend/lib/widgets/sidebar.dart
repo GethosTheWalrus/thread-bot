@@ -459,49 +459,10 @@ class _DiscordGlyph extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 14,
-      height: 14,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: (isActive ? const Color(0xFF5865F2) : Colors.white).withValues(alpha: isActive ? 1 : 0.25),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: CustomPaint(
-        size: const Size(10, 10),
-        painter: _DiscordIconPainter(
-          color: Colors.white,
-        ),
-      ),
+    return Icon(
+      Icons.discord,
+      size: 14,
+      color: isActive ? const Color(0xFF5865F2) : Colors.white.withValues(alpha: 0.25),
     );
   }
-}
-
-class _DiscordIconPainter extends CustomPainter {
-  final Color color;
-
-  _DiscordIconPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path();
-    final w = size.width;
-    final h = size.height;
-    path.moveTo(w * 0.12, h * 0.35);
-    path.quadraticBezierTo(w * 0.15, h * 0.22, w * 0.25, h * 0.18);
-    path.quadraticBezierTo(w * 0.28, h * 0.12, w * 0.35, h * 0.1);
-    path.quadraticBezierTo(w * 0.55, h * 0.13, w * 0.65, h * 0.14);
-    path.quadraticBezierTo(w * 0.72, h * 0.17, w * 0.76, h * 0.22);
-    path.quadraticBezierTo(w * 0.87, h * 0.26, w * 0.88, h * 0.38);
-    path.quadraticBezierTo(w * 0.85, h * 0.52, w * 0.77, h * 0.63);
-    path.quadraticBezierTo(w * 0.67, h * 0.72, w * 0.55, h * 0.77);
-    path.quadraticBezierTo(w * 0.42, h * 0.74, w * 0.32, h * 0.68);
-    path.quadraticBezierTo(w * 0.22, h * 0.64, w * 0.15, h * 0.56);
-    path.quadraticBezierTo(w * 0.1, h * 0.45, w * 0.12, h * 0.35);
-    path.close();
-    canvas.drawPath(path, Paint()..color = color..style = PaintingStyle.fill);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
