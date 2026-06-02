@@ -486,42 +486,14 @@ class RunThreadWorkflow:
                 "context_window": llm_config.get("context_window", 8192),
             })
             if len(chat_history) <= 5 or len(chat_history) % 5 == 1:
-                readable = [
-                    m for m in chat_history[-5:]
-                    if m.get("content") and m.get("role") in ("user", "assistant")
-                ]
-                context = "\n".join([f"{m['role']}: {m['content']}" for m in readable])
-                title_prompt = (
-                    "Generate a very short, catchy title for this conversation (max 4 words). "
-                    "Reply with ONLY the title, no quotes, no labels. Context:\n" + context
+                # Auto-title runs in the background so the user-visible
+                # `done` event is not delayed by it. The title event
+                # arrives later when the background task finishes.
+                self._kick_off_title(
+                    thread_id=thread_id,
+                    chat_history=chat_history,
+                    llm_config=llm_config,
                 )
-
-                title_config = llm_config.copy()
-
-                title = await execute_activity(
-                    generate_title,
-                    {"messages": [{"role": "user", "content": title_prompt}], "llm_config": title_config},
-                    start_to_close_timeout=timedelta(seconds=60),
-                    retry_policy=RetryPolicy(maximum_attempts=2),
-                )
-                title_text = title["content"] if isinstance(title, dict) else title
-                title_text = title_text.strip("\"'").strip()[:50]
-                await execute_activity(
-                    update_title,
-                    {"thread_id": thread_id, "title": title_text},
-                    start_to_close_timeout=timedelta(seconds=10),
-                )
-                await execute_activity(
-                    sync_discord_title,
-                    {
-                        "thread_id": thread_id,
-                        "title": title_text,
-                        "discord": llm_config.get("discord"),
-                    },
-                    start_to_close_timeout=timedelta(seconds=20),
-                    retry_policy=RetryPolicy(maximum_attempts=2),
-                )
-                await self._publish_event(llm_config, {"type": "title", "content": title_text})
 
             await self._publish_event(llm_config, {"type": "done"})
 
@@ -532,4 +504,70 @@ class RunThreadWorkflow:
 
         except Exception as e:
             await self._publish_event(llm_config, {"type": "error", "content": str(e)})
-            raise e
+
+    def _kick_off_title(self, thread_id: str, chat_history: list, llm_config: dict) -> None:
+        """Schedule auto-title generation in the background.
+
+        Runs the LLM call, persists the title, syncs it to Discord, and
+        publishes the `title` event. Failures are logged but do not
+        affect the workflow result.
+        """
+        import asyncio
+
+        async def _run():
+            with workflow.unsafe.imports_passed_through():
+                from app.activities.llm_activities import (
+                    generate_title, update_title, sync_discord_title,
+                )
+
+            readable = [
+                m for m in chat_history[-5:]
+                if m.get("content") and m.get("role") in ("user", "assistant")
+            ]
+            context = "\n".join([f"{m['role']}: {m['content']}" for m in readable])
+            title_prompt = (
+                "Generate a very short, catchy title for this conversation (max 4 words). "
+                "Reply with ONLY the title, no quotes, no labels. Context:\n" + context
+            )
+            title_config = llm_config.copy()
+            try:
+                title = await execute_activity(
+                    generate_title,
+                    {"messages": [{"role": "user", "content": title_prompt}], "llm_config": title_config},
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            except Exception as exc:
+                print(f"[title] generate_title failed: {exc}", flush=True)
+                return
+            title_text = title["content"] if isinstance(title, dict) else title
+            title_text = (title_text or "").strip("\"'").strip()[:50]
+            if not title_text:
+                return
+            try:
+                await execute_activity(
+                    update_title,
+                    {"thread_id": thread_id, "title": title_text},
+                    start_to_close_timeout=timedelta(seconds=10),
+                )
+            except Exception as exc:
+                print(f"[title] update_title failed: {exc}", flush=True)
+            try:
+                await execute_activity(
+                    sync_discord_title,
+                    {
+                        "thread_id": thread_id,
+                        "title": title_text,
+                        "discord": llm_config.get("discord"),
+                    },
+                    start_to_close_timeout=timedelta(seconds=20),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            except Exception as exc:
+                print(f"[title] sync_discord_title failed: {exc}", flush=True)
+            try:
+                await self._publish_event(llm_config, {"type": "title", "content": title_text})
+            except Exception as exc:
+                print(f"[title] publish title failed: {exc}", flush=True)
+
+        asyncio.create_task(_run())

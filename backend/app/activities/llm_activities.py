@@ -320,7 +320,26 @@ async def _execute_agent_tool(
     })
 
     try:
-        exec_params = get_mcp_server_params(info["image"], info["env_vars"], info.get("args"))
+        exec_env = info["env_vars"]
+        exec_args = info.get("args")
+        # Cache path: env_vars/args are None; re-decrypt from DB.
+        if exec_env is None or exec_args is None:
+            from app.database import AsyncSessionLocal
+            from app.models.models import MCPServer
+            from app.encryption import decrypt_dict
+            from sqlalchemy import select
+
+            server_name = info.get("server_name")
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(MCPServer).where(MCPServer.name == server_name)
+                )
+                srv = result.scalar_one_or_none()
+            if srv is None:
+                raise RuntimeError(f"MCP server {server_name!r} not found in DB")
+            exec_env = await decrypt_dict(srv.env_vars) or {}
+            exec_args = await decrypt_dict(srv.args) or {}
+        exec_params = get_mcp_server_params(info["image"], exec_env, exec_args)
         async with stdio_client(exec_params) as (read, write):
             async with ClientSession(read, write) as mcp_session:
                 await mcp_session.initialize()
@@ -387,13 +406,20 @@ async def execute_agent_tool_activity(args: dict) -> str:
 async def discover_tools(args: dict) -> dict:
     """Discover available MCP tools and apply per-thread overrides.
 
-    Spins up each active MCP server container to list tools, caches the
-    discovered tools in the DB, and filters by per-thread overrides.
+    Fast path: read each server's `cached_tools` (refreshed within
+    `MCP_TOOL_CACHE_TTL_SECONDS`, default 1 hour) and only spin up an MCP
+    container on cache miss or when the server config hash has changed.
 
-    Returns:
-        mcp_tools_map: dict  — tool_name -> {image, env_vars, args, original_name, server_name}
-        openai_tools: list   — OpenAI-compatible tool definitions for the LLM
+    Slow path: cold start each active MCP server container, list tools, and
+    write the result back to the cache.
+
+    Per-thread overrides are applied to the final list regardless of which
+    path produced it.
     """
+    import hashlib
+    import time as time_mod
+    from datetime import datetime, timezone
+
     from sqlalchemy import select, update
     from app.database import AsyncSessionLocal
     from app.models.models import MCPServer
@@ -406,67 +432,156 @@ async def discover_tools(args: dict) -> dict:
     tool_overrides = args.get("tool_overrides", [])
     await _typing_pulse((args.get("llm_config") or {}).get("discord"))
 
+    try:
+        cache_ttl = int(float(args.get("cache_ttl_seconds") or os.environ.get("MCP_TOOL_CACHE_TTL_SECONDS") or 3600))
+    except Exception:
+        cache_ttl = 3600
+
+    def _config_hash(image: str, env_vars, args_dict) -> str:
+        h = hashlib.sha256()
+        h.update((image or "").encode("utf-8"))
+        # encrypt_dict returns the encrypted dict at rest; the cache hash
+        # only needs to detect drift in the actual runtime config, so we
+        # hash the raw columns (encrypted values are stable per config).
+        try:
+            h.update(repr(sorted((env_vars or {}).items())).encode("utf-8"))
+        except Exception:
+            h.update(repr(env_vars).encode("utf-8"))
+        try:
+            h.update(repr(sorted((args_dict or {}).items())).encode("utf-8"))
+        except Exception:
+            h.update(repr(args_dict).encode("utf-8"))
+        return h.hexdigest()
+
+    def _cache_fresh(server) -> bool:
+        if not server.cached_tools or server.cached_tools_at is None:
+            return False
+        try:
+            if (datetime.now(timezone.utc) - server.cached_tools_at).total_seconds() > cache_ttl:
+                return False
+        except Exception:
+            return False
+        # If the runtime config changed, force a refresh.
+        current_hash = _config_hash(server.image, server.env_vars, server.args)
+        if (server.cached_tools or {}).get("__config_hash__") != current_hash:
+            return False
+        return True
+
     active_servers = []
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(MCPServer).where(MCPServer.is_active == True))
         active_servers = list(result.scalars().all())
 
     print(f"Discovered {len(active_servers)} active MCP servers", flush=True)
-    heartbeat({"step": "discover_tools", "servers": len(active_servers)})
+    heartbeat({"step": "discover_tools", "servers": len(active_servers), "cache_ttl": cache_ttl})
 
     mcp_tools_map = {}
     openai_tools = []
     server_id_to_name = {}
+    cache_hits = 0
+    cold_starts = 0
 
     for i, server in enumerate(active_servers):
         server_id_to_name[str(server.id)] = server.name
-        print(f"Loading tools from MCP server: {server.name} ({server.image})", flush=True)
-        heartbeat({"step": "discover_tools", "server": server.name, "index": i + 1})
-        try:
-            decrypted_env = await decrypt_dict(server.env_vars) or {}
-            decrypted_args = await decrypt_dict(server.args) or {}
-            params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
+        cache_used = False
 
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools_result = await session.list_tools()
-                    print(f"Found {len(tools_result.tools)} tools on server {server.name}", flush=True)
+        if _cache_fresh(server):
+            cached_list = (server.cached_tools or {}).get("tools") or []
+            print(f"[cache] hit for {server.name} ({len(cached_list)} tools)", flush=True)
+            cache_hits += 1
+            cache_used = True
+            # Build the same shape from cache without starting the container.
+            for entry in cached_list:
+                tname = entry.get("name")
+                tdesc = entry.get("description") or ""
+                tschema = entry.get("inputSchema") or {"type": "object", "properties": {}}
+                if not tname:
+                    continue
+                full_name = f"{server.name}_{tname}"
+                mcp_tools_map[full_name] = {
+                    "image": server.image,
+                    "env_vars": None,  # not used on cache path
+                    "args": None,
+                    "original_name": tname,
+                    "server_name": server.name,
+                }
+                openai_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": full_name,
+                        "description": tdesc,
+                        "parameters": tschema,
+                    },
+                })
+            # We don't have decrypted env/args here; if a tool ends up being
+            # called on the cache path, re-decrypt in the execute path. For
+            # now leave them as None — the tool executor will fetch them
+            # from DB on demand (see _execute_agent_tool).
+        else:
+            print(f"Loading tools from MCP server: {server.name} ({server.image})", flush=True)
+            heartbeat({"step": "discover_tools", "server": server.name, "index": i + 1, "cached": False})
+            cold_starts += 1
+            try:
+                decrypted_env = await decrypt_dict(server.env_vars) or {}
+                decrypted_args = await decrypt_dict(server.args) or {}
+                params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
 
-                    # Cache discovered tools for the tool-overrides UI
-                    cached = [
-                        {"name": t.name, "description": t.description or ""}
-                        for t in tools_result.tools
-                    ]
-                    async with AsyncSessionLocal() as cache_db:
-                        await cache_db.execute(
-                            update(MCPServer)
-                            .where(MCPServer.id == server.id)
-                            .values(cached_tools=cached)
-                        )
-                        await cache_db.commit()
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        tools_result = await session.list_tools()
+                        print(f"Found {len(tools_result.tools)} tools on server {server.name}", flush=True)
 
-                    for tool in tools_result.tools:
-                        full_name = f"{server.name}_{tool.name}"
-                        mcp_tools_map[full_name] = {
-                            "image": server.image,
-                            "env_vars": decrypted_env,
-                            "args": decrypted_args,
-                            "original_name": tool.name,
-                            "server_name": server.name,
-                        }
-                        openai_tools.append({
-                            "type": "function",
-                            "function": {
-                                "name": full_name,
+                        cached_list = []
+                        for tool in tools_result.tools:
+                            cached_list.append({
+                                "name": tool.name,
                                 "description": tool.description or "",
-                                "parameters": tool.inputSchema,
-                            },
-                        })
-        except Exception as e:
-            print(f"ERROR: Failed to load MCP server {server.name}: {e}", flush=True)
+                                "inputSchema": tool.inputSchema,
+                            })
+                        cache_payload = {
+                            "tools": cached_list,
+                            "__config_hash__": _config_hash(server.image, server.env_vars, server.args),
+                        }
+                        async with AsyncSessionLocal() as cache_db:
+                            await cache_db.execute(
+                                update(MCPServer)
+                                .where(MCPServer.id == server.id)
+                                .values(
+                                    cached_tools=cache_payload,
+                                    cached_tools_at=datetime.now(timezone.utc),
+                                )
+                            )
+                            await cache_db.commit()
 
-    print(f"Total tools available to LLM: {len(openai_tools)}", flush=True)
+                        for tool in tools_result.tools:
+                            full_name = f"{server.name}_{tool.name}"
+                            mcp_tools_map[full_name] = {
+                                "image": server.image,
+                                "env_vars": decrypted_env,
+                                "args": decrypted_args,
+                                "original_name": tool.name,
+                                "server_name": server.name,
+                            }
+                            openai_tools.append({
+                                "type": "function",
+                                "function": {
+                                    "name": full_name,
+                                    "description": tool.description or "",
+                                    "parameters": tool.inputSchema,
+                                },
+                            })
+            except Exception as e:
+                print(f"ERROR: Failed to load MCP server {server.name}: {e}", flush=True)
+
+        # unused, but keep variable for potential logging hooks
+        del cache_used
+
+    print(
+        f"Total tools available to LLM: {len(openai_tools)} "
+        f"(cache_hits={cache_hits}, cold_starts={cold_starts})",
+        flush=True,
+    )
 
     # ── Apply per-thread tool overrides ───────────────────────────────
     if tool_overrides:
@@ -1181,17 +1296,22 @@ async def stream_response(args: dict) -> dict:
 
 @defn
 async def generate_title(args: dict) -> dict:
-    """Simple LLM call without tools or streaming.
+    """Lightweight LLM call to produce a short thread title.
 
-    Used exclusively for auto-title generation and other simple LLM tasks
-    that don't need MCP tools, workflow streaming, or the agent loop.
-
-    Returns:
-        content: str  — the LLM response text
+    Uses a small `max_tokens` and lower temperature than the main chat
+    config because the title only needs a few words. This keeps the
+    auto-title fast (typically well under a second on a warm Ollama model)
+    so it can be safely awaited or run in the background without blocking
+    the user-visible response.
     """
     messages = args.get("messages", [])
-    config = args.get("llm_config", {})
-    completion = await _agents_chat_completion(messages, config)
+    config = args.get("llm_config", {}) or {}
+    # Override settings: small budget, low temperature. Don't trust the
+    # chat config's 4096 / 1.0 here.
+    title_config = dict(config)
+    title_config["temperature"] = float(args.get("temperature", 0.3))
+    title_config["max_tokens"] = int(args.get("max_tokens", 32))
+    completion = await _agents_chat_completion(messages, title_config)
     return {"content": completion.get("content", "")}
 
 
