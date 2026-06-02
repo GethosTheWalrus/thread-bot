@@ -64,9 +64,7 @@ update-k8s-images:
   image: alpine:3.20
   needs:
     - job: build-backend-images
-      optional: true
     - job: build-frontend-image
-      optional: true
   rules:
     - changes:
         - backend/**/*
