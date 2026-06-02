@@ -1,6 +1,5 @@
 import asyncio
 
-from temporalio.client import Client
 from temporalio.worker import Worker
 from datetime import timedelta
 from app.agents_provider import build_agents_model_provider
@@ -12,6 +11,7 @@ from app.activities.llm_activities import (
     execute_agent_tool_activity, sync_discord_title,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
+from app.temporal_client import connect_temporal_client
 
 
 async def run_worker():
@@ -36,11 +36,7 @@ async def run_worker():
         model_provider=build_agents_model_provider(llm_config),
     )
 
-    client = await Client.connect(
-        f"{settings.TEMPORAL_HOST}:{settings.TEMPORAL_PORT}",
-        namespace=settings.TEMPORAL_NAMESPACE,
-        plugins=[plugin],
-    )
+    client = await connect_temporal_client(plugins=[plugin])
 
 
     from temporalio.worker import UnsandboxedWorkflowRunner

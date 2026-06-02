@@ -77,10 +77,9 @@ def get_temporal_data_converter():
     )
 
 
-async def connect_temporal_client() -> Client:
+async def connect_temporal_client(**kwargs) -> Client:
     settings = get_settings()
     data_converter = get_temporal_data_converter()
-    kwargs = {}
     if data_converter is not None:
         kwargs["data_converter"] = data_converter
     return await Client.connect(
