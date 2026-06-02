@@ -79,43 +79,30 @@ update-k8s-images:
         - docker-compose.yml
         - .gitlab-ci.yml
   before_script:
-    - apk add --no-cache git curl jq
+    - apk add --no-cache git
     - git config user.name "gitlab-ci"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
   script:
     - |
-      # Only point the manifest at $IMAGE_TAG if a build actually produced that
-      # tag in the registry for each kind. If no build ran for this commit, the
-      # tag does not exist and we must not stamp it (would leave pods referencing
-      # a non-existent image).
-      api="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/registry/repositories"
+      # Stamp only the image groups whose build jobs run for this commit's
+      # changed paths. Avoid GitLab registry API calls so HTTP-only GitLab
+      # instances do not fail this job while checking for pushed tags.
+      changed_files=$(git diff --name-only "${CI_COMMIT_BEFORE_SHA:-}" "$CI_COMMIT_SHA" 2>/dev/null || true)
+      if [ -z "$changed_files" ]; then
+        changed_files=$(git show --name-only --format= "$CI_COMMIT_SHA")
+      fi
+      printf '%s\n' "$changed_files"
 
-      registry_repo_id() {
-        local image="$1"
-        curl -fsS -u "gitlab-ci-token:${CI_JOB_TOKEN}" "${api}" \
-          | jq -r --arg image "$image" '.[] | select(.path == $image or .location == $image) | .id' \
-          | head -n 1
-      }
-
-      backend_image_repo=$(registry_repo_id "$REGISTRY_IMAGE/backend")
-      frontend_image_repo=$(registry_repo_id "$REGISTRY_IMAGE/frontend")
-
-      has_tag() {
-        local repo="$1" tag="$2"
-        if [ -z "$repo" ]; then
-          return 1
-        fi
-        curl -sS -u "gitlab-ci-token:${CI_JOB_TOKEN}" \
-          "${api}/${repo}/tags?search=${tag}" \
-          | grep -q "\"name\":\"${tag}\""
+      path_changed() {
+        printf '%s\n' "$changed_files" | grep -Eq "$1"
       }
 
       want_backend=0
       want_frontend=0
-      if has_tag "$backend_image_repo" "$IMAGE_TAG"; then
+      if path_changed '^(backend/|frontend/|docker/|docker-compose\.yml$|\.gitlab-ci\.yml$)'; then
         want_backend=1
       fi
-      if has_tag "$frontend_image_repo" "$IMAGE_TAG"; then
+      if path_changed '^(frontend/|docker/|docker-compose\.yml$|\.gitlab-ci\.yml$)'; then
         want_frontend=1
       fi
 
