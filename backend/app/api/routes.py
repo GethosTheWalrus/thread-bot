@@ -146,6 +146,30 @@ async def _relay_workflow_until_complete(
         task.result()
 
 
+# ── Broadcast WebSocket (push thread-list updates to all clients) ─
+
+_broadcast_clients: set[WebSocket] = set()
+
+
+async def broadcast(event: dict) -> None:
+    """Send a JSON event to all connected broadcast WebSocket clients."""
+    dead: set[WebSocket] = set()
+    for ws in _broadcast_clients:
+        try:
+            await ws.send_json(event)
+        except Exception:
+            dead.add(ws)
+    for ws in dead:
+        _broadcast_clients.discard(ws)
+
+
+async def broadcast_thread_updated(thread_id: str) -> None:
+    await broadcast({
+        "type": "thread_updated",
+        "thread_id": thread_id,
+    })
+
+
 def _build_message_response(m) -> MessageResponse:
     return MessageResponse(
         id=m.id,
@@ -243,6 +267,19 @@ async def chat_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     raise HTTPException(status_code=426, detail="Chat streaming now uses /api/chat/ws WebSocket")
+
+
+@router.websocket("/broadcast/ws")
+async def broadcast_websocket(websocket: WebSocket):
+    await websocket.accept()
+    _broadcast_clients.add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _broadcast_clients.discard(websocket)
 
 
 @router.websocket("/chat/ws")

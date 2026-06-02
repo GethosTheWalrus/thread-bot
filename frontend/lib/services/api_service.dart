@@ -352,10 +352,19 @@ class ApiService {
     throw Exception('Failed to share to Discord: ${response.statusCode} ${response.body}');
   }
 
-  Future<void> unshareThreadFromDiscord(String threadId) async {
+ Future<void> unshareThreadFromDiscord(String threadId) async {
     final response = await http.delete(Uri.parse('$baseUrl/api/threads/$threadId/discord'));
     if (response.statusCode != 200) {
       throw Exception('Failed to disable Discord sync: ${response.statusCode}');
     }
+  }
+
+  // ── Broadcast WebSocket (push thread-list updates) ──────────────────
+
+  WebSocketChannel subscribeBroadcast() {
+    final wsUrl = _wsBaseUrl
+        .replaceFirst(RegExp(r'^https?'), r'ws')
+        .replaceFirst(RegExp(r'/$'), '');
+    return WebSocketChannel.connect(Uri.parse('$wsUrl/api/broadcast/ws'));
   }
 }

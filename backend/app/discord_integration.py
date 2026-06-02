@@ -389,6 +389,9 @@ async def start_thread_from_discord_prompt(
         reply_to_message_id=mirrored_id,
         assistant_response_prefix=f"Answering {source_message_link}: " if source_message_link else None,
     )
+    from app.api.routes import broadcast_thread_updated
+    await broadcast_thread_updated(str(thread.id))
+
     return {
         "thread_id": str(thread.id),
         "discord_thread_id": link.discord_thread_id,

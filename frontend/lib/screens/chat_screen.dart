@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:threadbot/models/message.dart';
@@ -41,6 +42,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   int _contextEstimatedTokens = 0;
   int _contextWindow = 8192;
   Timer? _threadRefreshTimer;
+  WebSocketChannel? _broadcastChannel;
 
   // Animation
   late final AnimationController _fadeController;
@@ -69,10 +71,43 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       const Duration(seconds: 10),
       (_) => _loadThreads(silent: true),
     );
+    _subscribeToBroadcast();
+  }
+
+  void _subscribeToBroadcast() {
+    _broadcastChannel = _api.subscribeBroadcast();
+    _broadcastChannel?.stream.listen(
+      (data) {
+        final event = jsonDecode(data as String) as Map<String, dynamic>;
+        if (event['type'] == 'thread_updated') {
+          if (mounted) {
+            setState(() {
+              final thread = _threads.firstWhere(
+                (t) => t.id == event['thread_id'],
+                orElse: () => ThreadListItem(
+                  id: '',
+                  title: '',
+                  createdAt: DateTime.now(),
+                  updatedAt: DateTime.now(),
+                  messageCount: 0,
+                ),
+              );
+              if (thread.id.isNotEmpty) {
+                // Thread exists — just refresh the thread list
+              }
+            });
+            _loadThreads(silent: true);
+          }
+        }
+      },
+      onError: (_) {},
+      onDone: () => _subscribeToBroadcast(),
+    );
   }
 
   @override
   void dispose() {
+    _broadcastChannel?.sink.close();
     _threadRefreshTimer?.cancel();
     _fadeController.dispose();
     _scrollController.removeListener(_onScroll);
