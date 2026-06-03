@@ -49,6 +49,7 @@ class MCPServer(Base):
     image = Column(String(255), nullable=False)
     env_vars = Column(JSONB, nullable=True, default={})
     args = Column(JSONB, nullable=True, default={})
+    registry_credentials = Column(JSONB, nullable=True, default={})
     is_active = Column(Boolean, default=True)
     cached_tools = Column(JSONB, nullable=True, default=None)  # [{name, description}] from last test
     cached_tools_at = Column(DateTime(timezone=True), nullable=True, default=None)  # last time the cache was refreshed

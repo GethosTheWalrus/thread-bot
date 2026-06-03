@@ -296,11 +296,25 @@ async def get_discord_server_tool_override_map(db: AsyncSession, guild_id: str) 
     }
 
 
-async def create_mcp_server(db: AsyncSession, name: str, image: str, env_vars: dict | None = None, args: dict | None = None) -> MCPServer:
+async def create_mcp_server(
+    db: AsyncSession,
+    name: str,
+    image: str,
+    env_vars: dict | None = None,
+    args: dict | None = None,
+    registry_credentials: dict | None = None,
+) -> MCPServer:
     from app.encryption import encrypt_dict
     encrypted_env = await encrypt_dict(env_vars or {})
     encrypted_args = await encrypt_dict(args or {})
-    server = MCPServer(name=name, image=image, env_vars=encrypted_env, args=encrypted_args)
+    encrypted_registry_credentials = await encrypt_dict(registry_credentials or {})
+    server = MCPServer(
+        name=name,
+        image=image,
+        env_vars=encrypted_env,
+        args=encrypted_args,
+        registry_credentials=encrypted_registry_credentials,
+    )
     db.add(server)
     await db.flush()
     await db.refresh(server)
@@ -345,6 +359,7 @@ async def update_mcp_server(
     image: str | None = None,
     env_vars: dict | None = None,
     args: dict | None = None,
+    registry_credentials: dict | None = None,
 ) -> MCPServer | None:
     from app.encryption import encrypt_dict
     result = await db.execute(
@@ -360,6 +375,8 @@ async def update_mcp_server(
             server.env_vars = await encrypt_dict(env_vars)
         if args is not None:
             server.args = await encrypt_dict(args)
+        if registry_credentials is not None:
+            server.registry_credentials = await encrypt_dict(registry_credentials)
         await db.flush()
         await db.refresh(server)
     return server

@@ -6,6 +6,7 @@ class MCPServer {
   final String image;
   final Map<String, dynamic> envVars;
   final Map<String, dynamic> args;
+  final Map<String, dynamic> registryCredentials;
   final bool isActive;
   final DateTime createdAt;
 
@@ -15,6 +16,7 @@ class MCPServer {
     required this.image,
     required this.envVars,
     required this.args,
+    required this.registryCredentials,
     required this.isActive,
     required this.createdAt,
   });
@@ -26,6 +28,7 @@ class MCPServer {
       image: json['image'],
       envVars: Map<String, dynamic>.from(json['env_vars'] ?? {}),
       args: Map<String, dynamic>.from(json['args'] ?? {}),
+      registryCredentials: Map<String, dynamic>.from(json['registry_credentials'] ?? {}),
       isActive: json['is_active'] ?? true,
       createdAt: DateTime.parse(json['created_at']),
     );
@@ -38,6 +41,7 @@ class MCPServer {
       'image': image,
       'env_vars': envVars,
       'args': args,
+      'registry_credentials': registryCredentials,
       'is_active': isActive,
       'created_at': createdAt.toIso8601String(),
     };

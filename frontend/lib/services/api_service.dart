@@ -204,6 +204,7 @@ class ApiService {
     required String image,
     Map<String, dynamic>? envVars,
     Map<String, dynamic>? args,
+    Map<String, dynamic>? registryCredentials,
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/mcp'),
@@ -213,6 +214,7 @@ class ApiService {
         'image': image,
         'env_vars': envVars ?? {},
         'args': args ?? {},
+        'registry_credentials': registryCredentials ?? {},
       }),
     );
 
@@ -254,7 +256,13 @@ class ApiService {
     throw Exception('Failed to test MCP server: ${response.statusCode}');
   }
 
-  Future<MCPServer> updateMCPServer(String serverId, String name, String image, Map<String, String> envVars, {Map<String, String>? args}) async {
+  Future<MCPServer> updateMCPServer(
+    String serverId,
+    String name,
+    String image,
+    Map<String, String> envVars,
+    {Map<String, String>? args, Map<String, String>? registryCredentials}
+  ) async {
     final response = await http.patch(
       Uri.parse('$baseUrl/api/mcp/$serverId'),
       headers: {'Content-Type': 'application/json'},
@@ -263,6 +271,7 @@ class ApiService {
         'image': image,
         'env_vars': envVars,
         'args': args ?? {},
+        'registry_credentials': registryCredentials ?? {},
       }),
     );
 

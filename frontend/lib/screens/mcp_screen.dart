@@ -46,6 +46,9 @@ class _MCPScreenState extends State<MCPScreen> {
   Future<void> _showServerDialog({MCPServer? server}) async {
     final nameController = TextEditingController(text: server?.name);
     final imageController = TextEditingController(text: server?.image);
+    final registryController = TextEditingController(text: server?.registryCredentials['registry']?.toString() ?? '');
+    final registryUsernameController = TextEditingController(text: server?.registryCredentials['username']?.toString() ?? '');
+    final registryPasswordController = TextEditingController(text: server?.registryCredentials['password']?.toString() ?? '');
 
     // Build initial key-value lists from existing server data
     final List<_KVEntry> envEntries = [];
@@ -74,10 +77,13 @@ class _MCPScreenState extends State<MCPScreen> {
       pageBuilder: (ctx, anim1, anim2) => _ServerDialogContent(
         nameController: nameController,
         imageController: imageController,
+        registryController: registryController,
+        registryUsernameController: registryUsernameController,
+        registryPasswordController: registryPasswordController,
         envEntries: envEntries,
         argEntries: argEntries,
         isEdit: server != null,
-        onSave: (env, args) async {
+        onSave: (env, args, registryCredentials) async {
           try {
             if (server == null) {
               await _api.createMCPServer(
@@ -85,6 +91,7 @@ class _MCPScreenState extends State<MCPScreen> {
                 image: imageController.text,
                 envVars: env,
                 args: args,
+                registryCredentials: registryCredentials,
               );
             } else {
               await _api.updateMCPServer(
@@ -93,6 +100,7 @@ class _MCPScreenState extends State<MCPScreen> {
                 imageController.text,
                 env.map((k, v) => MapEntry(k, v.toString())),
                 args: args.map((k, v) => MapEntry(k, v.toString())),
+                registryCredentials: registryCredentials.map((k, v) => MapEntry(k, v.toString())),
               );
             }
             Navigator.pop(ctx);
@@ -404,6 +412,21 @@ class _MCPScreenState extends State<MCPScreen> {
                         style: TextStyle(
                             fontSize: 12, color: Colors.white.withOpacity(0.4)),
                       ),
+                      if (server.registryCredentials.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(color: Colors.amber.withOpacity(0.25)),
+                          ),
+                          child: Text(
+                            'Private registry',
+                            style: TextStyle(fontSize: 11, color: Colors.amber[200]),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -557,15 +580,25 @@ class _KVEntry {
 class _ServerDialogContent extends StatefulWidget {
   final TextEditingController nameController;
   final TextEditingController imageController;
+  final TextEditingController registryController;
+  final TextEditingController registryUsernameController;
+  final TextEditingController registryPasswordController;
   final List<_KVEntry> envEntries;
   final List<_KVEntry> argEntries;
   final bool isEdit;
-  final Future<void> Function(Map<String, dynamic> env, Map<String, dynamic> args) onSave;
+  final Future<void> Function(
+    Map<String, dynamic> env,
+    Map<String, dynamic> args,
+    Map<String, dynamic> registryCredentials,
+  ) onSave;
   final VoidCallback onCancel;
 
   const _ServerDialogContent({
     required this.nameController,
     required this.imageController,
+    required this.registryController,
+    required this.registryUsernameController,
+    required this.registryPasswordController,
     required this.envEntries,
     required this.argEntries,
     required this.isEdit,
@@ -589,6 +622,20 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
       }
     }
     return map;
+  }
+
+  Map<String, dynamic> _registryCredentials() {
+    final registry = widget.registryController.text.trim();
+    final username = widget.registryUsernameController.text.trim();
+    final password = widget.registryPasswordController.text;
+    if (registry.isEmpty && username.isEmpty && password.isEmpty) {
+      return {};
+    }
+    return {
+      if (registry.isNotEmpty) 'registry': registry,
+      if (username.isNotEmpty) 'username': username,
+      if (password.isNotEmpty) 'password': password,
+    };
   }
 
   Widget _buildKVEditor({
@@ -743,6 +790,7 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
     required String hint,
     required IconData icon,
     int maxLines = 1,
+    bool obscureText = false,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -760,6 +808,7 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
         TextField(
           controller: controller,
           maxLines: maxLines,
+          obscureText: obscureText,
           style: const TextStyle(color: Colors.white, fontSize: 14),
           decoration: InputDecoration(
             hintText: hint,
@@ -843,8 +892,43 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                 _buildModernInput(
                   controller: widget.imageController,
                   label: 'Docker Image',
-                  hint: 'e.g. mcp/temporal:latest',
+                  hint: 'e.g. mcp/temporal:latest or registry.example.com/team/server:latest',
                   icon: Icons.layers_outlined,
+                ),
+                const SizedBox(height: 20),
+                _buildModernInput(
+                  controller: widget.registryController,
+                  label: 'Registry URL (optional)',
+                  hint: 'e.g. git.home:5050',
+                  icon: Icons.dns_outlined,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildModernInput(
+                        controller: widget.registryUsernameController,
+                        label: 'Registry Username',
+                        hint: 'username',
+                        icon: Icons.person_outline_rounded,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _buildModernInput(
+                        controller: widget.registryPasswordController,
+                        label: 'Registry Password / Token',
+                        hint: 'password or token',
+                        icon: Icons.lock_outline_rounded,
+                        obscureText: true,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Leave registry credentials blank for public images. Private registry credentials are encrypted at rest.',
+                  style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.35)),
                 ),
                 const SizedBox(height: 20),
                 _buildKVEditor(
@@ -895,7 +979,7 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                                   setState(() => _isSaving = true);
                                   final env = _entriesToMap(widget.envEntries);
                                   final args = _entriesToMap(widget.argEntries);
-                                  await widget.onSave(env, args);
+                                  await widget.onSave(env, args, _registryCredentials());
                                   if (mounted) setState(() => _isSaving = false);
                                 },
                           style: ElevatedButton.styleFrom(

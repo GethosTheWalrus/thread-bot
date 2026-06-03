@@ -98,6 +98,7 @@ class MCPServerCreate(BaseModel):
     image: str
     env_vars: Optional[dict] = {}
     args: Optional[dict] = {}
+    registry_credentials: Optional[dict] = {}
 
 
 class MCPServerResponse(BaseModel):
@@ -106,6 +107,7 @@ class MCPServerResponse(BaseModel):
     image: str
     env_vars: dict
     args: dict
+    registry_credentials: dict = {}
     is_active: bool
     created_at: datetime
 

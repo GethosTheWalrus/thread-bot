@@ -481,8 +481,9 @@ async def _execute_agent_tool(
     try:
         exec_env = info["env_vars"]
         exec_args = info.get("args")
+        exec_registry_credentials = info.get("registry_credentials")
         # Cache path: env_vars/args are None; re-decrypt from DB.
-        if exec_env is None or exec_args is None:
+        if exec_env is None or exec_args is None or exec_registry_credentials is None:
             from app.database import AsyncSessionLocal
             from app.models.models import MCPServer
             from app.encryption import decrypt_dict
@@ -498,7 +499,8 @@ async def _execute_agent_tool(
                 raise RuntimeError(f"MCP server {server_name!r} not found in DB")
             exec_env = await decrypt_dict(srv.env_vars) or {}
             exec_args = await decrypt_dict(srv.args) or {}
-        exec_params = get_mcp_server_params(info["image"], exec_env, exec_args)
+            exec_registry_credentials = await decrypt_dict(srv.registry_credentials) or {}
+        exec_params = get_mcp_server_params(info["image"], exec_env, exec_args, exec_registry_credentials)
         async with stdio_client(exec_params) as (read, write):
             async with ClientSession(read, write) as mcp_session:
                 await mcp_session.initialize()
@@ -596,7 +598,7 @@ async def discover_tools(args: dict) -> dict:
     except Exception:
         cache_ttl = 3600
 
-    def _config_hash(image: str, env_vars, args_dict) -> str:
+    def _config_hash(image: str, env_vars, args_dict, registry_credentials) -> str:
         h = hashlib.sha256()
         h.update((image or "").encode("utf-8"))
         # encrypt_dict returns the encrypted dict at rest; the cache hash
@@ -610,6 +612,10 @@ async def discover_tools(args: dict) -> dict:
             h.update(repr(sorted((args_dict or {}).items())).encode("utf-8"))
         except Exception:
             h.update(repr(args_dict).encode("utf-8"))
+        try:
+            h.update(repr(sorted((registry_credentials or {}).items())).encode("utf-8"))
+        except Exception:
+            h.update(repr(registry_credentials).encode("utf-8"))
         return h.hexdigest()
 
     def _cache_fresh(server) -> bool:
@@ -621,7 +627,7 @@ async def discover_tools(args: dict) -> dict:
         except Exception:
             return False
         # If the runtime config changed, force a refresh.
-        current_hash = _config_hash(server.image, server.env_vars, server.args)
+        current_hash = _config_hash(server.image, server.env_vars, server.args, server.registry_credentials)
         if (server.cached_tools or {}).get("__config_hash__") != current_hash:
             return False
         return True
@@ -661,6 +667,7 @@ async def discover_tools(args: dict) -> dict:
                     "image": server.image,
                     "env_vars": None,  # not used on cache path
                     "args": None,
+                    "registry_credentials": None,
                     "original_name": tname,
                     "server_name": server.name,
                 }
@@ -683,7 +690,13 @@ async def discover_tools(args: dict) -> dict:
             try:
                 decrypted_env = await decrypt_dict(server.env_vars) or {}
                 decrypted_args = await decrypt_dict(server.args) or {}
-                params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
+                decrypted_registry_credentials = await decrypt_dict(server.registry_credentials) or {}
+                params = get_mcp_server_params(
+                    server.image,
+                    decrypted_env,
+                    decrypted_args,
+                    decrypted_registry_credentials,
+                )
 
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
@@ -700,7 +713,12 @@ async def discover_tools(args: dict) -> dict:
                             })
                         cache_payload = {
                             "tools": cached_list,
-                            "__config_hash__": _config_hash(server.image, server.env_vars, server.args),
+                            "__config_hash__": _config_hash(
+                                server.image,
+                                server.env_vars,
+                                server.args,
+                                server.registry_credentials,
+                            ),
                         }
                         async with AsyncSessionLocal() as cache_db:
                             await cache_db.execute(
@@ -719,6 +737,7 @@ async def discover_tools(args: dict) -> dict:
                                 "image": server.image,
                                 "env_vars": decrypted_env,
                                 "args": decrypted_args,
+                                "registry_credentials": decrypted_registry_credentials,
                                 "original_name": tool.name,
                                 "server_name": server.name,
                             }
@@ -1290,7 +1309,31 @@ async def execute_tools(args: dict) -> dict:
             })
 
             try:
-                exec_params = get_mcp_server_params(info["image"], info["env_vars"], info.get("args"))
+                exec_env = info.get("env_vars")
+                exec_args = info.get("args")
+                exec_registry_credentials = info.get("registry_credentials")
+                if exec_env is None or exec_args is None or exec_registry_credentials is None:
+                    from app.database import AsyncSessionLocal
+                    from app.models.models import MCPServer
+                    from app.encryption import decrypt_dict
+                    from sqlalchemy import select
+
+                    async with AsyncSessionLocal() as db:
+                        result = await db.execute(
+                            select(MCPServer).where(MCPServer.name == info.get("server_name"))
+                        )
+                        srv = result.scalar_one_or_none()
+                    if srv is None:
+                        raise RuntimeError(f"MCP server {info.get('server_name')!r} not found in DB")
+                    exec_env = await decrypt_dict(srv.env_vars) or {}
+                    exec_args = await decrypt_dict(srv.args) or {}
+                    exec_registry_credentials = await decrypt_dict(srv.registry_credentials) or {}
+                exec_params = get_mcp_server_params(
+                    info["image"],
+                    exec_env,
+                    exec_args,
+                    exec_registry_credentials,
+                )
                 async with stdio_client(exec_params) as (read, write):
                     async with ClientSession(read, write) as mcp_session:
                         await mcp_session.initialize()

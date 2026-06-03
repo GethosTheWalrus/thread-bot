@@ -1020,6 +1020,7 @@ async def list_mcp_servers_endpoint(db: AsyncSession = Depends(get_db)):
     for s in servers:
         s.env_vars = await decrypt_dict(s.env_vars) or {}
         s.args = await decrypt_dict(s.args) or {}
+        s.registry_credentials = await decrypt_dict(s.registry_credentials) or {}
         result.append(s)
     return result
 
@@ -1027,10 +1028,18 @@ async def list_mcp_servers_endpoint(db: AsyncSession = Depends(get_db)):
 @router.post("/mcp", response_model=MCPServerResponse)
 async def create_mcp_server_endpoint(request: MCPServerCreate, db: AsyncSession = Depends(get_db)):
     from app.encryption import decrypt_dict
-    server = await create_mcp_server(db, request.name, request.image, request.env_vars, request.args)
+    server = await create_mcp_server(
+        db,
+        request.name,
+        request.image,
+        request.env_vars,
+        request.args,
+        request.registry_credentials,
+    )
     # Return decrypted values so the frontend can display them
     server.env_vars = await decrypt_dict(server.env_vars) or {}
     server.args = await decrypt_dict(server.args) or {}
+    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
     return server
 
 
@@ -1044,9 +1053,13 @@ async def delete_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends
 
 @router.patch("/mcp/{server_id}/toggle", response_model=MCPServerResponse)
 async def toggle_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(get_db)):
+    from app.encryption import decrypt_dict
     server = await toggle_mcp_server(db, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
+    server.env_vars = await decrypt_dict(server.env_vars) or {}
+    server.args = await decrypt_dict(server.args) or {}
+    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
     return server
 
 
@@ -1064,6 +1077,7 @@ async def update_mcp_server_endpoint(
         image=server_data.image, 
         env_vars=server_data.env_vars,
         args=server_data.args,
+        registry_credentials=server_data.registry_credentials,
     )
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
@@ -1071,6 +1085,7 @@ async def update_mcp_server_endpoint(
     # Return decrypted values so the frontend can display them
     server.env_vars = await decrypt_dict(server.env_vars) or {}
     server.args = await decrypt_dict(server.args) or {}
+    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
     return server
 
 
@@ -1090,7 +1105,8 @@ async def test_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(g
 
     decrypted_env = await decrypt_dict(server.env_vars) or {}
     decrypted_args = await decrypt_dict(server.args) or {}
-    params = get_mcp_server_params(server.image, decrypted_env, decrypted_args)
+    decrypted_registry_credentials = await decrypt_dict(server.registry_credentials) or {}
+    params = get_mcp_server_params(server.image, decrypted_env, decrypted_args, decrypted_registry_credentials)
 
     try:
         async with stdio_client(params) as (read, write):
