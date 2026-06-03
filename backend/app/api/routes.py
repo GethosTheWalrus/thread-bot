@@ -666,6 +666,8 @@ async def update_thread_endpoint(
     from app.discord_integration import sync_title_to_discord
     await sync_title_to_discord(thread_id, request.title)
 
+    await broadcast_thread_updated(str(thread_id))
+
     discord_link = await _get_discord_link_for_thread(db, thread_id)
     return _build_thread_response(thread, messages, discord_link=discord_link)
 

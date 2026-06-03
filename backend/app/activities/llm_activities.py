@@ -1354,6 +1354,13 @@ async def generate_and_update_title(args: dict) -> dict:
         await update_thread_title(db, UUID(thread_id), title_text)
         await db.commit()
 
+    try:
+        from app.api.routes import broadcast_thread_updated
+
+        await broadcast_thread_updated(thread_id)
+    except Exception:
+        pass
+
     await sync_title_to_discord(
         UUID(thread_id),
         title_text,
