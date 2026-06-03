@@ -1,18 +1,15 @@
 import asyncio
 
 from temporalio.worker import Worker
-from datetime import timedelta
-from app.agents_provider import build_agents_model_provider
-from app.config import get_llm_config, get_settings, load_settings_from_db
+from app.config import get_settings, load_settings_from_db
 from app.workflows.thread_workflow import RunThreadWorkflow
 from app.workflows.discord_index_workflow import IndexDiscordThreadWorkflow
 from app.activities.llm_activities import (
     generate_title, save_message, get_messages, update_title,
     compact_history, delete_messages_before, discover_tools,
     execute_agent_tool_activity, sync_discord_title, claim_discord_event,
-    generate_and_update_title, index_discord_thread_history,
+    generate_and_update_title, index_discord_thread_history, run_agent_response,
 )
-from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from app.temporal_client import connect_temporal_client
 
 
@@ -26,19 +23,7 @@ async def run_worker():
             if attempt == 10:
                 raise
             await asyncio.sleep(2)
-    llm_config = get_llm_config()
-
-    plugin = OpenAIAgentsPlugin(
-        model_params=ModelActivityParameters(
-            start_to_close_timeout=timedelta(seconds=llm_config.get("stream_timeout", 600)),
-            heartbeat_timeout=timedelta(seconds=120),
-            streaming_topic="threadbot-model-events",
-            streaming_batch_interval=timedelta(milliseconds=100),
-        ),
-        model_provider=build_agents_model_provider(llm_config),
-    )
-
-    client = await connect_temporal_client(plugins=[plugin])
+    client = await connect_temporal_client()
 
 
     from temporalio.worker import UnsandboxedWorkflowRunner
@@ -58,6 +43,7 @@ async def run_worker():
             delete_messages_before,
             discover_tools,
             execute_agent_tool_activity,
+            run_agent_response,
             claim_discord_event,
             index_discord_thread_history,
         ],

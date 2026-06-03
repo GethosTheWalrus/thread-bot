@@ -726,8 +726,8 @@ async def start_discord_reply_workflow(
 
     thread_id = link.thread_id
     settings = get_settings()
-    llm_config = get_llm_config().copy()
     config = await _load_fresh_discord_config()
+    llm_config = get_llm_config().copy()
     llm_config["discord"] = {
         "enabled": config.get("enabled"),
         "bot_token": config.get("bot_token"),

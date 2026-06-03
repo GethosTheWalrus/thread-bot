@@ -414,8 +414,10 @@ async def chat_websocket(websocket: WebSocket):
         await websocket.close(code=1003)
         return
 
+    from app.config import load_settings_from_db
     from app.database import AsyncSessionLocal
 
+    await load_settings_from_db()
     settings = get_settings()
     llm_config = get_llm_config().copy()
 
@@ -744,6 +746,7 @@ async def get_settings_endpoint():
         "llm_context_window": config["context_window"],
         "llm_compaction_threshold": config["compaction_threshold"],
         "llm_preserve_recent": config["preserve_recent"],
+        "llm_tool_result_max_chars": config["tool_result_max_chars"],
         "has_api_key": bool(config["api_key"]),
         "discord": DiscordSettingsResponse(
             enabled=get_discord_config()["enabled"],
