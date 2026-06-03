@@ -21,7 +21,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: backend
-          image: git.home:5050/mike/thread-bot/backend:4117e88b
+          image: git.home:5050/mike/thread-bot/backend:62081cec
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -90,7 +90,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: worker
-          image: git.home:5050/mike/thread-bot/worker:4117e88b
+          image: git.home:5050/mike/thread-bot/worker:62081cec
           imagePullPolicy: Always
           command: ["python", "-m", "app.worker"]
           envFrom:
