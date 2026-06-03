@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import timedelta
 from uuid import UUID
 
@@ -9,6 +10,34 @@ from app.config import get_discord_config, get_llm_config, get_settings
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+
+
+def normalize_discord_user_mentions(content: str, mentions: list | None = None) -> str:
+    """Make Discord user mention tokens readable to the LLM."""
+    text = content or ""
+    for mention in mentions or []:
+        user_id = None
+        display_name = None
+        if isinstance(mention, dict):
+            user_id = mention.get("id")
+            display_name = mention.get("global_name") or mention.get("username")
+        else:
+            user_id = getattr(mention, "id", None)
+            display_name = (
+                getattr(mention, "global_name", None)
+                or getattr(mention, "display_name", None)
+                or getattr(mention, "name", None)
+            )
+        if not user_id:
+            continue
+        label = f"@{display_name}" if display_name else f"Discord user {user_id}"
+        text = text.replace(f"<@{user_id}>", f"{label} (Discord user)")
+        text = text.replace(f"<@!{user_id}>", f"{label} (Discord user)")
+    return re.sub(r"<@!?(\d+)>", r"Discord user <@\1>", text)
+
+
+def _discord_user_content(content: str, mentions: list | None = None) -> str:
+    return normalize_discord_user_mentions(content, mentions).strip()
 
 
 class DiscordIntegrationError(RuntimeError):
@@ -567,7 +596,7 @@ async def start_thread_from_discord_prompt(
             str(discord_thread["id"]),
             str(discord_thread.get("name") or title_seed or "ThreadBot Thread"),
         )
-        local_content = f"{sender_name} (Discord): {prompt}"
+        local_content = _discord_user_content(prompt)
         metadata = {
             "source": "discord",
             "sender_name": sender_name,
@@ -766,7 +795,7 @@ async def reply_to_existing_discord_thread(
                 f"as ThreadBot thread {thread.id}",
                 flush=True,
             )
-        local_content = f"{sender_name} (Discord): {prompt}"
+        local_content = _discord_user_content(prompt)
         metadata = {
             "source": "discord",
             "sender_name": sender_name,
@@ -835,7 +864,7 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 if not claimed:
                     continue
                 username = author.get("global_name") or author.get("username") or "Discord user"
-                local_content = f"{username} (Discord): {content}"
+                local_content = _discord_user_content(content, message.get("mentions") or [])
                 async with AsyncSessionLocal() as db:
                     await add_message(
                         db,

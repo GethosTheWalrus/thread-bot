@@ -1403,19 +1403,18 @@ async def get_messages(thread_id: str) -> list[dict]:
 
     result = []
     for m in messages:
+        meta = m.metadata_ or {}
         # Skip thinking messages — they're display-only, not part of LLM context
         if m.role == "thinking":
             continue
         if m.role == "tool_call":
             # Reconstruct as assistant message with tool_calls for the LLM
-            meta = m.metadata_ or {}
             result.append({
                 "role": "assistant",
                 "content": None,
                 "tool_calls": meta.get("tool_calls", [])
             })
         elif m.role == "tool_result":
-            meta = m.metadata_ or {}
             result.append({
                 "role": "tool",
                 "tool_call_id": meta.get("tool_call_id", ""),
@@ -1426,7 +1425,13 @@ async def get_messages(thread_id: str) -> list[dict]:
             # Compaction summaries — pass through as system messages
             result.append({"role": "system", "content": m.content})
         else:
-            result.append({"role": m.role, "content": m.content})
+            content = m.content
+            if m.role == "user" and meta.get("source") == "discord":
+                sender_name = meta.get("sender_name")
+                prefix = f"{sender_name} (Discord): " if sender_name else None
+                if prefix and content.startswith(prefix):
+                    content = content[len(prefix):]
+            result.append({"role": m.role, "content": content})
 
     return result
 

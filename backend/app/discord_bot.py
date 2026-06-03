@@ -37,7 +37,8 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         if bot.user:
             content = content.replace(f"<@{bot.user.id}>", "")
             content = content.replace(f"<@!{bot.user.id}>", "")
-        return content.strip()
+        from app.discord_integration import normalize_discord_user_mentions
+        return normalize_discord_user_mentions(content, list(message.mentions)).strip()
 
     @bot.tree.command(name="threadbot", description="Start a new ThreadBot thread from Discord")
     @app_commands.describe(prompt="The first message to send to ThreadBot")
@@ -53,6 +54,8 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
             guild_id = str(interaction.guild_id) if interaction.guild_id else config.get("guild_id")
             guild_name = interaction.guild.name if interaction.guild else None
             sender_name = interaction.user.global_name or interaction.user.name or "Discord user"
+            from app.discord_integration import normalize_discord_user_mentions
+            prompt = normalize_discord_user_mentions(prompt)
             invoked_channel = interaction.channel
             if isinstance(invoked_channel, discord.Thread):
                 # Slash command invoked inside an existing thread — reply there.
