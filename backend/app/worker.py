@@ -13,7 +13,7 @@ from app.activities.llm_activities import (
     generate_and_update_title, index_discord_thread_history, run_agent_response,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
-from app.temporal_client import connect_temporal_client
+from app.temporal_client import build_worker_versioning_config, connect_temporal_client
 
 
 async def run_worker():
@@ -44,6 +44,12 @@ async def run_worker():
 
     from temporalio.worker import UnsandboxedWorkflowRunner
 
+    worker_kwargs = {}
+    worker_deployment_config = build_worker_versioning_config()
+    if worker_deployment_config is not None:
+        worker_kwargs["deployment_config"] = worker_deployment_config
+        worker_kwargs["use_worker_versioning"] = True
+
     worker = Worker(
         client,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
@@ -64,6 +70,7 @@ async def run_worker():
             index_discord_thread_history,
         ],
         workflow_runner=UnsandboxedWorkflowRunner(),
+        **worker_kwargs,
     )
 
     print(f"Starting worker on task queue: {settings.TEMPORAL_TASK_QUEUE}")

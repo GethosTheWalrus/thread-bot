@@ -117,16 +117,30 @@ async def connect_temporal_client(**kwargs) -> Client:
     else:
         target_host = f"{settings.TEMPORAL_HOST}:{settings.TEMPORAL_PORT}"
 
-    worker_deployment_name = os.environ.get("TEMPORAL_DEPLOYMENT_NAME")
-    build_id = os.environ.get("TEMPORAL_WORKER_BUILD_ID")
-    if worker_deployment_name and build_id:
-        from temporalio.client import WorkerDeploymentConfig, WorkerDeploymentVersion
-        kwargs["worker_deployment_options"] = WorkerDeploymentConfig(
-            version=WorkerDeploymentVersion(deployment_name=worker_deployment_name, build_id=build_id),
-        )
-
     return await Client.connect(
         target_host=target_host,
         namespace=settings.TEMPORAL_NAMESPACE,
         **kwargs,
+    )
+
+
+def build_worker_versioning_config():
+    """Build WorkerDeploymentConfig from controller-injected env vars, or None.
+
+    The Temporal Worker Controller (deployed in the cluster) sets
+    TEMPORAL_DEPLOYMENT_NAME and TEMPORAL_WORKER_BUILD_ID on every worker
+    Pod. When both are present, the worker should register itself as a
+    versioned deployment so the controller can track version health and
+    safely drain old versions.
+    """
+    deployment_name = os.environ.get("TEMPORAL_DEPLOYMENT_NAME")
+    build_id = os.environ.get("TEMPORAL_WORKER_BUILD_ID")
+    if not deployment_name or not build_id:
+        return None
+    from temporalio.common import WorkerDeploymentConfig, WorkerDeploymentVersion
+    return WorkerDeploymentConfig(
+        version=WorkerDeploymentVersion(
+            deployment_name=deployment_name,
+            build_id=build_id,
+        ),
     )
