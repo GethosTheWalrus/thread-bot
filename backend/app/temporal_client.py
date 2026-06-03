@@ -137,7 +137,7 @@ def build_worker_versioning_config():
     build_id = os.environ.get("TEMPORAL_WORKER_BUILD_ID")
     if not deployment_name or not build_id:
         return None
-    from temporalio.common import WorkerDeploymentConfig, WorkerDeploymentVersion
+    from temporalio.worker import WorkerDeploymentConfig, WorkerDeploymentVersion
     return WorkerDeploymentConfig(
         version=WorkerDeploymentVersion(
             deployment_name=deployment_name,
