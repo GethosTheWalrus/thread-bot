@@ -138,7 +138,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     prompt=prompt,
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
-                    source_event_id=f"mention-{message.id}",
+                    source_event_id=str(message.id),
                 )
             else:
                 await start_thread_from_discord_prompt(
@@ -147,7 +147,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     sender_name,
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
-                    source_event_id=f"mention-{message.id}",
+                    source_event_id=str(message.id),
                     channel_id=str(message.channel.id),
                     guild_id=guild_id,
                     guild_name=guild_name,

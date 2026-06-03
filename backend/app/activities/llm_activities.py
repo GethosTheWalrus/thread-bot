@@ -1316,6 +1316,52 @@ async def generate_title(args: dict) -> dict:
     return {"content": completion.get("content", "")}
 
 
+@defn
+async def generate_and_update_title(args: dict) -> dict:
+    """Standalone activity: generate, persist, and Discord-sync a thread title."""
+    from uuid import UUID
+
+    from app.database import AsyncSessionLocal
+    from app.database.crud import update_thread_title
+    from app.discord_integration import sync_title_to_discord
+
+    thread_id = args["thread_id"]
+    chat_history = args.get("chat_history") or []
+    llm_config = args.get("llm_config") or {}
+
+    readable = [
+        m for m in chat_history[-5:]
+        if m.get("content") and m.get("role") in ("user", "assistant")
+    ]
+    context = "\n".join([f"{m['role']}: {m['content']}" for m in readable])
+    if not context:
+        return {"thread_id": thread_id, "title": None}
+
+    title_prompt = (
+        "Generate a very short, catchy title for this conversation (max 4 words). "
+        "Reply with ONLY the title, no quotes, no labels. Context:\n" + context
+    )
+    title = await generate_title({
+        "messages": [{"role": "user", "content": title_prompt}],
+        "llm_config": llm_config.copy(),
+    })
+    title_text = title["content"] if isinstance(title, dict) else title
+    title_text = (title_text or "").strip("\"'").strip()[:50]
+    if not title_text:
+        return {"thread_id": thread_id, "title": None}
+
+    async with AsyncSessionLocal() as db:
+        await update_thread_title(db, UUID(thread_id), title_text)
+        await db.commit()
+
+    await sync_title_to_discord(
+        UUID(thread_id),
+        title_text,
+        discord_config=llm_config.get("discord"),
+    )
+    return {"thread_id": thread_id, "title": title_text}
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  EXISTING ACTIVITIES — unchanged
 # ═══════════════════════════════════════════════════════════════════════

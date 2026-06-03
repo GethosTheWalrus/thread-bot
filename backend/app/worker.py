@@ -9,6 +9,7 @@ from app.activities.llm_activities import (
     generate_title, save_message, get_messages, update_title,
     compact_history, delete_messages_before, discover_tools,
     execute_agent_tool_activity, sync_discord_title, claim_discord_event,
+    generate_and_update_title,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from app.temporal_client import connect_temporal_client
@@ -47,6 +48,7 @@ async def run_worker():
         workflows=[RunThreadWorkflow],
         activities=[
             generate_title,
+            generate_and_update_title,
             save_message,
             get_messages,
             update_title,

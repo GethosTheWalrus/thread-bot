@@ -119,7 +119,46 @@ async def send_discord_typing(
     await _send_discord_typing_quick(discord_thread_id, config.get("channel_id"), config.get("bot_token"))
 
 
-async def _keep_discord_typing_until_done(workflow_handle, discord_config: dict) -> None:
+async def _start_title_activity(
+    temporal_client: TemporalClient,
+    workflow_id: str,
+    workflow_result,
+) -> None:
+    if not isinstance(workflow_result, dict):
+        return
+    title_args = workflow_result.get("title")
+    if not title_args:
+        return
+
+    from temporalio.common import ActivityIDConflictPolicy, ActivityIDReusePolicy
+    from temporalio.exceptions import ActivityAlreadyStartedError
+    from app.activities.llm_activities import generate_and_update_title
+
+    settings = get_settings()
+    activity_id = f"title-{workflow_id}"
+    try:
+        await temporal_client.start_activity(
+            generate_and_update_title,
+            title_args,
+            id=activity_id,
+            task_queue=settings.TEMPORAL_TASK_QUEUE,
+            schedule_to_close_timeout=timedelta(seconds=90),
+            start_to_close_timeout=timedelta(seconds=60),
+            id_reuse_policy=ActivityIDReusePolicy.REJECT_DUPLICATE,
+            id_conflict_policy=ActivityIDConflictPolicy.FAIL,
+        )
+    except ActivityAlreadyStartedError:
+        return
+    except Exception as exc:
+        print(f"[title] failed to start standalone activity {activity_id}: {exc}", flush=True)
+
+
+async def _keep_discord_typing_until_done(
+    workflow_handle,
+    discord_config: dict,
+    temporal_client: TemporalClient | None = None,
+    workflow_id: str | None = None,
+) -> None:
     """Refresh Discord typing while a workflow is running.
 
     Discord typing indicators expire after a few seconds, so this runs in the
@@ -146,6 +185,11 @@ async def _keep_discord_typing_until_done(workflow_handle, discord_config: dict)
     finally:
         if not result_task.done():
             result_task.cancel()
+    if temporal_client and workflow_id and result_task.done() and not result_task.cancelled():
+        try:
+            await _start_title_activity(temporal_client, workflow_id, result_task.result())
+        except Exception as exc:
+            print(f"[title] discord watcher failed to enqueue title: {exc}", flush=True)
 
 
 def _discord_event_activity_id(guild_id: str, channel_id: str, event_id: str) -> str:
@@ -646,7 +690,12 @@ async def start_discord_reply_workflow(
         id=run_id,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
     )
-    asyncio.create_task(_keep_discord_typing_until_done(handle, llm_config["discord"]))
+    asyncio.create_task(_keep_discord_typing_until_done(
+        handle,
+        llm_config["discord"],
+        temporal_client=temporal_client,
+        workflow_id=run_id,
+    ))
 
 
 async def reply_to_existing_discord_thread(
