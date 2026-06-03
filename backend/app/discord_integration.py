@@ -40,6 +40,25 @@ def _discord_user_content(content: str, mentions: list | None = None) -> str:
     return normalize_discord_user_mentions(content, mentions).strip()
 
 
+def _discord_mentions_user(content: str, mentions: list | None, user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    if f"<@{user_id}>" in (content or "") or f"<@!{user_id}>" in (content or ""):
+        return True
+    for mention in mentions or []:
+        mention_id = mention.get("id") if isinstance(mention, dict) else getattr(mention, "id", None)
+        if str(mention_id) == str(user_id):
+            return True
+    return False
+
+
+def _strip_discord_user_mention(content: str, user_id: str | None) -> str:
+    text = content or ""
+    if not user_id:
+        return text.strip()
+    return text.replace(f"<@{user_id}>", "").replace(f"<@!{user_id}>", "").strip()
+
+
 class DiscordIntegrationError(RuntimeError):
     def __init__(
         self,
@@ -852,7 +871,10 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 author = message.get("author") or {}
                 if str(author.get("id")) == bot_user_id:
                     continue
-                content = (message.get("content") or "").strip()
+                raw_content = message.get("content") or ""
+                mentions = message.get("mentions") or []
+                should_reply = _discord_mentions_user(raw_content, mentions, bot_user_id)
+                content = _strip_discord_user_mention(raw_content, bot_user_id) if should_reply else raw_content.strip()
                 if not content:
                     continue
                 claimed = await _claim_discord_event(
@@ -864,7 +886,7 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 if not claimed:
                     continue
                 username = author.get("global_name") or author.get("username") or "Discord user"
-                local_content = _discord_user_content(content, message.get("mentions") or [])
+                local_content = _discord_user_content(content, mentions)
                 async with AsyncSessionLocal() as db:
                     await add_message(
                         db,
@@ -875,15 +897,19 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                             "source": "discord",
                             "sender_name": username,
                             "discord_message_id": str(message.get("id")),
+                            "reply_requested": should_reply,
                         },
                     )
                     await db.commit()
-                await start_discord_reply_workflow(
-                    temporal_client,
-                    link,
-                    local_content,
-                    reply_to_message_id=str(message.get("id")),
-                )
+                from app.api.routes import broadcast_thread_updated
+                await broadcast_thread_updated(str(link.thread_id))
+                if should_reply:
+                    await start_discord_reply_workflow(
+                        temporal_client,
+                        link,
+                        local_content,
+                        reply_to_message_id=str(message.get("id")),
+                    )
 
             if last_seen and last_seen != link.last_discord_message_id:
                 async with AsyncSessionLocal() as db:
