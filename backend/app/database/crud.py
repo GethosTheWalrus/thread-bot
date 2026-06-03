@@ -1,4 +1,6 @@
 from uuid import UUID
+from datetime import datetime
+
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.models import (
@@ -58,8 +60,17 @@ async def get_child_threads(db: AsyncSession, parent_id: UUID) -> list[Thread]:
     return list(result.scalars().all())
 
 
-async def add_message(db: AsyncSession, thread_id: UUID, role: str, content: str, metadata: dict | None = None) -> Message:
+async def add_message(
+    db: AsyncSession,
+    thread_id: UUID,
+    role: str,
+    content: str,
+    metadata: dict | None = None,
+    created_at: datetime | None = None,
+) -> Message:
     message = Message(thread_id=thread_id, role=role, content=content, metadata_=metadata)
+    if created_at is not None:
+        message.created_at = created_at
     db.add(message)
     await db.flush()
     await db.refresh(message)
@@ -73,6 +84,18 @@ async def get_thread_messages(db: AsyncSession, thread_id: UUID) -> list[Message
         .order_by(Message.created_at)
     )
     return list(result.scalars().all())
+
+
+async def get_thread_discord_message_ids(db: AsyncSession, thread_id: UUID) -> set[str]:
+    result = await db.execute(
+        select(Message.metadata_["discord_message_id"].astext)
+        .where(
+            Message.thread_id == thread_id,
+            Message.metadata_["source"].astext == "discord",
+            Message.metadata_["discord_message_id"].astext.is_not(None),
+        )
+    )
+    return {str(message_id) for message_id in result.scalars().all() if message_id}
 
 
 async def update_thread_title(db: AsyncSession, thread_id: UUID, title: str) -> Thread | None:
@@ -161,6 +184,29 @@ async def update_discord_link_cursor(
     last_discord_message_id: str | None,
 ) -> DiscordThreadLink:
     link.last_discord_message_id = last_discord_message_id
+    await db.flush()
+    await db.refresh(link)
+    return link
+
+
+async def update_discord_link_index_state(
+    db: AsyncSession,
+    link: DiscordThreadLink,
+    *,
+    indexed_discord_message_id: str | None = None,
+    indexed_at=None,
+    indexing_status: str | None = None,
+    indexing_error: str | None = None,
+    update_cursor: bool = False,
+) -> DiscordThreadLink:
+    if indexed_discord_message_id is not None:
+        link.indexed_discord_message_id = indexed_discord_message_id
+        if update_cursor:
+            link.last_discord_message_id = indexed_discord_message_id
+    if indexed_at is not None:
+        link.indexed_at = indexed_at
+    link.indexing_status = indexing_status
+    link.indexing_error = indexing_error
     await db.flush()
     await db.refresh(link)
     return link

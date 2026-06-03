@@ -14,6 +14,146 @@ async def claim_discord_event(args: dict) -> dict:
     return {"claimed": True, "event_id": args.get("event_id")}
 
 
+def _parse_discord_timestamp(value: str | None):
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _discord_index_message_content(message: dict) -> str:
+    content = (message.get("content") or "").strip()
+    attachments = message.get("attachments") or []
+    attachment_lines = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        url = attachment.get("url")
+        filename = attachment.get("filename") or "attachment"
+        if url:
+            attachment_lines.append(f"Attachment: {filename} {url}")
+    if attachment_lines:
+        content = "\n".join([part for part in [content, *attachment_lines] if part])
+    return content
+
+
+@defn
+async def index_discord_thread_history(args: dict) -> dict:
+    """Backfill a linked Discord thread into ThreadBot's normal message history."""
+    from datetime import datetime, timezone
+    from uuid import UUID
+
+    from app.database import AsyncSessionLocal
+    from app.database.crud import (
+        add_message,
+        get_thread_discord_message_ids,
+        update_discord_link_index_state,
+    )
+    from app.discord_integration import fetch_discord_messages, normalize_discord_user_mentions
+    from app.models.models import DiscordThreadLink
+
+    link_id = args["link_id"]
+    bot_user_id = args.get("bot_user_id")
+    max_pages = int(args.get("max_pages") or 1000)
+
+    async with AsyncSessionLocal() as db:
+        link = await db.get(DiscordThreadLink, UUID(link_id))
+        if not link or not link.is_active:
+            return {"indexed": 0, "status": "inactive"}
+        await update_discord_link_index_state(
+            db,
+            link,
+            indexed_at=datetime.now(timezone.utc),
+            indexing_status="running",
+            indexing_error=None,
+        )
+        await db.commit()
+        discord_thread_id = link.discord_thread_id
+
+    before = None
+    all_messages = []
+    for page_number in range(max_pages):
+        heartbeat({"page": page_number + 1, "indexed": len(all_messages)})
+        page = await fetch_discord_messages(discord_thread_id, before=before, limit=100)
+        if not page:
+            break
+        all_messages = page + all_messages
+        before = str(page[0].get("id"))
+        if len(page) < 100:
+            break
+
+    latest_message_id = str(all_messages[-1].get("id")) if all_messages else None
+    indexed_count = 0
+    try:
+        async with AsyncSessionLocal() as db:
+            link = await db.get(DiscordThreadLink, UUID(link_id))
+            if not link or not link.is_active:
+                return {"indexed": 0, "status": "inactive"}
+
+            existing_ids = await get_thread_discord_message_ids(db, link.thread_id)
+            for message in all_messages:
+                message_id = str(message.get("id"))
+                if not message_id or message_id in existing_ids:
+                    continue
+                author = message.get("author") or {}
+                if bot_user_id and str(author.get("id")) == str(bot_user_id):
+                    continue
+                content = _discord_index_message_content(message)
+                if not content:
+                    continue
+                username = author.get("global_name") or author.get("username") or "Discord user"
+                await add_message(
+                    db,
+                    link.thread_id,
+                    "user",
+                    normalize_discord_user_mentions(content, message.get("mentions") or []),
+                    metadata={
+                        "source": "discord",
+                        "sender_name": username,
+                        "discord_message_id": message_id,
+                        "indexed": True,
+                        "reply_requested": False,
+                    },
+                    created_at=_parse_discord_timestamp(message.get("timestamp")),
+                )
+                existing_ids.add(message_id)
+                indexed_count += 1
+
+            await update_discord_link_index_state(
+                db,
+                link,
+                indexed_discord_message_id=latest_message_id,
+                indexed_at=datetime.now(timezone.utc),
+                indexing_status="complete",
+                indexing_error=None,
+                update_cursor=True,
+            )
+            await db.commit()
+            thread_id = str(link.thread_id)
+    except Exception as exc:
+        async with AsyncSessionLocal() as db:
+            link = await db.get(DiscordThreadLink, UUID(link_id))
+            if link:
+                await update_discord_link_index_state(
+                    db,
+                    link,
+                    indexed_at=datetime.now(timezone.utc),
+                    indexing_status="failed",
+                    indexing_error=str(exc)[:1000],
+                )
+                await db.commit()
+        raise
+
+    if indexed_count:
+        from app.api.routes import broadcast_thread_updated
+        await broadcast_thread_updated(thread_id)
+
+    return {"indexed": indexed_count, "latest_message_id": latest_message_id, "status": "complete"}
+
+
 # ── Workflow stream publish helper (used by multiple activities) ──────
 async def _publish(redis_url: str, stream_channel: str, event):
     """Publish a structured event to the parent workflow stream.

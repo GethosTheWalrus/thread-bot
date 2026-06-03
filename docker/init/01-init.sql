@@ -56,6 +56,10 @@ CREATE TABLE IF NOT EXISTS discord_thread_links (
     discord_thread_id VARCHAR(255) NOT NULL UNIQUE,
     discord_thread_name VARCHAR(255) NOT NULL,
     last_discord_message_id VARCHAR(255),
+    indexed_discord_message_id VARCHAR(255),
+    indexed_at TIMESTAMPTZ,
+    indexing_status VARCHAR(50),
+    indexing_error TEXT,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

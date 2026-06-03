@@ -69,11 +69,27 @@ async def ensure_database_schema() -> None:
                 discord_thread_id VARCHAR(255) NOT NULL UNIQUE,
                 discord_thread_name VARCHAR(255) NOT NULL,
                 last_discord_message_id VARCHAR(255),
+                indexed_discord_message_id VARCHAR(255),
+                indexed_at TIMESTAMPTZ,
+                indexing_status VARCHAR(50),
+                indexing_error TEXT,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        await conn.execute(text(
+            "ALTER TABLE discord_thread_links ADD COLUMN IF NOT EXISTS indexed_discord_message_id VARCHAR(255)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE discord_thread_links ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMPTZ"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE discord_thread_links ADD COLUMN IF NOT EXISTS indexing_status VARCHAR(50)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE discord_thread_links ADD COLUMN IF NOT EXISTS indexing_error TEXT"
+        ))
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_discord_thread_links_thread_id "
             "ON discord_thread_links(thread_id)"

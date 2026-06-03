@@ -5,11 +5,12 @@ from datetime import timedelta
 from app.agents_provider import build_agents_model_provider
 from app.config import get_llm_config, get_settings, load_settings_from_db
 from app.workflows.thread_workflow import RunThreadWorkflow
+from app.workflows.discord_index_workflow import IndexDiscordThreadWorkflow
 from app.activities.llm_activities import (
     generate_title, save_message, get_messages, update_title,
     compact_history, delete_messages_before, discover_tools,
     execute_agent_tool_activity, sync_discord_title, claim_discord_event,
-    generate_and_update_title,
+    generate_and_update_title, index_discord_thread_history,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from app.temporal_client import connect_temporal_client
@@ -45,7 +46,7 @@ async def run_worker():
     worker = Worker(
         client,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
-        workflows=[RunThreadWorkflow],
+        workflows=[RunThreadWorkflow, IndexDiscordThreadWorkflow],
         activities=[
             generate_title,
             generate_and_update_title,
@@ -58,6 +59,7 @@ async def run_worker():
             discover_tools,
             execute_agent_tool_activity,
             claim_discord_event,
+            index_discord_thread_history,
         ],
         workflow_runner=UnsandboxedWorkflowRunner(),
     )

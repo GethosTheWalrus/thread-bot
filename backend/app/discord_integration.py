@@ -1,6 +1,7 @@
 import asyncio
 import re
-from datetime import timedelta
+import uuid as uuid_mod
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import aiohttp
@@ -526,10 +527,17 @@ async def post_existing_thread_to_discord(thread_id: UUID) -> str | None:
         return last_id
 
 
-async def fetch_discord_messages(discord_thread_id: str, after: str | None = None) -> list[dict]:
-    path = f"/channels/{discord_thread_id}/messages?limit=50"
+async def fetch_discord_messages(
+    discord_thread_id: str,
+    after: str | None = None,
+    before: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    path = f"/channels/{discord_thread_id}/messages?limit={max(1, min(limit, 100))}"
     if after:
         path += f"&after={after}"
+    if before:
+        path += f"&before={before}"
     data = await _request("GET", path)
     if not isinstance(data, list):
         return []
@@ -747,6 +755,60 @@ async def start_discord_reply_workflow(
     ))
 
 
+def _discord_index_in_progress(link) -> bool:
+    if link.indexing_status not in {"queued", "running"} or not link.indexed_at:
+        return False
+    indexed_at = link.indexed_at
+    if indexed_at.tzinfo is None:
+        indexed_at = indexed_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - indexed_at < timedelta(minutes=10)
+
+
+async def enqueue_stale_discord_index_workflows(
+    temporal_client: TemporalClient,
+    bot_user_id: str | None = None,
+) -> None:
+    from app.database import AsyncSessionLocal
+    from app.database.crud import get_active_discord_links, update_discord_link_index_state
+    from app.workflows.discord_index_workflow import IndexDiscordThreadWorkflow
+
+    settings = get_settings()
+    bot_user_id = bot_user_id or await get_bot_user_id()
+    async with AsyncSessionLocal() as db:
+        links = await get_active_discord_links(db)
+
+    for link in links:
+        try:
+            if _discord_index_in_progress(link):
+                continue
+            latest = await fetch_discord_messages(link.discord_thread_id, limit=1)
+            latest_message_id = str(latest[-1].get("id")) if latest else None
+            if not latest_message_id or latest_message_id == link.indexed_discord_message_id:
+                continue
+
+            async with AsyncSessionLocal() as db:
+                db_link = await db.get(type(link), link.id)
+                if not db_link or not db_link.is_active or _discord_index_in_progress(db_link):
+                    continue
+                await update_discord_link_index_state(
+                    db,
+                    db_link,
+                    indexed_at=datetime.now(timezone.utc),
+                    indexing_status="queued",
+                    indexing_error=None,
+                )
+                await db.commit()
+
+            await temporal_client.start_workflow(
+                IndexDiscordThreadWorkflow.run,
+                {"link_id": str(link.id), "bot_user_id": bot_user_id},
+                id=f"discord-index-{link.id}-{latest_message_id}-{uuid_mod.uuid4().hex[:8]}",
+                task_queue=settings.TEMPORAL_TASK_QUEUE,
+            )
+        except Exception as exc:
+            print(f"[discord] failed to enqueue index for thread {link.discord_thread_id}: {exc}", flush=True)
+
+
 async def reply_to_existing_discord_thread(
     temporal_client: TemporalClient,
     *,
@@ -857,13 +919,20 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
     bot_user_id = bot_user_id or await get_bot_user_id()
 
     from app.database import AsyncSessionLocal
-    from app.database.crud import add_message, get_active_discord_links, update_discord_link_cursor
+    from app.database.crud import (
+        add_message,
+        get_active_discord_links,
+        update_discord_link_cursor,
+        update_discord_link_index_state,
+    )
 
     async with AsyncSessionLocal() as db:
         links = await get_active_discord_links(db)
 
     for link in links:
         try:
+            if not link.last_discord_message_id and not link.indexed_discord_message_id:
+                continue
             messages = await fetch_discord_messages(link.discord_thread_id, link.last_discord_message_id)
             last_seen = link.last_discord_message_id
             for message in messages:
@@ -915,7 +984,18 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 async with AsyncSessionLocal() as db:
                     db_link = await db.get(type(link), link.id)
                     if db_link:
-                        await update_discord_link_cursor(db, db_link, last_seen)
+                        if db_link.indexed_discord_message_id:
+                            await update_discord_link_index_state(
+                                db,
+                                db_link,
+                                indexed_discord_message_id=last_seen,
+                                indexed_at=datetime.now(timezone.utc),
+                                indexing_status="complete",
+                                indexing_error=None,
+                                update_cursor=True,
+                            )
+                        else:
+                            await update_discord_link_cursor(db, db_link, last_seen)
                         await db.commit()
         except Exception as exc:
             print(f"[discord] sync failed for thread {link.thread_id}: {exc}", flush=True)
@@ -931,6 +1011,7 @@ async def discord_poll_loop(temporal_client: TemporalClient) -> None:
                 bot_user_id = bot_user_id or await get_bot_user_id()
                 await poll_discord_commands_once(temporal_client, bot_user_id)
                 await poll_discord_once(temporal_client, bot_user_id)
+                await enqueue_stale_discord_index_workflows(temporal_client, bot_user_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
