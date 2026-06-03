@@ -44,12 +44,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _modelController.text = settings['llm_model'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
       _apiKeyController.text = '';
-      _contextWindowController.text =
-          (settings['llm_context_window'] ?? 8192).toString();
-      _maxIterationsController.text =
-          (settings['llm_max_iterations'] ?? 25).toString();
-      _preserveRecentController.text =
-          (settings['llm_preserve_recent'] ?? 10).toString();
+      _contextWindowController.text = (settings['llm_context_window'] ?? 8192)
+          .toString();
+      _maxIterationsController.text = (settings['llm_max_iterations'] ?? 25)
+          .toString();
+      _preserveRecentController.text = (settings['llm_preserve_recent'] ?? 10)
+          .toString();
       _toolResultMaxCharsController.text =
           (settings['llm_tool_result_max_chars'] ?? 0).toString();
       _compactionThreshold =
@@ -59,7 +59,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _discordTokenController.text = '';
       _discordGuildController.text = discord['guild_id'] as String? ?? '';
       _discordChannelController.text = discord['channel_id'] as String? ?? '';
-      _discordPollController.text = (discord['poll_interval_seconds'] ?? 10).toString();
+      _discordPollController.text = (discord['poll_interval_seconds'] ?? 10)
+          .toString();
       await _loadDiscordServers();
     } catch (_) {
       _apiUrlController.text = '';
@@ -100,7 +101,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final contextWindow = int.tryParse(_contextWindowController.text) ?? 8192;
       final maxIterations = int.tryParse(_maxIterationsController.text) ?? 25;
       final preserveRecent = int.tryParse(_preserveRecentController.text) ?? 10;
-      final toolResultMaxChars = int.tryParse(_toolResultMaxCharsController.text) ?? 0;
+      final toolResultMaxChars =
+          int.tryParse(_toolResultMaxCharsController.text) ?? 0;
       final discordPoll = int.tryParse(_discordPollController.text) ?? 10;
 
       // Build the settings payload — only include API key if user entered one
@@ -132,7 +134,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             content: const Text('Settings saved'),
             backgroundColor: const Color(0xFF16161E),
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -143,7 +147,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             content: Text('Failed to save settings: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -190,13 +196,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF8B5CF6),
                 foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
               ),
               child: _isSaving
                   ? const SizedBox(
                       width: 16,
                       height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
                     )
                   : const Text('Save'),
             ),
@@ -210,7 +221,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             )
           : DefaultTabController(
-              length: 2,
+              length: 4,
               child: Column(
                 children: [
                   Container(
@@ -220,17 +231,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       indicatorColor: Color(0xFF8B5CF6),
                       labelColor: Colors.white,
                       unselectedLabelColor: Color(0xFF71717A),
+                      isScrollable: true,
                       tabs: [
-                        Tab(text: 'General'),
-                        Tab(text: 'Discord Servers'),
+                        Tab(text: 'About'),
+                        Tab(text: 'LLM'),
+                        Tab(text: 'Discord'),
+                        Tab(text: 'Tools'),
                       ],
                     ),
                   ),
                   Expanded(
                     child: TabBarView(
                       children: [
-                        _buildGeneralSettingsTab(),
-                        _buildDiscordServersTab(),
+                        _buildAboutSettingsTab(),
+                        _buildLlmSettingsTab(),
+                        _buildDiscordSettingsTab(),
+                        _buildToolsSettingsTab(),
                       ],
                     ),
                   ),
@@ -240,6 +256,428 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildSettingsTab(List<Widget> children, {double maxWidth = 600}) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxWidth),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: children,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAboutSettingsTab() {
+    return _buildSettingsTab([
+      _buildSection('About', 'ThreadBot v1.0', Icons.info_outline_rounded, [
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.white.withValues(alpha: 0.02),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const ThreadbotAvatar(
+                    size: 56,
+                    borderRadius: 14,
+                    showNeedle: false,
+                    showShadow: false,
+                  ),
+                  const SizedBox(width: 12),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'ThreadBot',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        'Temporal-powered AI chatbot',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF71717A),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const _FeatureRow(
+                icon: Icons.chat_bubble_outline,
+                text: 'Thread-based conversations',
+              ),
+              const _FeatureRow(
+                icon: Icons.webhook_outlined,
+                text: 'Temporal workflow orchestration',
+              ),
+              const _FeatureRow(
+                icon: Icons.api_outlined,
+                text: 'OpenAI-compatible API support',
+              ),
+              const _FeatureRow(
+                icon: Icons.layers_outlined,
+                text: 'Dockerized MCP tool servers',
+              ),
+              const _FeatureRow(
+                icon: Icons.compress_rounded,
+                text: 'Automatic context compaction',
+              ),
+              const _FeatureRow(
+                icon: Icons.cloud_outlined,
+                text: 'Docker & Kubernetes ready',
+              ),
+            ],
+          ),
+        ),
+      ]),
+    ]);
+  }
+
+  Widget _buildLlmSettingsTab() {
+    return _buildSettingsTab([
+      _buildSection(
+        'LLM Configuration',
+        'Configure the AI model backend',
+        Icons.psychology_outlined,
+        [
+          _buildField(
+            controller: _apiUrlController,
+            label: 'API URL',
+            hint: 'http://localhost:11434/v1',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _apiKeyController,
+            label: 'API Key',
+            hint: 'Leave blank to keep current key',
+            icon: Icons.key_rounded,
+            obscure: true,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _modelController,
+            label: 'Model',
+            hint: 'llama3.1',
+            icon: Icons.smart_toy_outlined,
+          ),
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
+        'Context Management',
+        'Control how long conversations are handled',
+        Icons.compress_rounded,
+        [
+          _buildField(
+            controller: _contextWindowController,
+            label: 'Context Window (tokens)',
+            hint: '8192',
+            icon: Icons.token_outlined,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 24),
+          _buildField(
+            controller: _maxIterationsController,
+            label: 'Max Conversational Turns',
+            hint: '25',
+            icon: Icons.repeat_rounded,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 24),
+          _buildThresholdSlider(),
+          const SizedBox(height: 24),
+          _buildField(
+            controller: _preserveRecentController,
+            label: 'Preserve Recent Messages',
+            hint: '10',
+            icon: Icons.history_rounded,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'When estimated token usage exceeds ${(_compactionThreshold * 100).round()}% of the context window, older messages are summarized automatically.',
+          ),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _buildToolsSettingsTab() {
+    return _buildSettingsTab([
+      _buildSection(
+        'Tool Calls',
+        'Configure MCP tool result handling',
+        Icons.build_outlined,
+        [
+          _buildField(
+            controller: _toolResultMaxCharsController,
+            label: 'Tool Result Max Characters',
+            hint: '0 (no limit)',
+            icon: Icons.content_cut_rounded,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'Truncates large tool results before sending to the LLM. The LLM is told when results are truncated so it can adjust its queries. Set to 0 to disable truncation.',
+          ),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _buildDiscordSettingsTab() {
+    return RefreshIndicator(
+      onRefresh: _loadDiscordServers,
+      child: _buildSettingsTab([
+        _buildSection(
+          'Discord Integration',
+          'Share selected ThreadBot conversations to Discord threads',
+          Icons.forum_outlined,
+          [
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _discordEnabled,
+              onChanged: (v) => setState(() => _discordEnabled = v),
+              activeThumbColor: const Color(0xFF8B5CF6),
+              title: const Text('Enable Discord sync'),
+              subtitle: Text(
+                'Requires a Discord bot token with channel, thread, and message permissions.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white.withValues(alpha: 0.4),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _discordTokenController,
+              label: 'Discord Bot Token',
+              hint: 'Leave blank to keep current token',
+              icon: Icons.key_rounded,
+              obscure: true,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _discordGuildController,
+              label: 'Default Server ID',
+              hint: 'Discord guild/server ID',
+              icon: Icons.groups_outlined,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _discordChannelController,
+              label: 'Default Channel ID',
+              hint: 'Channel where ThreadBot creates Discord threads',
+              icon: Icons.tag_rounded,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _discordPollController,
+              label: 'Reply Poll Interval (seconds)',
+              hint: '10',
+              icon: Icons.sync_rounded,
+              keyboardType: TextInputType.number,
+            ),
+          ],
+        ),
+        const SizedBox(height: 32),
+        _buildDiscordServersPanel(),
+      ], maxWidth: 760),
+    );
+  }
+
+  Widget _buildInfoBox(String text) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: const Color(0xFF8B5CF6).withValues(alpha: 0.06),
+        border: Border.all(
+          color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.info_outline_rounded,
+            size: 16,
+            color: Color(0xFF8B5CF6),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.5),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDiscordServersPanel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.discord, color: Color(0xFF8B5CF6)),
+            const SizedBox(width: 8),
+            const Text(
+              'Discord Servers',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            Text(
+              'Connected servers and MCP defaults',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (_isLoadingDiscordServers)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(40),
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
+              ),
+            ),
+          )
+        else if (_discordServers.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              color: Colors.white.withValues(alpha: 0.03),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: Text(
+              'No Discord servers are connected yet. Create or tag ThreadBot in Discord to register a server here.',
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.white.withValues(alpha: 0.45),
+              ),
+            ),
+          )
+        else
+          ..._discordServers.map((server) => _buildDiscordServerRow(server)),
+      ],
+    );
+  }
+
+  Widget _buildDiscordServerRow(Map<String, dynamic> server) {
+    final guildName =
+        server['guild_name'] as String? ??
+        server['guild_id'] as String? ??
+        'Discord Server';
+    final guildId = server['guild_id'] as String? ?? '';
+    final threadCount = server['thread_count'] as int? ?? 0;
+    final defaultChannelId = server['default_channel_id'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _openDiscordServerOverrides(server),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: Colors.white.withValues(alpha: 0.03),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: const Color(0xFF5865F2).withValues(alpha: 0.15),
+                ),
+                child: const Icon(Icons.discord, color: Color(0xFF5865F2)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      guildName,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      guildId,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.45),
+                      ),
+                    ),
+                    if (defaultChannelId.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Default channel: $defaultChannelId',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: 0.45),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '$threadCount thread${threadCount == 1 ? '' : 's'}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withValues(alpha: 0.45),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: Colors.white.withValues(alpha: 0.35),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ignore: unused_element
   Widget _buildGeneralSettingsTab() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(24),
@@ -320,7 +758,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF8B5CF6)),
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Color(0xFF8B5CF6),
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -361,7 +803,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline_rounded, size: 16, color: Color(0xFF8B5CF6)),
+                        const Icon(
+                          Icons.info_outline_rounded,
+                          size: 16,
+                          color: Color(0xFF8B5CF6),
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
@@ -391,7 +837,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: const Text('Enable Discord sync'),
                     subtitle: Text(
                       'Requires a Discord bot token with channel, thread, and message permissions.',
-                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.4),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -437,31 +886,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
                       color: Colors.white.withValues(alpha: 0.02),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.06),
+                      ),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            const ThreadbotAvatar(size: 56, borderRadius: 14, showNeedle: false, showShadow: false),
+                            const ThreadbotAvatar(
+                              size: 56,
+                              borderRadius: 14,
+                              showNeedle: false,
+                              showShadow: false,
+                            ),
                             const SizedBox(width: 12),
                             const Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text('ThreadBot', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                                Text('Temporal-powered AI chatbot', style: TextStyle(fontSize: 12, color: Color(0xFF71717A))),
+                                Text(
+                                  'ThreadBot',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Text(
+                                  'Temporal-powered AI chatbot',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFF71717A),
+                                  ),
+                                ),
                               ],
                             ),
                           ],
                         ),
                         const SizedBox(height: 16),
-                        const _FeatureRow(icon: Icons.chat_bubble_outline, text: 'Thread-based conversations'),
-                        const _FeatureRow(icon: Icons.webhook_outlined, text: 'Temporal workflow orchestration'),
-                        const _FeatureRow(icon: Icons.api_outlined, text: 'OpenAI-compatible API support'),
-                        const _FeatureRow(icon: Icons.layers_outlined, text: 'Dockerized MCP tool servers'),
-                        const _FeatureRow(icon: Icons.compress_rounded, text: 'Automatic context compaction'),
-                        const _FeatureRow(icon: Icons.cloud_outlined, text: 'Docker & Kubernetes ready'),
+                        const _FeatureRow(
+                          icon: Icons.chat_bubble_outline,
+                          text: 'Thread-based conversations',
+                        ),
+                        const _FeatureRow(
+                          icon: Icons.webhook_outlined,
+                          text: 'Temporal workflow orchestration',
+                        ),
+                        const _FeatureRow(
+                          icon: Icons.api_outlined,
+                          text: 'OpenAI-compatible API support',
+                        ),
+                        const _FeatureRow(
+                          icon: Icons.layers_outlined,
+                          text: 'Dockerized MCP tool servers',
+                        ),
+                        const _FeatureRow(
+                          icon: Icons.compress_rounded,
+                          text: 'Automatic context compaction',
+                        ),
+                        const _FeatureRow(
+                          icon: Icons.cloud_outlined,
+                          text: 'Docker & Kubernetes ready',
+                        ),
                       ],
                     ),
                   ),
@@ -474,6 +960,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildDiscordServersTab() {
     return RefreshIndicator(
       onRefresh: _loadDiscordServers,
@@ -490,11 +977,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     const Icon(Icons.discord, color: Color(0xFF8B5CF6)),
                     const SizedBox(width: 8),
-                    const Text('Discord Servers', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const Text(
+                      'Discord Servers',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const Spacer(),
                     Text(
                       'Connected servers and MCP defaults',
-                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.4),
+                      ),
                     ),
                   ],
                 ),
@@ -503,7 +999,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Center(
                     child: Padding(
                       padding: EdgeInsets.all(40),
-                      child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6))),
+                      child: CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
+                      ),
                     ),
                   )
                 else if (_discordServers.isEmpty)
@@ -513,19 +1011,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(16),
                       color: Colors.white.withValues(alpha: 0.03),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.06),
+                      ),
                     ),
                     child: Text(
                       'No Discord servers are connected yet. Create or tag ThreadBot in Discord to register a server here.',
-                      style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.45)),
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.45),
+                      ),
                     ),
                   )
                 else
                   ..._discordServers.map((server) {
-                    final guildName = server['guild_name'] as String? ?? server['guild_id'] as String? ?? 'Discord Server';
+                    final guildName =
+                        server['guild_name'] as String? ??
+                        server['guild_id'] as String? ??
+                        'Discord Server';
                     final guildId = server['guild_id'] as String? ?? '';
                     final threadCount = server['thread_count'] as int? ?? 0;
-                    final defaultChannelId = server['default_channel_id'] as String? ?? '';
+                    final defaultChannelId =
+                        server['default_channel_id'] as String? ?? '';
                     return Padding(
                       padding: const EdgeInsets.only(bottom: 12),
                       child: InkWell(
@@ -537,7 +1044,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(16),
                             color: Colors.white.withValues(alpha: 0.03),
-                            border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.06),
+                            ),
                           ),
                           child: Row(
                             children: [
@@ -547,26 +1056,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 alignment: Alignment.center,
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(12),
-                                  color: const Color(0xFF5865F2).withValues(alpha: 0.15),
+                                  color: const Color(
+                                    0xFF5865F2,
+                                  ).withValues(alpha: 0.15),
                                 ),
-                                child: const Icon(Icons.discord, color: Color(0xFF5865F2)),
+                                child: const Icon(
+                                  Icons.discord,
+                                  color: Color(0xFF5865F2),
+                                ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(guildName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                                    Text(
+                                      guildName,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                     const SizedBox(height: 4),
                                     Text(
                                       guildId,
-                                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45)),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.white.withValues(
+                                          alpha: 0.45,
+                                        ),
+                                      ),
                                     ),
                                     if (defaultChannelId.isNotEmpty) ...[
                                       const SizedBox(height: 4),
                                       Text(
                                         'Default channel: $defaultChannelId',
-                                        style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45)),
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.white.withValues(
+                                            alpha: 0.45,
+                                          ),
+                                        ),
                                       ),
                                     ],
                                   ],
@@ -575,10 +1105,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.end,
                                 children: [
-                                  Text('$threadCount thread${threadCount == 1 ? '' : 's'}',
-                                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45))),
+                                  Text(
+                                    '$threadCount thread${threadCount == 1 ? '' : 's'}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.white.withValues(
+                                        alpha: 0.45,
+                                      ),
+                                    ),
+                                  ),
                                   const SizedBox(height: 4),
-                                  Icon(Icons.chevron_right_rounded, color: Colors.white.withValues(alpha: 0.35)),
+                                  Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: Colors.white.withValues(alpha: 0.35),
+                                  ),
                                 ],
                               ),
                             ],
@@ -601,9 +1141,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (guildId == null || guildId.isEmpty) return;
 
       final response = await _api.getDiscordServerMcpOverrides(guildId);
-      final guildName = response['guild_name'] as String? ?? server['guild_name'] as String? ?? guildId;
-      final mcpServers = (response['servers'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
-      final overrides = (response['overrides'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      final guildName =
+          response['guild_name'] as String? ??
+          server['guild_name'] as String? ??
+          guildId;
+      final mcpServers = (response['servers'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
+      final overrides = (response['overrides'] as List<dynamic>? ?? [])
+          .cast<Map<String, dynamic>>();
       final serverOverrides = <String, bool>{};
       final toolOverrides = <String, bool>{};
       for (final item in overrides) {
@@ -612,7 +1157,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         if (toolName == null) {
           serverOverrides[serverId] = item['enabled'] as bool? ?? false;
         } else {
-          toolOverrides['$serverId:$toolName'] = item['enabled'] as bool? ?? false;
+          toolOverrides['$serverId:$toolName'] =
+              item['enabled'] as bool? ?? false;
         }
       }
       final expanded = <String>{};
@@ -623,10 +1169,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final serverEnabled = serverOverrides[id] ?? false;
         serverState[id] = serverEnabled;
         final tools = (item['tools'] as List<dynamic>? ?? []);
-        final hasToolOverrides = toolOverrides.keys.any((key) => key.startsWith('$id:'));
+        final hasToolOverrides = toolOverrides.keys.any(
+          (key) => key.startsWith('$id:'),
+        );
         for (final tool in tools) {
           final toolName = (tool as Map<String, dynamic>)['name'].toString();
-          toolState['$id:$toolName'] = toolOverrides['$id:$toolName'] ?? (hasToolOverrides ? false : serverEnabled);
+          toolState['$id:$toolName'] =
+              toolOverrides['$id:$toolName'] ??
+              (hasToolOverrides ? false : serverEnabled);
         }
       }
 
@@ -638,8 +1188,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             builder: (ctx, setDialogState) {
               return AlertDialog(
                 backgroundColor: const Color(0xFF1B1B26),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                title: Text(guildName, style: const TextStyle(color: Colors.white)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                title: Text(
+                  guildName,
+                  style: const TextStyle(color: Colors.white),
+                ),
                 content: SizedBox(
                   width: 680,
                   height: 500,
@@ -647,29 +1202,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ? Center(
                           child: Text(
                             'No MCP servers configured yet.',
-                            style: TextStyle(color: Colors.white.withValues(alpha: 0.45)),
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.45),
+                            ),
                           ),
                         )
                       : ListView.separated(
                           itemCount: mcpServers.length,
-                          separatorBuilder: (_, __) => const SizedBox(height: 8),
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 8),
                           itemBuilder: (_, index) {
                             final item = mcpServers[index];
                             final id = item['id'].toString();
                             final name = item['name']?.toString() ?? id;
-                            final tools = (item['tools'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+                            final tools =
+                                (item['tools'] as List<dynamic>? ?? [])
+                                    .cast<Map<String, dynamic>>();
                             final enabled = serverState[id] ?? false;
                             final isExpanded = expanded.contains(id);
                             return Container(
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
                                 color: Colors.white.withValues(alpha: 0.03),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                ),
                               ),
                               child: Column(
                                 children: [
                                   Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 12,
+                                      vertical: 8,
+                                    ),
                                     child: Row(
                                       children: [
                                         IconButton(
@@ -686,19 +1251,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                                   });
                                                 },
                                           icon: Icon(
-                                            isExpanded ? Icons.expand_less : Icons.expand_more,
-                                            color: Colors.white.withValues(alpha: tools.isEmpty ? 0.2 : 0.55),
+                                            isExpanded
+                                                ? Icons.expand_less
+                                                : Icons.expand_more,
+                                            color: Colors.white.withValues(
+                                              alpha: tools.isEmpty ? 0.2 : 0.55,
+                                            ),
                                           ),
                                         ),
                                         Expanded(
                                           child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
                                             children: [
-                                              Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                              Text(
+                                                name,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
                                               const SizedBox(height: 4),
                                               Text(
                                                 '${tools.length} cached tool${tools.length == 1 ? '' : 's'}',
-                                                style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: Colors.white
+                                                      .withValues(alpha: 0.4),
+                                                ),
                                               ),
                                             ],
                                           ),
@@ -709,12 +1289,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             setDialogState(() {
                                               serverState[id] = value;
                                               for (final tool in tools) {
-                                                final toolName = tool['name'].toString();
-                                                toolState['$id:$toolName'] = value;
+                                                final toolName = tool['name']
+                                                    .toString();
+                                                toolState['$id:$toolName'] =
+                                                    value;
                                               }
                                             });
                                           },
-                                          activeThumbColor: const Color(0xFF8B5CF6),
+                                          activeThumbColor: const Color(
+                                            0xFF8B5CF6,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -722,37 +1306,70 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   if (isExpanded && tools.isNotEmpty)
                                     Container(
                                       decoration: BoxDecoration(
-                                        border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
+                                        border: Border(
+                                          top: BorderSide(
+                                            color: Colors.white.withValues(
+                                              alpha: 0.06,
+                                            ),
+                                          ),
+                                        ),
                                       ),
                                       child: Column(
                                         children: tools.map((tool) {
-                                          final toolName = tool['name'].toString();
-                                          final description = tool['description']?.toString() ?? '';
+                                          final toolName = tool['name']
+                                              .toString();
+                                          final description =
+                                              tool['description']?.toString() ??
+                                              '';
                                           final key = '$id:$toolName';
-                                          final toolEnabled = toolState[key] ?? false;
+                                          final toolEnabled =
+                                              toolState[key] ?? false;
                                           return Padding(
-                                            padding: const EdgeInsets.only(left: 48, right: 12, top: 6, bottom: 6),
+                                            padding: const EdgeInsets.only(
+                                              left: 48,
+                                              right: 12,
+                                              top: 6,
+                                              bottom: 6,
+                                            ),
                                             child: Row(
                                               children: [
                                                 Expanded(
                                                   child: Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
                                                     children: [
                                                       Text(
                                                         toolName,
                                                         style: TextStyle(
                                                           fontSize: 13,
                                                           color: enabled
-                                                              ? Colors.white.withValues(alpha: 0.82)
-                                                              : Colors.white.withValues(alpha: 0.35),
+                                                              ? Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.82,
+                                                                    )
+                                                              : Colors.white
+                                                                    .withValues(
+                                                                      alpha:
+                                                                          0.35,
+                                                                    ),
                                                         ),
                                                       ),
-                                                      if (description.isNotEmpty)
+                                                      if (description
+                                                          .isNotEmpty)
                                                         Text(
                                                           description,
                                                           maxLines: 1,
-                                                          overflow: TextOverflow.ellipsis,
-                                                          style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.35)),
+                                                          overflow: TextOverflow
+                                                              .ellipsis,
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: Colors.white
+                                                                .withValues(
+                                                                  alpha: 0.35,
+                                                                ),
+                                                          ),
                                                         ),
                                                     ],
                                                   ),
@@ -760,9 +1377,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                                 Switch(
                                                   value: enabled && toolEnabled,
                                                   onChanged: enabled
-                                                      ? (value) => setDialogState(() => toolState[key] = value)
+                                                      ? (
+                                                          value,
+                                                        ) => setDialogState(
+                                                          () => toolState[key] =
+                                                              value,
+                                                        )
                                                       : null,
-                                                  activeThumbColor: const Color(0xFF8B5CF6),
+                                                  activeThumbColor: const Color(
+                                                    0xFF8B5CF6,
+                                                  ),
                                                 ),
                                               ],
                                             ),
@@ -779,11 +1403,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                    child: const Text(
+                      'Cancel',
+                      style: TextStyle(color: Colors.white70),
+                    ),
                   ),
                   TextButton(
                     onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('Save', style: TextStyle(color: Color(0xFF8B5CF6))),
+                    child: const Text(
+                      'Save',
+                      style: TextStyle(color: Color(0xFF8B5CF6)),
+                    ),
                   ),
                 ],
               );
@@ -794,19 +1424,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
       if (saved != true) return;
 
-      await _api.saveDiscordServerMcpOverrides(
-        guildId,
-        [
-          for (final entry in serverState.entries)
-            {'server_id': entry.key, 'tool_name': null, 'enabled': entry.value},
-          for (final entry in toolState.entries)
-            {
-              'server_id': entry.key.split(':').first,
-              'tool_name': entry.key.substring(entry.key.indexOf(':') + 1),
-              'enabled': entry.value,
-            },
-        ],
-      );
+      await _api.saveDiscordServerMcpOverrides(guildId, [
+        for (final entry in serverState.entries)
+          {'server_id': entry.key, 'tool_name': null, 'enabled': entry.value},
+        for (final entry in toolState.entries)
+          {
+            'server_id': entry.key.split(':').first,
+            'tool_name': entry.key.substring(entry.key.indexOf(':') + 1),
+            'enabled': entry.value,
+          },
+      ]);
       await _loadDiscordServers();
     } catch (e) {
       if (mounted) {
@@ -815,7 +1442,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             content: Text('Failed to update Discord server overrides: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -875,15 +1504,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('50%', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3))),
-            Text('95%', style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.3))),
+            Text(
+              '50%',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.3),
+              ),
+            ),
+            Text(
+              '95%',
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.white.withValues(alpha: 0.3),
+              ),
+            ),
           ],
         ),
       ],
     );
   }
 
-  Widget _buildSection(String title, String subtitle, IconData icon, List<Widget> children) {
+  Widget _buildSection(
+    String title,
+    String subtitle,
+    IconData icon,
+    List<Widget> children,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -891,11 +1537,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Icon(icon, size: 20, color: const Color(0xFF8B5CF6)),
             const SizedBox(width: 8),
-            Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            Text(
+              title,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
           ],
         ),
         const SizedBox(height: 4),
-        Text(subtitle, style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.4))),
+        Text(
+          subtitle,
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.white.withValues(alpha: 0.4),
+          ),
+        ),
         const SizedBox(height: 16),
         ...children,
       ],
@@ -949,7 +1604,10 @@ class _FeatureRow extends StatelessWidget {
         children: [
           Icon(icon, size: 14, color: const Color(0xFF8B5CF6)),
           const SizedBox(width: 8),
-          Text(text, style: const TextStyle(fontSize: 13, color: Color(0xFFA1A1AA))),
+          Text(
+            text,
+            style: const TextStyle(fontSize: 13, color: Color(0xFFA1A1AA)),
+          ),
         ],
       ),
     );
