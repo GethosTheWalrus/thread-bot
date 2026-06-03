@@ -1299,11 +1299,9 @@ async def stream_response(args: dict) -> dict:
 async def generate_title(args: dict) -> dict:
     """Lightweight LLM call to produce a short thread title.
 
-    Uses a small `max_tokens` and lower temperature than the main chat
-    config because the title only needs a few words. This keeps the
-    auto-title fast (typically well under a second on a warm Ollama model)
-    so it can be safely awaited or run in the background without blocking
-    the user-visible response.
+    Uses a lower temperature than the main chat config. Some local models
+    consume a few hundred output tokens before emitting visible text, so the
+    token budget cannot be as tiny as the final title length.
     """
     messages = args.get("messages", [])
     config = args.get("llm_config", {}) or {}
@@ -1311,7 +1309,7 @@ async def generate_title(args: dict) -> dict:
     # chat config's 4096 / 1.0 here.
     title_config = dict(config)
     title_config["temperature"] = float(args.get("temperature", 0.3))
-    title_config["max_tokens"] = int(args.get("max_tokens", 32))
+    title_config["max_tokens"] = int(args.get("max_tokens", 512))
     completion = await _agents_chat_completion(messages, title_config)
     return {"content": completion.get("content", "")}
 
@@ -1348,6 +1346,7 @@ async def generate_and_update_title(args: dict) -> dict:
     title_text = title["content"] if isinstance(title, dict) else title
     title_text = (title_text or "").strip("\"'").strip()[:50]
     if not title_text:
+        print(f"[title] empty title output for thread {thread_id}", flush=True)
         return {"thread_id": thread_id, "title": None}
 
     async with AsyncSessionLocal() as db:
