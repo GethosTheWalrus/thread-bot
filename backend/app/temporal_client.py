@@ -147,3 +147,7 @@ def build_worker_versioning_config():
         use_worker_versioning=True,
         default_versioning_behavior=VersioningBehavior.PINNED,
     )
+
+
+def get_worker_build_id() -> str | None:
+    return os.environ.get("TEMPORAL_WORKER_BUILD_ID")

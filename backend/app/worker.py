@@ -13,7 +13,7 @@ from app.activities.llm_activities import (
     generate_and_update_title, index_discord_thread_history, run_agent_response,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
-from app.temporal_client import build_worker_versioning_config, connect_temporal_client
+from app.temporal_client import build_worker_versioning_config, connect_temporal_client, get_worker_build_id
 
 
 async def run_worker():
@@ -49,6 +49,7 @@ async def run_worker():
     if worker_deployment_config is not None:
         worker_kwargs["deployment_config"] = worker_deployment_config
         worker_kwargs["use_worker_versioning"] = True
+        worker_kwargs["build_id"] = get_worker_build_id()
 
     worker = Worker(
         client,
