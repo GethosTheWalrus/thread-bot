@@ -67,9 +67,20 @@ spec:
       targetPort: 8000
   type: ClusterIP
 ---
-# ── Worker Deployment ──────────────────────────────────────────────────────────
-apiVersion: apps/v1
-kind: Deployment
+# ── TemporalWorkerDeployment (managed by temporal-worker-controller) ─────────
+# The Temporal Worker Controller (deployed in `temporal` namespace) watches this
+# CR and creates/rolls versioned worker Deployments automatically. This gives us
+# safe, in-place worker version upgrades without breaking in-flight workflows.
+#
+# Requirements:
+#  * `registry-credentials` Secret must exist in the `threadbot` namespace
+#    (the infra `worker-namespace-prep` step mirrors it in).
+#  * `temporal` connection (TemporalConnection CR) must exist in the `temporal`
+#    namespace.
+#  * Argo CD must have the TemporalWorkerDeployment health check installed
+#    (see argocd-cm customizations in the infra repo).
+apiVersion: temporal.io/v1alpha1
+kind: TemporalWorkerDeployment
 metadata:
   name: threadbot-worker
   namespace: threadbot
@@ -77,17 +88,25 @@ metadata:
     app: threadbot-worker
 spec:
   replicas: 3
-  selector:
-    matchLabels:
-      app: threadbot-worker
+  workerOptions:
+    connectionRef:
+      name: temporal
+    temporalNamespace: default
+  rollout:
+    strategy: Progressive
+    steps:
+      - rampPercentage: 10
+        pauseDuration: 5m
+      - rampPercentage: 99
+        pauseDuration: 30s
+  sunset:
+    deleteDelay: 24h
+    scaledownDelay: 1h
   template:
-    metadata:
-      labels:
-        app: threadbot-worker
     spec:
       serviceAccountName: threadbot-sa
       imagePullSecrets:
-        - name: gitlab-registry-secret
+        - name: registry-credentials
       containers:
         - name: worker
           image: git.home:5050/mike/thread-bot/worker:9e60ac98
