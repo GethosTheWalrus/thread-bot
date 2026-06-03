@@ -10,7 +10,6 @@ with workflow.unsafe.imports_passed_through():
     import annotated_types  # noqa: F401
     import pydantic_core  # noqa: F401
     import pydantic_core.core_schema  # noqa: F401
-    from agents import Agent, FunctionTool, ModelSettings, Runner
 
 
 @defn
@@ -29,46 +28,6 @@ class RunThreadWorkflow:
     def __init__(self, input: dict) -> None:
         self._stream = WorkflowStream()
         self._events = self._stream.topic("events", type=dict)
-
-    def _agents_tools(
-        self,
-        openai_tools: list[dict],
-        mcp_tools_map: dict,
-        thread_id: str,
-        llm_config: dict,
-    ) -> list:
-        tools = []
-        for tool_def in openai_tools:
-            fn = tool_def.get("function", {})
-            tool_name = fn.get("name", "")
-
-            async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
-                return await execute_activity(
-                    "execute_agent_tool_activity",
-                    {
-                        "tool_name": name,
-                        "arguments": args or "{}",
-                        "tool_call_id": ctx.tool_call_id,
-                        "mcp_tools_map": mcp_tools_map,
-                        "thread_id": thread_id,
-                        "llm_config": llm_config,
-                    },
-                    start_to_close_timeout=timedelta(seconds=300),
-                    retry_policy=RetryPolicy(maximum_attempts=2),
-                    heartbeat_timeout=timedelta(seconds=120),
-                    summary=f"Run tool {name}",
-                )
-
-            tools.append(
-                FunctionTool(
-                    name=tool_name,
-                    description=fn.get("description") or "",
-                    params_json_schema=fn.get("parameters") or {"type": "object", "properties": {}},
-                    on_invoke_tool=invoke_tool,
-                    strict_json_schema=False,
-                )
-            )
-        return tools
 
     def _agents_input(self, messages: list[dict]) -> list[dict]:
         """Convert OpenAI chat history into Agents SDK input items."""
@@ -422,69 +381,26 @@ class RunThreadWorkflow:
                     ),
                 })
 
-            # ── Agent Run ────────────────────────────────────────────────
-            # Version 0 preserves the old inline Agents SDK execution so
-            # already-running workflows can replay deterministically.
-            # Version 1 uses the newer activity-based agent runner.
-            agent_run_version = workflow.get_version("agent-run-activity", workflow.DEFAULT_VERSION, 1)
-            if agent_run_version == workflow.DEFAULT_VERSION:
-                agent = Agent(
-                    name="ThreadBot",
-                    instructions=(
-                        "You are a helpful assistant. Use tools as many times as needed to thoroughly "
-                        "answer the user's question. Gather information, verify it, and refine your "
-                        "answer before providing a final response."
-                    ),
-                    model=llm_config.get("model"),
-                    model_settings=ModelSettings(
-                        temperature=llm_config.get("temperature", 0.7),
-                        max_tokens=llm_config.get("max_tokens", 2048),
-                        include_usage=True,
-                    ),
-                    tools=self._agents_tools(openai_tools, mcp_tools_map, thread_id, llm_config),
-                )
+            # Run the Agents SDK in an activity so each workflow builds its
+            # model provider from the llm_config captured at workflow start.
+            # The worker-level OpenAIAgentsPlugin provider is initialized once
+            # at startup and cannot safely represent runtime Settings changes.
+            agent_result = await execute_activity(
+                run_agent_response,
+                {
+                    "messages": self._agents_input(current_messages),
+                    "llm_config": llm_config,
+                    "openai_tools": openai_tools,
+                    "mcp_tools_map": mcp_tools_map,
+                    "thread_id": thread_id,
+                },
+                start_to_close_timeout=timedelta(seconds=llm_config.get("stream_timeout", 600)),
+                heartbeat_timeout=timedelta(seconds=120),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                summary="Run agent response",
+            )
 
-                result = Runner.run_streamed(
-                    agent,
-                    input=self._agents_input(current_messages),
-                    max_turns=llm_config.get("max_iterations", 25),
-                )
-                streamed_content = ""
-                async for event in result.stream_events():
-                    if event.type == "raw_response_event":
-                        raw = event.data
-                        raw_type = getattr(raw, "type", None)
-                        if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
-                            token = getattr(raw, "delta", "")
-                            if token:
-                                streamed_content += token
-                        elif raw_type == "response.completed":
-                            pass
-
-                llm_response = str(result.final_output or streamed_content or "(Agent completed without a response.)")
-                if llm_response and not streamed_content:
-                    await self._publish_final_response(llm_config, llm_response)
-            else:
-                # Run the Agents SDK in an activity so each workflow builds its
-                # model provider from the llm_config captured at workflow start.
-                # The worker-level OpenAIAgentsPlugin provider is initialized once
-                # at startup and cannot safely represent runtime Settings changes.
-                agent_result = await execute_activity(
-                    run_agent_response,
-                    {
-                        "messages": self._agents_input(current_messages),
-                        "llm_config": llm_config,
-                        "openai_tools": openai_tools,
-                        "mcp_tools_map": mcp_tools_map,
-                        "thread_id": thread_id,
-                    },
-                    start_to_close_timeout=timedelta(seconds=llm_config.get("stream_timeout", 600)),
-                    heartbeat_timeout=timedelta(seconds=120),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                    summary="Run agent response",
-                )
-
-                llm_response = str(agent_result.get("content") or "(Agent completed without a response.)")
+            llm_response = str(agent_result.get("content") or "(Agent completed without a response.)")
 
             # ── Save final assistant response ────────────────────────────
             await execute_activity(
