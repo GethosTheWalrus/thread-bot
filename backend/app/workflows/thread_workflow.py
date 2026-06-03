@@ -486,8 +486,6 @@ class RunThreadWorkflow:
             })
             should_title = len(chat_history) <= 5 or len(chat_history) % 5 == 1
 
-            await self._publish_event(llm_config, {"type": "done"})
-
             return {
                 "thread_id": thread_id,
                 "response": llm_response,

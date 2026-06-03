@@ -141,9 +141,17 @@ async def _send_workflow_terminal_event(
     try:
         result = await handle.result()
         await _start_title_activity(temporal_client, workflow_id, result)
-        await websocket.send_json({"type": "done"})
     except Exception as e:
-        await websocket.send_json({"type": "error", "content": str(e)})
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        except Exception:
+            pass
+        raise
+
+    try:
+        await websocket.send_json({"type": "done"})
+    except Exception:
+        pass
 
 
 async def _start_title_activity(
@@ -174,6 +182,7 @@ async def _start_title_activity(
             id_reuse_policy=ActivityIDReusePolicy.REJECT_DUPLICATE,
             id_conflict_policy=ActivityIDConflictPolicy.FAIL,
         )
+        print(f"[title] enqueued standalone activity {activity_id}", flush=True)
     except ActivityAlreadyStartedError:
         return
     except Exception as exc:
@@ -206,10 +215,23 @@ async def _relay_workflow_until_complete(
         {relay_task, completion_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
-    for task in pending:
-        task.cancel()
+    relay_failed = False
     for task in done:
-        task.result()
+        try:
+            task.result()
+        except (WebSocketDisconnect, RuntimeError):
+            if task is relay_task:
+                relay_failed = True
+            else:
+                raise
+
+    if relay_failed and not completion_task.done():
+        await completion_task
+
+    for task in pending:
+        if task is completion_task and task.done():
+            continue
+        task.cancel()
 
 
 # ── Broadcast WebSocket (push thread-list updates to all clients) ─

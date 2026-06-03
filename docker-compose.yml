@@ -1,6 +1,6 @@
 services:
   temporal:
-    image: temporalio/auto-setup:1.25.1
+    image: temporalio/auto-setup:1.31.0
     environment:
       - DB=postgres12
       - DB_PORT=5432
@@ -25,7 +25,7 @@ services:
       start_period: 30s
 
   temporal-ui:
-    image: temporalio/ui:latest
+    image: temporalio/ui:2.49.1
     environment:
       - TEMPORAL_ADDRESS=temporal:7233
     depends_on:

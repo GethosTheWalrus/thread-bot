@@ -147,6 +147,7 @@ async def _start_title_activity(
             id_reuse_policy=ActivityIDReusePolicy.REJECT_DUPLICATE,
             id_conflict_policy=ActivityIDConflictPolicy.FAIL,
         )
+        print(f"[title] enqueued standalone activity {activity_id}", flush=True)
     except ActivityAlreadyStartedError:
         return
     except Exception as exc:
