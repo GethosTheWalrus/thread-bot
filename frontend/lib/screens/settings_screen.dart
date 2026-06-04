@@ -492,21 +492,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 16),
           _buildImageProviderDropdown(),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _imageApiUrlController,
-            label: 'Image API URL',
-            hint: 'http://ollama.home:11434 or http://host:port/v1',
-            icon: Icons.link_rounded,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _imageModelController,
-            label: 'Image Model',
-            hint: 'x/z-image-turbo:fp8',
-            icon: Icons.auto_awesome_rounded,
-          ),
-          const SizedBox(height: 16),
           _buildField(
             controller: _publicBaseUrlController,
             label: 'Public Base URL',
@@ -514,10 +499,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             icon: Icons.public_rounded,
           ),
           const SizedBox(height: 12),
-          _buildInfoBox(
-            'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations. Select ComfyUI to submit a workflow to a local ComfyUI server (e.g. http://ollama.home:8188).',
-          ),
           if (_imageProvider == 'comfyui') ...[
+            _buildInfoBox(
+              'ComfyUI uses the workflow to decide the checkpoint/style. The bundled default is neutral SDXL on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
+            ),
             const SizedBox(height: 16),
             _buildField(
               controller: _comfyuiApiUrlController,
@@ -626,6 +611,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
               hint: 'Leave blank to use bundled SDXL pixel-art workflow',
               icon: Icons.data_object_rounded,
               maxLines: 6,
+            ),
+          ] else ...[
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _imageApiUrlController,
+              label: 'Image API URL',
+              hint: 'http://ollama.home:11434 or http://host:port/v1',
+              icon: Icons.link_rounded,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _imageModelController,
+              label: 'Image Model',
+              hint: 'x/z-image-turbo:fp8',
+              icon: Icons.auto_awesome_rounded,
+            ),
+            const SizedBox(height: 12),
+            _buildInfoBox(
+              'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations.',
             ),
           ],
         ],
