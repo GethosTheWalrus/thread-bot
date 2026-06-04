@@ -439,6 +439,57 @@ def _format_assistant_for_discord(content: str, discord_config: dict | None = No
     return f"{prefix}{content}" if prefix else content
 
 
+def _mention_display_names(user: dict) -> list[str]:
+    names = []
+    for key in ("global_name", "display_name", "username"):
+        value = (user or {}).get(key)
+        if value and value not in names:
+            names.append(str(value))
+    return names
+
+
+async def _resolve_readable_mentions_for_discord(
+    discord_thread_id: str,
+    content: str,
+    discord_config: dict | None = None,
+) -> str:
+    """Convert known readable @names back to Discord mention tokens.
+
+    Incoming Discord mentions are normalized for the LLM as @display_name.
+    If the model repeats one, Discord only sends a notification when the
+    outbound message contains the real <@user_id> token.
+    """
+    if not content or "@" not in content:
+        return content
+
+    try:
+        messages = await fetch_discord_messages(discord_thread_id, limit=100)
+    except Exception:
+        return content
+
+    name_to_id = {}
+    for message in messages:
+        author = message.get("author") or {}
+        author_id = author.get("id")
+        if author_id:
+            for name in _mention_display_names(author):
+                name_to_id.setdefault(name.casefold(), str(author_id))
+        for mention in message.get("mentions") or []:
+            mention_id = mention.get("id")
+            if not mention_id:
+                continue
+            for name in _mention_display_names(mention):
+                name_to_id.setdefault(name.casefold(), str(mention_id))
+
+    resolved = content
+    for name_key, user_id in sorted(name_to_id.items(), key=lambda item: len(item[0]), reverse=True):
+        if not name_key:
+            continue
+        pattern = re.compile(rf"(?<![\w<])@{re.escape(name_key)}(?![\w])", re.IGNORECASE)
+        resolved = pattern.sub(f"<@{user_id}>", resolved)
+    return resolved
+
+
 async def sync_message_to_discord(
     thread_id: UUID,
     role: str,
@@ -466,6 +517,12 @@ async def sync_message_to_discord(
                 return None
             discord_thread_id = link.discord_thread_id
     try:
+        if role == "assistant":
+            formatted = await _resolve_readable_mentions_for_discord(
+                discord_thread_id,
+                formatted,
+                discord_config=config,
+            )
         reply_to_message_id = config.get("reply_to_message_id") if role == "assistant" else None
         return await post_discord_message(
             discord_thread_id,
