@@ -1319,7 +1319,7 @@ async def _execute_builtin(
                 [{
                     "role": "user",
                     "content": [
-                        {"type": "input_image", "image_url": llm_image_url},
+                        {"type": "input_image", "image_url": llm_image_url, "detail": "auto"},
                         {"type": "input_text", "text": question},
                     ],
                 }],
@@ -2422,51 +2422,8 @@ async def get_messages(thread_id: str) -> list[dict]:
         messages = await get_thread_messages(db, UUID(thread_id))
 
     async def _llm_image_url(url: str) -> str:
-        """Prefer inline data URLs for ThreadBot-hosted images so local LLMs can see them."""
-        import base64
-        import mimetypes
-        import re
-        from urllib.parse import urlparse
-
-        local_match = re.search(r"/api/generated-images/([^/?#]+)", urlparse(url).path or url)
-        if not local_match:
-            return url
-
-        filename = local_match.group(1)
-        if "/" in filename or "\\" in filename or filename.startswith("."):
-            return url
-
-        raw = None
-        content_type = mimetypes.guess_type(filename)[0] or "image/png"
-        try:
-            from app.config import get_llm_config
-
-            image_dir = get_llm_config().get("generated_image_dir") or "/tmp/threadbot-generated-images"
-            path = os.path.join(image_dir, filename)
-            if os.path.isfile(path):
-                with open(path, "rb") as f:
-                    raw = f.read()
-        except Exception:
-            raw = None
-
-        if raw is None:
-            try:
-                from sqlalchemy import select
-                from app.models.models import GeneratedImage
-
-                async with AsyncSessionLocal() as db:
-                    result = await db.execute(select(GeneratedImage).where(GeneratedImage.filename == filename))
-                    image = result.scalar_one_or_none()
-                if image:
-                    raw = image.content
-                    content_type = image.content_type or content_type
-            except Exception:
-                raw = None
-
-        if not raw:
-            return url
-        encoded = base64.b64encode(raw).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        """Keep image references as URLs so Temporal activity payloads stay small."""
+        return url
 
     async def _message_content_with_images(text: str, metadata: dict) -> str | list[dict]:
         attachments = metadata.get("image_attachments") or []
@@ -2477,7 +2434,7 @@ async def get_messages(thread_id: str) -> list[dict]:
             url = attachment.get("url")
             if not isinstance(url, str) or not url.startswith(("http://", "https://", "data:image/")):
                 continue
-            image_parts.append({"type": "input_image", "image_url": await _llm_image_url(url)})
+            image_parts.append({"type": "input_image", "image_url": await _llm_image_url(url), "detail": "auto"})
         if not image_parts:
             return text
         text_without_attachment_lines = "\n".join(
