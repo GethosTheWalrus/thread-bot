@@ -52,6 +52,7 @@ from app.models.schemas import (
     DiscordServerMcpOverridesRequest,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
@@ -337,6 +338,28 @@ def _estimate_context_tokens(messages) -> int:
     return int(total_chars / 4)
 
 
+def _image_attachments_from_urls(urls: list[str] | None) -> list[dict]:
+    attachments = []
+    for idx, url in enumerate(urls or [], start=1):
+        if not isinstance(url, str) or not url.startswith(("http://", "https://", "data:image/")):
+            continue
+        attachments.append({
+            "url": url,
+            "filename": f"image-{idx}",
+            "content_type": "image/*",
+        })
+    return attachments
+
+
+def _content_with_image_lines(content: str, attachments: list[dict]) -> str:
+    lines = [content.strip()] if content and content.strip() else []
+    for attachment in attachments:
+        url = attachment.get("url")
+        if url:
+            lines.append(f"Image attachment: {attachment.get('filename') or 'image'} {url}")
+    return "\n".join(lines)
+
+
 def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None) -> ThreadResponse:
     msgs = messages or []
     config = get_llm_config()
@@ -456,7 +479,10 @@ async def chat_websocket(websocket: WebSocket):
                 ]
                 await set_thread_tool_overrides(setup_db, thread_id, overrides)
 
-        await add_message(setup_db, thread_id, "user", request.content)
+        image_attachments = _image_attachments_from_urls(request.image_urls)
+        message_metadata = {"image_attachments": image_attachments} if image_attachments else None
+        message_content = _content_with_image_lines(request.content, image_attachments)
+        await add_message(setup_db, thread_id, "user", message_content, metadata=message_metadata)
 
         # Load per-thread tool overrides (if any)
         thread_overrides = await get_thread_tool_overrides(setup_db, thread_id)
@@ -481,7 +507,7 @@ async def chat_websocket(websocket: WebSocket):
     discord_message_id = await sync_message_to_discord(
         thread_id,
         "user",
-        request.content,
+        message_content,
         discord_config=llm_config.get("discord"),
     )
     if discord_message_id and llm_config.get("discord"):
@@ -494,7 +520,7 @@ async def chat_websocket(websocket: WebSocket):
     try:
         workflow_handle = await temporal_client.start_workflow(
             RunThreadWorkflow.run,
-            {"thread_id": str(thread_id), "message": request.content, "llm_config": llm_config},
+            {"thread_id": str(thread_id), "message": message_content, "llm_config": llm_config},
             id=run_id,
             task_queue=settings.TEMPORAL_TASK_QUEUE,
         )
@@ -535,6 +561,20 @@ async def chat_websocket(websocket: WebSocket):
         pass
     finally:
         control_task.cancel()
+
+
+@router.get("/generated-images/{filename}")
+async def get_generated_image(filename: str):
+    import os
+    from app.config import get_llm_config
+
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=404, detail="Image not found")
+    image_dir = get_llm_config().get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    path = os.path.join(image_dir, filename)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(path)
 
 
 @router.get("/threads", response_model=ThreadListResponse)
@@ -739,6 +779,9 @@ async def get_settings_endpoint():
         "llm_provider": config["provider"],
         "llm_api_url": config["api_url"],
         "llm_api_key": config["api_key"],
+        "llm_image_api_url": config["image_api_url"],
+        "llm_image_model": config["image_model"],
+        "app_public_base_url": config["public_base_url"],
         "llm_temperature": config["temperature"],
         "llm_max_tokens": config["max_tokens"],
         "llm_stream_timeout": config["stream_timeout"],
@@ -767,6 +810,9 @@ async def update_settings_endpoint(
         "llm_api_url": "llm_api_url",
         "llm_api_key": "llm_api_key",
         "llm_model": "llm_model",
+        "llm_image_api_url": "llm_image_api_url",
+        "llm_image_model": "llm_image_model",
+        "app_public_base_url": "app_public_base_url",
         "llm_provider": "llm_provider",
         "llm_temperature": "llm_temperature",
         "llm_max_tokens": "llm_max_tokens",
@@ -793,6 +839,9 @@ async def update_settings_endpoint(
         "llm_model": config["model"],
         "llm_provider": config["provider"],
         "llm_api_url": config["api_url"],
+        "llm_image_api_url": config["image_api_url"],
+        "llm_image_model": config["image_model"],
+        "app_public_base_url": config["public_base_url"],
         "llm_temperature": config["temperature"],
         "llm_max_tokens": config["max_tokens"],
         "llm_stream_timeout": config["stream_timeout"],

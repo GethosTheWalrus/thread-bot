@@ -76,7 +76,15 @@ class RunThreadWorkflow:
         for message in messages:
             if message.get("role") == "thinking":
                 continue
-            total_chars += len(message.get("content") or "")
+            content = message.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        total_chars += len(part.get("text") or part.get("image_url") or "")
+                    else:
+                        total_chars += len(str(part))
+            else:
+                total_chars += len(content or "")
         return int(total_chars / 4)
 
     @run
@@ -360,6 +368,31 @@ class RunThreadWorkflow:
                                 },
                             },
                             "required": ["text"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "generate_image",
+                        "description": (
+                            "Generate an image from a text prompt using the configured image-capable model. "
+                            "Use this when the user asks you to create, draw, render, or generate an image. "
+                            "Return the generated image markdown/link to the user in your final response."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Detailed image generation prompt describing subject, composition, style, lighting, and constraints.",
+                                },
+                                "size": {
+                                    "type": "string",
+                                    "description": "Requested image size, e.g. 1024x1024, 1024x768, or 768x1024. Defaults to 1024x1024.",
+                                },
+                            },
+                            "required": ["prompt"],
                         },
                     },
                 },

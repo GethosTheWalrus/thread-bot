@@ -48,13 +48,14 @@ class ApiService {
   /// Send a message. If threadId is provided, appends to that thread.
   /// Otherwise creates a new thread.
   /// LLM config is managed server-side — no need to send it per request.
-  Stream<String> sendMessageStream(String content, {String? threadId, List<Map<String, dynamic>>? overrides}) async* {
+  Stream<String> sendMessageStream(String content, {String? threadId, List<Map<String, dynamic>>? overrides, List<String>? imageUrls}) async* {
     final body = <String, dynamic>{
       'content': content,
     };
 
     if (threadId != null) body['thread_id'] = threadId;
     if (overrides != null) body['tool_overrides'] = overrides;
+    if (imageUrls != null && imageUrls.isNotEmpty) body['image_urls'] = imageUrls;
 
     final channel = WebSocketChannel.connect(Uri.parse('$_wsBaseUrl/api/chat/ws'));
     try {

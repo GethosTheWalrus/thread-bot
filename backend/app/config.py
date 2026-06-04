@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     LLM_API_URL: str = "http://host.docker.internal:11434/v1"
     LLM_API_KEY: str = "ollama"
     LLM_MODEL: str = "llama3.1"
+    LLM_IMAGE_API_URL: str = ""
+    LLM_IMAGE_MODEL: str = ""
     LLM_PROVIDER: str = "auto"  # auto, ollama, llama_cpp, openai
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
@@ -37,6 +39,8 @@ class Settings(BaseSettings):
 
     # App
     APP_NAME: str = "ThreadBot"
+    APP_PUBLIC_BASE_URL: str = ""
+    GENERATED_IMAGE_DIR: str = "/tmp/threadbot-generated-images"
 
     # Discord integration (optional)
     DISCORD_ENABLED: bool = False
@@ -122,6 +126,10 @@ def get_llm_config() -> dict:
         "api_url": get_setting("LLM_API_URL"),
         "api_key": get_setting("LLM_API_KEY"),
         "model": get_setting("LLM_MODEL"),
+        "image_model": get_setting("LLM_IMAGE_MODEL") or get_setting("LLM_MODEL"),
+        "image_api_url": get_setting("LLM_IMAGE_API_URL") or get_setting("LLM_API_URL"),
+        "public_base_url": get_setting("APP_PUBLIC_BASE_URL") or "",
+        "generated_image_dir": get_setting("GENERATED_IMAGE_DIR") or "/tmp/threadbot-generated-images",
         "provider": get_setting("LLM_PROVIDER"),
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),

@@ -40,6 +40,28 @@ def _discord_index_message_content(message: dict) -> str:
     return content
 
 
+def _discord_index_image_attachments(message: dict) -> list[dict]:
+    images = []
+    for attachment in message.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        url = attachment.get("url") or attachment.get("proxy_url")
+        content_type = attachment.get("content_type") or ""
+        filename = attachment.get("filename") or "image"
+        is_image = content_type.startswith("image/") or filename.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+        )
+        if url and is_image:
+            images.append({
+                "url": url,
+                "filename": filename,
+                "content_type": content_type or "image/*",
+                "width": attachment.get("width"),
+                "height": attachment.get("height"),
+            })
+    return images
+
+
 @defn
 async def index_discord_thread_history(args: dict) -> dict:
     """Backfill a linked Discord thread into ThreadBot's normal message history."""
@@ -105,18 +127,22 @@ async def index_discord_thread_history(args: dict) -> dict:
                 if not content:
                     continue
                 username = author.get("global_name") or author.get("username") or "Discord user"
+                metadata = {
+                    "source": "discord",
+                    "sender_name": username,
+                    "discord_message_id": message_id,
+                    "indexed": True,
+                    "reply_requested": False,
+                }
+                image_attachments = _discord_index_image_attachments(message)
+                if image_attachments:
+                    metadata["image_attachments"] = image_attachments
                 await add_message(
                     db,
                     link.thread_id,
                     "user",
                     normalize_discord_user_mentions(content, message.get("mentions") or []),
-                    metadata={
-                        "source": "discord",
-                        "sender_name": username,
-                        "discord_message_id": message_id,
-                        "indexed": True,
-                        "reply_requested": False,
-                    },
+                    metadata=metadata,
                     created_at=_parse_discord_timestamp(message.get("timestamp")),
                 )
                 existing_ids.add(message_id)
@@ -423,7 +449,7 @@ async def _execute_agent_tool(
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
-        "json_parse", "text_count", "base64_decode", "base64_encode",
+        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
@@ -860,7 +886,10 @@ async def run_agent_response(args: dict) -> dict:
         instructions=(
             "You are a helpful assistant. Use tools as many times as needed to thoroughly "
             "answer the user's question. Gather information, verify it, and refine your "
-            "answer before providing a final response."
+            "answer before providing a final response. When user messages include images, "
+            "inspect the images directly and incorporate relevant visual details in your answer. "
+            "When the user asks to create an image, call generate_image and include the generated "
+            "image link or markdown in your final response."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -986,7 +1015,18 @@ async def llm_turn(args: dict) -> dict:
     # Publish context usage estimate
     context_window = config.get("context_window", 8192)
     response_chars = len(message.get("content", "") or "")
-    total_chars = sum(len(m.get("content", "") or "") for m in messages) + response_chars
+    def _message_chars(msg: dict) -> int:
+        content = msg.get("content")
+        if isinstance(content, list):
+            total = 0
+            for part in content:
+                if isinstance(part, dict):
+                    total += len(part.get("text") or part.get("image_url") or "")
+                else:
+                    total += len(str(part))
+            return total
+        return len(content or "")
+    total_chars = sum(_message_chars(m) for m in messages) + response_chars
     estimated_tokens = completion.get("total_tokens") or int(total_chars / 4)
     await _publish(redis_url, stream_channel, {
         "type": "context",
@@ -1225,6 +1265,9 @@ async def _execute_builtin(
         except Exception as e:
             return f"Error encoding base64: {str(e)}"
 
+    if tool_name == "generate_image":
+        return await _generate_image(tool_args, config)
+
     if tool_name == "context_overview":
         return await _context_overview(thread_id, tool_args)
 
@@ -1232,6 +1275,85 @@ async def _execute_builtin(
         return await _compact_context_topic(thread_id, tool_args, config)
 
     return f"Error: unknown built-in tool '{tool_name}'"
+
+
+async def _generate_image(tool_args: dict, config: dict) -> str:
+    """Generate an image through an OpenAI-compatible images endpoint."""
+    import base64
+    import os
+    import uuid
+    import aiohttp
+
+    prompt = str(tool_args.get("prompt") or "").strip()
+    if not prompt:
+        return "Error: prompt is required"
+    size = str(tool_args.get("size") or "1024x1024").strip()
+    api_url = (config.get("image_api_url") or config.get("api_url") or "").rstrip("/")
+    if not api_url:
+        return "Error: image API URL is not configured"
+    endpoint = f"{api_url}/images/generations"
+    payload = {
+        "model": config.get("image_model") or config.get("model"),
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+        "response_format": "url",
+    }
+    headers = {"Content-Type": "application/json"}
+    api_key = config.get("api_key")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async def _post(body: dict):
+        timeout = aiohttp.ClientTimeout(total=int(config.get("stream_timeout", 600) or 600))
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(endpoint, json=body, headers=headers) as resp:
+                text = await resp.text()
+                if resp.status >= 400:
+                    raise RuntimeError(f"HTTP {resp.status}: {text[:1000]}")
+                try:
+                    return await resp.json()
+                except Exception as exc:
+                    raise RuntimeError(f"Invalid JSON response: {text[:1000]}") from exc
+
+    try:
+        try:
+            data = await _post(payload)
+        except RuntimeError as exc:
+            if "response_format" not in str(exc):
+                raise
+            payload.pop("response_format", None)
+            data = await _post(payload)
+    except Exception as exc:
+        return f"Error generating image: {exc}"
+
+    images = data.get("data") if isinstance(data, dict) else None
+    if not images or not isinstance(images, list) or not isinstance(images[0], dict):
+        return f"Error generating image: response did not include image data"
+
+    first = images[0]
+    image_url = first.get("url")
+    if image_url:
+        return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
+
+    b64_json = first.get("b64_json")
+    if not b64_json:
+        return "Error generating image: response did not include url or b64_json"
+    try:
+        raw = base64.b64decode(b64_json)
+    except Exception as exc:
+        return f"Error decoding generated image: {exc}"
+
+    image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    os.makedirs(image_dir, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}.png"
+    path = os.path.join(image_dir, filename)
+    with open(path, "wb") as f:
+        f.write(raw)
+
+    public_base_url = str(config.get("public_base_url") or "").rstrip("/")
+    image_url = f"{public_base_url}/api/generated-images/{filename}" if public_base_url else f"/api/generated-images/{filename}"
+    return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
 
 
 async def _context_overview(thread_id: str, tool_args: dict) -> str:
@@ -1400,7 +1522,7 @@ async def execute_tools(args: dict) -> dict:
     # Names of built-in tools that don't require MCP containers
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
-        "json_parse", "text_count", "base64_decode", "base64_encode",
+        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
 
@@ -1780,6 +1902,28 @@ async def get_messages(thread_id: str) -> list[dict]:
     async with AsyncSessionLocal() as db:
         messages = await get_thread_messages(db, UUID(thread_id))
 
+    def _message_content_with_images(text: str, metadata: dict) -> str | list[dict]:
+        attachments = metadata.get("image_attachments") or []
+        image_parts = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            url = attachment.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://", "data:image/")):
+                continue
+            image_parts.append({"type": "input_image", "image_url": url})
+        if not image_parts:
+            return text
+        text_without_attachment_lines = "\n".join(
+            line for line in (text or "").splitlines()
+            if not line.startswith("Image attachment: ")
+        ).strip()
+        parts = []
+        if text_without_attachment_lines:
+            parts.append({"type": "input_text", "text": text_without_attachment_lines})
+        parts.extend(image_parts)
+        return parts
+
     result = []
     for m in messages:
         meta = m.metadata_ or {}
@@ -1810,6 +1954,8 @@ async def get_messages(thread_id: str) -> list[dict]:
                 prefix = f"{sender_name} (Discord): " if sender_name else None
                 if prefix and content.startswith(prefix):
                     content = content[len(prefix):]
+            if m.role == "user":
+                content = _message_content_with_images(content, meta)
             result.append({"role": m.role, "content": content})
 
     return result
@@ -1859,8 +2005,19 @@ async def compact_history(args: dict) -> dict:
     redis_url = config.get("redis_url")
     stream_channel = config.get("stream_channel")
 
+    def _content_len(value) -> int:
+        if isinstance(value, list):
+            total = 0
+            for part in value:
+                if isinstance(part, dict):
+                    total += len(part.get("text") or part.get("image_url") or "")
+                else:
+                    total += len(str(part))
+            return total
+        return len(value or "")
+
     # Estimate tokens using character count heuristic (chars / 4)
-    total_chars = sum(len(m.get("content", "") or "") for m in messages)
+    total_chars = sum(_content_len(m.get("content")) for m in messages)
     estimated_tokens = total_chars / 4
     token_limit = context_window * threshold
 
@@ -1898,7 +2055,20 @@ async def compact_history(args: dict) -> dict:
     for m in to_compact:
         content = m.get("content")
         role = m.get("role", "unknown")
-        if content:
+        if isinstance(content, list):
+            text_parts = []
+            image_count = 0
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "input_text" and part.get("text"):
+                    text_parts.append(part["text"])
+                elif isinstance(part, dict) and part.get("type") == "input_image":
+                    image_count += 1
+            line_content = "\n".join(text_parts).strip()
+            if image_count:
+                line_content = f"{line_content}\n[{image_count} image attachment(s)]".strip()
+            if line_content:
+                conversation_lines.append(f"{role}: {line_content}")
+        elif content:
             conversation_lines.append(f"{role}: {content}")
         elif m.get("tool_calls"):
             names = [tc.get("function", {}).get("name", "?") for tc in m["tool_calls"]]
@@ -1953,7 +2123,7 @@ async def compact_history(args: dict) -> dict:
     new_messages = [summary_message] + to_keep
 
     # Publish updated context usage after compaction
-    post_chars = sum(len(m.get("content", "") or "") for m in new_messages)
+    post_chars = sum(_content_len(m.get("content")) for m in new_messages)
     await _publish(redis_url, stream_channel, {
         "type": "context",
         "estimated_tokens": int(post_chars / 4),

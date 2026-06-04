@@ -41,6 +41,40 @@ def _discord_user_content(content: str, mentions: list | None = None) -> str:
     return normalize_discord_user_mentions(content, mentions).strip()
 
 
+def _discord_image_attachments(message: dict) -> list[dict]:
+    images = []
+    for attachment in message.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        url = attachment.get("url") or attachment.get("proxy_url")
+        content_type = attachment.get("content_type") or ""
+        filename = attachment.get("filename") or "image"
+        if not url:
+            continue
+        is_image = content_type.startswith("image/") or filename.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+        )
+        if not is_image:
+            continue
+        images.append({
+            "url": url,
+            "filename": filename,
+            "content_type": content_type or "image/*",
+            "width": attachment.get("width"),
+            "height": attachment.get("height"),
+        })
+    return images
+
+
+def _content_with_image_lines(content: str, image_attachments: list[dict]) -> str:
+    lines = [content.strip()] if content and content.strip() else []
+    for attachment in image_attachments:
+        url = attachment.get("url")
+        if url:
+            lines.append(f"Image attachment: {attachment.get('filename') or 'image'} {url}")
+    return "\n".join(lines)
+
+
 def _discord_mentions_user(content: str, mentions: list | None, user_id: str | None) -> bool:
     if not user_id:
         return False
@@ -83,6 +117,13 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
+def _multipart_headers(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bot {token}",
+        "User-Agent": "ThreadBot Discord Integration",
+    }
+
+
 def _discord_enabled(config: dict | None = None) -> bool:
     config = config or get_discord_config()
     return bool(config.get("enabled") and config.get("bot_token"))
@@ -115,6 +156,52 @@ async def _request(
                 discord_code = None
                 try:
                     import json as json_mod
+                    body = json_mod.loads(text) if text else {}
+                    discord_code = body.get("code") if isinstance(body, dict) else None
+                except Exception:
+                    pass
+                raise DiscordIntegrationError(
+                    f"Discord API {resp.status}: {text}",
+                    status=resp.status,
+                    discord_code=discord_code,
+                    body=text,
+                )
+            if not text:
+                return None
+            return await resp.json()
+
+
+async def _request_multipart(
+    method: str,
+    path: str,
+    *,
+    payload: dict,
+    files: list[dict],
+    discord_config: dict | None = None,
+) -> dict | list | None:
+    import json as json_mod
+
+    config = discord_config or await _load_fresh_discord_config()
+    token = config.get("bot_token")
+    if not token:
+        raise DiscordIntegrationError("Discord bot token is not configured")
+
+    form = aiohttp.FormData()
+    form.add_field("payload_json", json_mod.dumps(payload), content_type="application/json")
+    for idx, file_info in enumerate(files):
+        form.add_field(
+            f"files[{idx}]",
+            file_info["content"],
+            filename=file_info.get("filename") or f"image-{idx + 1}.png",
+            content_type=file_info.get("content_type") or "image/png",
+        )
+
+    async with aiohttp.ClientSession(headers=_multipart_headers(token)) as session:
+        async with session.request(method, f"{DISCORD_API_BASE}{path}", data=form) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                discord_code = None
+                try:
                     body = json_mod.loads(text) if text else {}
                     discord_code = body.get("code") if isinstance(body, dict) else None
                 except Exception:
@@ -401,6 +488,7 @@ async def post_discord_message(
     content: str,
     discord_config: dict | None = None,
     reply_to_message_id: str | None = None,
+    files: list[dict] | None = None,
 ) -> str | None:
     config = discord_config or await _load_fresh_discord_config()
     if not _discord_enabled(config):
@@ -415,12 +503,22 @@ async def post_discord_message(
                 "channel_id": discord_thread_id,
                 "fail_if_not_exists": False,
             }
-        data = await _request(
-            "POST",
-            f"/channels/{discord_thread_id}/messages",
-            json=payload,
-            discord_config=config,
-        )
+        chunk_files = files if index == 0 else None
+        if chunk_files:
+            data = await _request_multipart(
+                "POST",
+                f"/channels/{discord_thread_id}/messages",
+                payload=payload,
+                files=chunk_files,
+                discord_config=config,
+            )
+        else:
+            data = await _request(
+                "POST",
+                f"/channels/{discord_thread_id}/messages",
+                json=payload,
+                discord_config=config,
+            )
         if isinstance(data, dict):
             last_id = str(data.get("id"))
     return last_id
@@ -437,6 +535,81 @@ def format_threadbot_message(role: str, content: str) -> str | None:
 def _format_assistant_for_discord(content: str, discord_config: dict | None = None) -> str:
     prefix = (discord_config or {}).get("assistant_response_prefix") or ""
     return f"{prefix}{content}" if prefix else content
+
+
+async def _discord_files_from_markdown_images(content: str, discord_config: dict | None = None) -> tuple[str, list[dict]]:
+    """Turn assistant Markdown image links into Discord file attachments.
+
+    The saved ThreadBot message keeps Markdown for the web UI. Discord gets the
+    image bytes directly so generated images are not presented as hosted URLs.
+    """
+    if not content or "![" not in content:
+        return content, []
+
+    import os
+    from urllib.parse import urlparse
+    from app.config import get_llm_config
+
+    llm_config = get_llm_config()
+    image_dir = llm_config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    files = []
+
+    async def _file_from_url(url: str, index: int) -> dict | None:
+        parsed = urlparse(url)
+        local_match = re.search(r"/api/generated-images/([^/?#]+)", parsed.path or url)
+        if local_match:
+            filename = local_match.group(1)
+            if "/" in filename or "\\" in filename or filename.startswith("."):
+                return None
+            path = os.path.join(image_dir, filename)
+            if not os.path.isfile(path):
+                return None
+            with open(path, "rb") as f:
+                return {
+                    "filename": filename,
+                    "content": f.read(),
+                    "content_type": "image/png",
+                }
+
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        return None
+                    content_type = resp.headers.get("Content-Type", "image/png")
+                    if not content_type.startswith("image/"):
+                        return None
+                    raw = await resp.read()
+                    if len(raw) > 24 * 1024 * 1024:
+                        return None
+                    ext = content_type.split("/", 1)[1].split(";", 1)[0] or "png"
+                    if ext == "jpeg":
+                        ext = "jpg"
+                    return {
+                        "filename": f"generated-image-{index}.{ext}",
+                        "content": raw,
+                        "content_type": content_type,
+                    }
+        except Exception as exc:
+            print(f"[discord] failed to download generated image {url}: {exc}", flush=True)
+            return None
+
+    matches = list(re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", content))
+    for idx, match in enumerate(matches[:10], start=1):
+        file_info = await _file_from_url(match.group(1).strip(), idx)
+        if file_info:
+            files.append(file_info)
+
+    if not files:
+        return content, []
+
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", content)
+    cleaned = re.sub(r"(?im)^\s*Generated image:\s*$", "", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned or "Generated image:", files
 
 
 def _mention_display_names(user: dict) -> list[str]:
@@ -517,18 +690,21 @@ async def sync_message_to_discord(
                 return None
             discord_thread_id = link.discord_thread_id
     try:
+        files = None
         if role == "assistant":
             formatted = await _resolve_readable_mentions_for_discord(
                 discord_thread_id,
                 formatted,
                 discord_config=config,
             )
+            formatted, files = await _discord_files_from_markdown_images(formatted, discord_config=config)
         reply_to_message_id = config.get("reply_to_message_id") if role == "assistant" else None
         return await post_discord_message(
             discord_thread_id,
             formatted,
             discord_config=config,
             reply_to_message_id=reply_to_message_id,
+            files=files,
         )
     except Exception as exc:
         print(f"[discord] failed to post message for thread {thread_id}: {exc}", flush=True)
@@ -624,6 +800,7 @@ async def _start_thread_from_discord_command(
         username,
         source_message_id=str(source_message.get("id")),
         source_event_id=str(source_message.get("id")),
+        source_image_attachments=_discord_image_attachments(source_message),
     )
 
 
@@ -638,6 +815,7 @@ async def start_thread_from_discord_prompt(
     channel_id: str | None = None,
     guild_id: str | None = None,
     guild_name: str | None = None,
+    source_image_attachments: list[dict] | None = None,
 ) -> dict | None:
     from app.database import AsyncSessionLocal
     from app.database.crud import (
@@ -680,12 +858,15 @@ async def start_thread_from_discord_prompt(
             str(discord_thread["id"]),
             str(discord_thread.get("name") or title_seed or "ThreadBot Thread"),
         )
-        local_content = _discord_user_content(prompt)
+        image_attachments = source_image_attachments or []
+        local_content = _content_with_image_lines(_discord_user_content(prompt), image_attachments)
         metadata = {
             "source": "discord",
             "sender_name": sender_name,
             "command": "threadbot",
         }
+        if image_attachments:
+            metadata["image_attachments"] = image_attachments
         if source_message_id:
             metadata["discord_message_id"] = source_message_id
         if source_message_link:
@@ -893,6 +1074,7 @@ async def reply_to_existing_discord_thread(
     source_message_id: str | None,
     source_message_link: str | None = None,
     source_event_id: str | None = None,
+    source_image_attachments: list[dict] | None = None,
 ) -> dict | None:
     """Reply to a user message that was sent inside an existing Discord thread.
 
@@ -947,7 +1129,8 @@ async def reply_to_existing_discord_thread(
                 f"as ThreadBot thread {thread.id}",
                 flush=True,
             )
-        local_content = _discord_user_content(prompt)
+        image_attachments = source_image_attachments or []
+        local_content = _content_with_image_lines(_discord_user_content(prompt), image_attachments)
         metadata = {
             "source": "discord",
             "sender_name": sender_name,
@@ -956,6 +1139,8 @@ async def reply_to_existing_discord_thread(
             metadata["discord_message_id"] = source_message_id
         if source_message_link:
             metadata["discord_message_link"] = source_message_link
+        if image_attachments:
+            metadata["image_attachments"] = image_attachments
         await add_message(
             db,
             link.thread_id,
@@ -1015,7 +1200,8 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 mentions = message.get("mentions") or []
                 should_reply = _discord_mentions_user(raw_content, mentions, bot_user_id)
                 content = _strip_discord_user_mention(raw_content, bot_user_id) if should_reply else raw_content.strip()
-                if not content:
+                image_attachments = _discord_image_attachments(message)
+                if not content and not image_attachments:
                     continue
                 claimed = await _claim_discord_event(
                     temporal_client,
@@ -1026,19 +1212,25 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 if not claimed:
                     continue
                 username = author.get("global_name") or author.get("username") or "Discord user"
-                local_content = _discord_user_content(content, mentions)
+                local_content = _content_with_image_lines(
+                    _discord_user_content(content, mentions),
+                    image_attachments,
+                )
+                metadata = {
+                    "source": "discord",
+                    "sender_name": username,
+                    "discord_message_id": str(message.get("id")),
+                    "reply_requested": should_reply,
+                }
+                if image_attachments:
+                    metadata["image_attachments"] = image_attachments
                 async with AsyncSessionLocal() as db:
                     await add_message(
                         db,
                         link.thread_id,
                         "user",
                         local_content,
-                        metadata={
-                            "source": "discord",
-                            "sender_name": username,
-                            "discord_message_id": str(message.get("id")),
-                            "reply_requested": should_reply,
-                        },
+                        metadata=metadata,
                     )
                     await db.commit()
                 from app.api.routes import broadcast_thread_updated

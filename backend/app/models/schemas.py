@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = Field(None, description="Existing thread ID to continue conversation")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
     tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides for new threads")
+    image_urls: Optional[list[str]] = Field(None, description="Optional image URLs to include in the user message")
 
 
 class MessageResponse(BaseModel):
