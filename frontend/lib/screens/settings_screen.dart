@@ -191,10 +191,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_preserve_recent': preserveRecent,
         'llm_tool_result_max_chars': toolResultMaxChars,
         'discord_enabled': _discordEnabled,
-        'discord_guild_id': _discordGuildController.text,
-        'discord_channel_id': _discordChannelController.text,
         'discord_poll_interval_seconds': discordPoll,
       };
+      if (_discordGuildController.text.isNotEmpty) {
+        payload['discord_guild_id'] = _discordGuildController.text;
+      }
+      if (_discordChannelController.text.isNotEmpty) {
+        payload['discord_channel_id'] = _discordChannelController.text;
+      }
       if (_apiKeyController.text.isNotEmpty) {
         payload['llm_api_key'] = _apiKeyController.text;
       }

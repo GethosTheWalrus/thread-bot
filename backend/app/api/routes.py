@@ -859,6 +859,9 @@ async def update_settings_endpoint(
         "discord_poll_interval_seconds": "discord_poll_interval_seconds",
     }
     updates = {valid_keys[k]: v for k, v in request.items() if k in valid_keys}
+    for key in ("discord_guild_id", "discord_channel_id"):
+        if updates.get(key) == "":
+            updates.pop(key, None)
     if updates:
         update_settings(**updates)
         # Persist to DB so values survive restarts
