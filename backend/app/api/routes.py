@@ -25,7 +25,7 @@ from app.database.crud import (
     set_discord_server_tool_overrides,
     get_discord_server,
 )
-from app.models.models import Thread, Message, DiscordThreadLink
+from app.models.models import Thread, Message, DiscordThreadLink, GeneratedImage
 from app.models.schemas import (
     ThreadCreateRequest,
     ChatRequest,
@@ -52,7 +52,7 @@ from app.models.schemas import (
     DiscordServerMcpOverridesRequest,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
@@ -564,7 +564,7 @@ async def chat_websocket(websocket: WebSocket):
 
 
 @router.get("/generated-images/{filename}")
-async def get_generated_image(filename: str):
+async def get_generated_image(filename: str, db: AsyncSession = Depends(get_db)):
     import os
     from app.config import get_llm_config
 
@@ -573,7 +573,11 @@ async def get_generated_image(filename: str):
     image_dir = get_llm_config().get("generated_image_dir") or "/tmp/threadbot-generated-images"
     path = os.path.join(image_dir, filename)
     if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="Image not found")
+        result = await db.execute(select(GeneratedImage).where(GeneratedImage.filename == filename))
+        image = result.scalar_one_or_none()
+        if not image:
+            raise HTTPException(status_code=404, detail="Image not found")
+        return Response(content=image.content, media_type=image.content_type or "image/png")
     return FileResponse(path)
 
 

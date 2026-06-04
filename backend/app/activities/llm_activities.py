@@ -1303,16 +1303,25 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
 
     if not api_url:
         return "Error: image API URL is not configured"
-    def _store_b64_image(b64_value: str) -> str:
-        raw = base64.b64decode(b64_value)
+    async def _store_image(raw: bytes, content_type: str = "image/png") -> str:
+        from app.database import AsyncSessionLocal
+        from app.models.models import GeneratedImage
+
         image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
         os.makedirs(image_dir, exist_ok=True)
         filename = f"{uuid.uuid4().hex}.png"
         path = os.path.join(image_dir, filename)
         with open(path, "wb") as f:
             f.write(raw)
+        async with AsyncSessionLocal() as db:
+            await db.merge(GeneratedImage(filename=filename, content=raw, content_type=content_type))
+            await db.commit()
         public_base_url = str(config.get("public_base_url") or "").rstrip("/")
         return f"{public_base_url}/api/generated-images/{filename}" if public_base_url else f"/api/generated-images/{filename}"
+
+    async def _store_b64_image(b64_value: str) -> str:
+        raw = base64.b64decode(b64_value)
+        return await _store_image(raw)
 
     if provider == "ollama":
         endpoint = f"{api_url}/api/generate" if not api_url.endswith("/api") else f"{api_url}/generate"
@@ -1343,14 +1352,14 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
         images = data.get("images") if isinstance(data, dict) else None
         if images and isinstance(images, list) and images[0]:
             try:
-                image_url = _store_b64_image(str(images[0]))
+                image_url = await _store_b64_image(str(images[0]))
                 return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
             except Exception as exc:
                 return f"Error saving generated image: {exc}"
         response = str(data.get("response") or "") if isinstance(data, dict) else ""
         if response.startswith("data:image/") and ";base64," in response:
             try:
-                image_url = _store_b64_image(response.split(";base64,", 1)[1])
+                image_url = await _store_b64_image(response.split(";base64,", 1)[1])
                 return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
             except Exception as exc:
                 return f"Error saving generated image: {exc}"
@@ -1410,7 +1419,7 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
     if not b64_json:
         return "Error generating image: response did not include url or b64_json"
     try:
-        image_url = _store_b64_image(b64_json)
+        image_url = await _store_b64_image(b64_json)
     except Exception as exc:
         return f"Error decoding generated image: {exc}"
     return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
@@ -1594,6 +1603,9 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
     if not images:
         return f"ComfyUI prompt {prompt_id} output node {output_node!r} has no images."
 
+    from app.database import AsyncSessionLocal
+    from app.models.models import GeneratedImage
+
     image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
     os.makedirs(image_dir, exist_ok=True)
     public_base_url = str(config.get("public_base_url") or "").rstrip("/")
@@ -1624,6 +1636,13 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
             local_name = f"{uuid.uuid4().hex}.png"
             with open(os.path.join(image_dir, local_name), "wb") as f:
                 f.write(raw)
+            async with AsyncSessionLocal() as db:
+                await db.merge(GeneratedImage(
+                    filename=local_name,
+                    content=raw,
+                    content_type="image/png",
+                ))
+                await db.commit()
             url = f"{public_base_url}/api/generated-images/{local_name}" if public_base_url else f"/api/generated-images/{local_name}"
             saved_urls.append(url)
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean, LargeBinary
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 import uuid
@@ -39,6 +39,15 @@ class Setting(Base):
 
     key = Column(String(255), primary_key=True)
     value = Column(Text, nullable=False)
+
+
+class GeneratedImage(Base):
+    __tablename__ = "generated_images"
+
+    filename = Column(String(255), primary_key=True)
+    content = Column(LargeBinary, nullable=False)
+    content_type = Column(String(100), nullable=False, default="image/png")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class MCPServer(Base):

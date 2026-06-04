@@ -563,7 +563,26 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
                 return None
             path = os.path.join(image_dir, filename)
             if not os.path.isfile(path):
-                return None
+                try:
+                    from sqlalchemy import select
+                    from app.database import AsyncSessionLocal
+                    from app.models.models import GeneratedImage
+
+                    async with AsyncSessionLocal() as db:
+                        result = await db.execute(
+                            select(GeneratedImage).where(GeneratedImage.filename == filename)
+                        )
+                        image = result.scalar_one_or_none()
+                    if not image:
+                        return None
+                    return {
+                        "filename": filename,
+                        "content": image.content,
+                        "content_type": image.content_type or "image/png",
+                    }
+                except Exception as exc:
+                    print(f"[discord] failed to load generated image {filename} from DB: {exc}", flush=True)
+                    return None
             with open(path, "rb") as f:
                 return {
                     "filename": filename,

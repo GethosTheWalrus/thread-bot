@@ -1398,12 +1398,24 @@ class _ChatBubbleState extends State<_ChatBubble> {
     return MarkdownBody(
       data: widget.message.displayContent,
       selectable: true,
+      sizedImageBuilder: (config) => _buildMarkdownImage(config.uri),
       onTapLink: (text, href, title) {
         if (href != null) launchUrl(Uri.parse(href));
       },
       styleSheet: style,
     );
   }
+}
+
+Widget _buildMarkdownImage(Uri uri) {
+  final resolved = Uri.base.resolveUri(uri).toString();
+  return ClipRRect(
+    borderRadius: BorderRadius.circular(10),
+    child: Image.network(
+      resolved,
+      fit: BoxFit.contain,
+    ),
+  );
 }
 
 /// Collapsible accordion that groups all thinking blocks and tool call groups
@@ -1852,6 +1864,7 @@ class _AnimatedMarkdownState extends State<_AnimatedMarkdown> with SingleTickerP
   Widget build(BuildContext context) {
     return MarkdownBody(
       data: _currentData,
+      sizedImageBuilder: (config) => _buildMarkdownImage(config.uri),
       styleSheet: widget.styleSheet,
     );
   }
