@@ -61,7 +61,7 @@ build-frontend-image:
 
 update-k8s-images:
   stage: update-manifests
-  image: alpine/git:2.47
+  image: docker:27
   needs:
     - job: build-backend-images
       optional: true
