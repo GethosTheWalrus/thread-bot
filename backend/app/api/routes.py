@@ -57,7 +57,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from datetime import timedelta
-from app.config import get_settings, get_llm_config, update_settings, get_discord_config
+from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
