@@ -728,6 +728,20 @@ async def start_discord_reply_workflow(
     settings = get_settings()
     config = await _load_fresh_discord_config()
     llm_config = get_llm_config().copy()
+    from app.database import AsyncSessionLocal
+    from app.database.crud import get_thread_tool_overrides
+
+    async with AsyncSessionLocal() as db:
+        thread_overrides = await get_thread_tool_overrides(db, thread_id)
+        if thread_overrides:
+            llm_config["tool_overrides"] = [
+                {
+                    "server_id": str(o.server_id),
+                    "tool_name": o.tool_name,
+                    "enabled": o.enabled,
+                }
+                for o in thread_overrides
+            ]
     llm_config["discord"] = {
         "enabled": config.get("enabled"),
         "bot_token": config.get("bot_token"),

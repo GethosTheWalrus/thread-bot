@@ -756,7 +756,7 @@ async def discover_tools(args: dict) -> dict:
         del cache_used
 
     print(
-        f"Total tools available to LLM: {len(openai_tools)} "
+        f"Discovered MCP tools before thread overrides: {len(openai_tools)} "
         f"(cache_hits={cache_hits}, cold_starts={cold_starts})",
         flush=True,
     )
@@ -799,6 +799,8 @@ async def discover_tools(args: dict) -> dict:
             print(f"Thread overrides: disabled {removed} tool(s), {len(filtered_tools)} remaining", flush=True)
         openai_tools = filtered_tools
         mcp_tools_map = filtered_map
+
+    print(f"MCP tools available to LLM after overrides: {len(openai_tools)}", flush=True)
 
     return {
         "mcp_tools_map": mcp_tools_map,
