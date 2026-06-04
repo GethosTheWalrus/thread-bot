@@ -62,6 +62,5 @@ class Message {
 
   bool get isCompactionSummary =>
       role == 'system' &&
-      (metadata?['type'] == 'compaction_summary' ||
-       metadata?['type'] == 'compaction_event');
+      metadata?['type'] == 'compaction_event';
 }

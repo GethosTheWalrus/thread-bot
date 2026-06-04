@@ -424,6 +424,7 @@ async def _execute_agent_tool(
     builtin_tools = {
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode",
+        "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
     tool_call = {
@@ -448,7 +449,7 @@ async def _execute_agent_tool(
                 "tool_calls": [tool_call],
             })
 
-        result_text = await _execute_builtin(tool_name, tool_args, thread_id, redis_url, stream_channel)
+        result_text = await _execute_builtin(tool_name, tool_args, thread_id, redis_url, stream_channel, config)
         if tool_name != "continue_thinking":
             await _save_inline(
                 thread_id,
@@ -1046,8 +1047,10 @@ async def _execute_builtin(
     thread_id: str,
     redis_url: str | None,
     stream_channel: str | None,
+    config: dict | None = None,
 ) -> str:
     """Execute a built-in tool and return the result as a string."""
+    config = config or {}
 
     if tool_name == "continue_thinking":
         reasoning_text = tool_args.get("reasoning", "")
@@ -1222,7 +1225,150 @@ async def _execute_builtin(
         except Exception as e:
             return f"Error encoding base64: {str(e)}"
 
+    if tool_name == "context_overview":
+        return await _context_overview(thread_id, tool_args)
+
+    if tool_name == "compact_context_topic":
+        return await _compact_context_topic(thread_id, tool_args, config)
+
     return f"Error: unknown built-in tool '{tool_name}'"
+
+
+async def _context_overview(thread_id: str, tool_args: dict) -> str:
+    """Return compactable message IDs and previews for the model only."""
+    from uuid import UUID
+    from app.database import AsyncSessionLocal
+    from app.models.models import Message
+    from sqlalchemy import select
+
+    limit = max(1, min(int(tool_args.get("limit", 80) or 80), 200))
+    preview_chars = max(40, min(int(tool_args.get("preview_chars", 240) or 240), 1000))
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Message)
+            .where(Message.thread_id == UUID(thread_id))
+            .order_by(Message.created_at)
+        )
+        messages = list(result.scalars().all())
+
+    compactable = [m for m in messages if m.role not in {"system", "thinking"}]
+    recent = compactable[-limit:]
+    lines = [
+        f"Thread has {len(messages)} saved messages; {len(compactable)} are compactable.",
+        "Use compact_context_topic with message_ids to replace selected older messages with an internal summary.",
+    ]
+    for m in recent:
+        content = (m.content or "").replace("\n", " ").strip()
+        if len(content) > preview_chars:
+            content = content[:preview_chars] + "..."
+        lines.append(
+            f"- id={m.id} role={m.role} created_at={m.created_at.isoformat()} "
+            f"chars={len(m.content or '')} preview={content!r}"
+        )
+    return "\n".join(lines)
+
+
+async def _compact_context_topic(thread_id: str, tool_args: dict, config: dict) -> str:
+    """Replace selected messages with an invisible system summary for future LLM context."""
+    from uuid import UUID
+    from sqlalchemy import delete as sql_delete, select
+    from app.database import AsyncSessionLocal
+    from app.database.crud import add_message
+    from app.models.models import Message
+
+    topic = str(tool_args.get("topic") or "Conversation context").strip() or "Conversation context"
+    raw_ids = tool_args.get("message_ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return "No compaction performed: message_ids is required. Call context_overview first, then choose message IDs."
+
+    try:
+        message_ids = [UUID(str(mid)) for mid in raw_ids]
+    except Exception as exc:
+        return f"No compaction performed: invalid message id: {exc}"
+
+    preserve_recent = max(0, int(tool_args.get("preserve_recent", 6) or 6))
+    summary_instructions = str(tool_args.get("summary_instructions") or "").strip()
+    thread_uuid = UUID(thread_id)
+
+    async with AsyncSessionLocal() as db:
+        all_result = await db.execute(
+            select(Message)
+            .where(Message.thread_id == thread_uuid)
+            .order_by(Message.created_at)
+        )
+        all_messages = list(all_result.scalars().all())
+        recent_keep_ids = {
+            m.id for m in [m for m in all_messages if m.role != "system"][-preserve_recent:]
+        }
+        selected = [
+            m for m in all_messages
+            if m.id in set(message_ids) and m.role not in {"system", "thinking"} and m.id not in recent_keep_ids
+        ]
+
+    if not selected:
+        return "No compaction performed: selected messages were not found or are protected recent/internal messages."
+
+    conversation_lines = []
+    for m in selected:
+        meta = m.metadata_ or {}
+        sender = f" ({meta.get('sender_name')})" if meta.get("sender_name") else ""
+        conversation_lines.append(f"{m.role}{sender}: {m.content}")
+    conversation_text = "\n".join(conversation_lines)
+
+    summary_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "You summarize selected conversation context for future continuity. "
+                "Preserve concrete facts, decisions, user preferences, tool outcomes, IDs, URLs, code, "
+                "and unresolved tasks. Do not mention that the user cannot see this summary. "
+                "Output only the compacted summary."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Topic: {topic}\n"
+                f"Extra instructions: {summary_instructions or 'none'}\n\n"
+                f"Selected messages to compact:\n{conversation_text}"
+            ),
+        },
+    ]
+
+    try:
+        completion = await _agents_chat_completion(summary_prompt, config, temperature=0.2, max_tokens=1200)
+        summary = (completion.get("content") or "").strip()
+    except Exception as exc:
+        return f"No compaction performed: summary generation failed: {exc}"
+    if not summary:
+        return "No compaction performed: summary generation returned empty content."
+
+    summary_content = (
+        f"[INTERNAL CONTEXT SUMMARY: {topic}]\n"
+        f"{summary}\n"
+        "[END INTERNAL CONTEXT SUMMARY]"
+    )
+    metadata = {
+        "type": "internal_context_summary",
+        "topic": topic,
+        "compacted_count": len(selected),
+        "compacted_message_ids": [str(m.id) for m in selected],
+    }
+
+    async with AsyncSessionLocal() as db:
+        await add_message(
+            db,
+            thread_uuid,
+            "system",
+            summary_content,
+            metadata=metadata,
+            created_at=selected[0].created_at,
+        )
+        await db.execute(sql_delete(Message).where(Message.id.in_([m.id for m in selected])))
+        await db.commit()
+
+    return f"Compacted {len(selected)} message(s) about '{topic}' into an internal context summary."
 
 
 @defn
@@ -1255,6 +1401,7 @@ async def execute_tools(args: dict) -> dict:
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode",
+        "context_overview", "compact_context_topic",
     }
 
     # Build human-readable description and publish tool_call event
@@ -1297,7 +1444,7 @@ async def execute_tools(args: dict) -> dict:
         # ── Built-in tool handlers ────────────────────────────────────
         if tool_name in BUILTIN_TOOLS:
             result_text = await _execute_builtin(
-                tool_name, tool_args, thread_id, redis_url, stream_channel,
+                tool_name, tool_args, thread_id, redis_url, stream_channel, config,
             )
             tool_messages.append({
                 "role": "tool",
@@ -1804,13 +1951,6 @@ async def compact_history(args: dict) -> dict:
     }
 
     new_messages = [summary_message] + to_keep
-
-    # Publish compaction event so the frontend shows it in the timeline
-    await _publish(redis_url, stream_channel, {
-        "type": "compaction",
-        "content": f"Compacted {len(to_compact)} messages into a summary",
-        "compacted_count": len(to_compact),
-    })
 
     # Publish updated context usage after compaction
     post_chars = sum(len(m.get("content", "") or "") for m in new_messages)

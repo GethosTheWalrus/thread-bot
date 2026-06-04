@@ -363,6 +363,66 @@ class RunThreadWorkflow:
                         },
                     },
                 },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "context_overview",
+                        "description": (
+                            "Inspect the saved conversation context and list compactable message IDs with previews. "
+                            "Use this before compact_context_topic when you need to choose older messages to compact. "
+                            "This does not modify the thread."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "limit": {
+                                    "type": "integer",
+                                    "description": "Maximum compactable messages to list from the end of the thread. Defaults to 80.",
+                                },
+                                "preview_chars": {
+                                    "type": "integer",
+                                    "description": "Maximum preview characters per message. Defaults to 240.",
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "compact_context_topic",
+                        "description": (
+                            "Compact selected saved messages into an internal summary for future context. "
+                            "The summary is stored as invisible system context and is not posted in the chat thread. "
+                            "Use this when older messages about a topic can be replaced by a summary, either because "
+                            "the user asked for context compaction or because preserving context room would help. "
+                            "Call context_overview first to get message IDs."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "topic": {
+                                    "type": "string",
+                                    "description": "Short topic label for the context being compacted.",
+                                },
+                                "message_ids": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Message IDs from context_overview to replace with an internal summary.",
+                                },
+                                "preserve_recent": {
+                                    "type": "integer",
+                                    "description": "Number of most recent non-system messages to protect from deletion. Defaults to 6.",
+                                },
+                                "summary_instructions": {
+                                    "type": "string",
+                                    "description": "Optional guidance for what the internal summary must preserve.",
+                                },
+                            },
+                            "required": ["topic", "message_ids"],
+                        },
+                    },
+                },
             ]
             openai_tools.extend(builtin_tools)
 
