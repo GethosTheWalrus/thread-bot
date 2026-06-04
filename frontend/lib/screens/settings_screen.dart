@@ -14,6 +14,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _apiUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
+  final _imageApiUrlController = TextEditingController();
+  final _imageModelController = TextEditingController();
+  final _comfyuiApiUrlController = TextEditingController();
+  final _comfyuiOutputNodeController = TextEditingController();
+  final _comfyuiNegativePromptController = TextEditingController();
+  final _comfyuiWidthController = TextEditingController();
+  final _comfyuiHeightController = TextEditingController();
+  final _comfyuiStepsController = TextEditingController();
+  final _comfyuiCfgController = TextEditingController();
+  final _comfyuiSamplerController = TextEditingController();
+  final _comfyuiSchedulerController = TextEditingController();
+  final _comfyuiSeedController = TextEditingController();
+  final _comfyuiWorkflowController = TextEditingController();
+  final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
   final _preserveRecentController = TextEditingController();
@@ -23,6 +37,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _discordChannelController = TextEditingController();
   final _discordPollController = TextEditingController();
   double _compactionThreshold = 0.75;
+  bool _imageGenerationEnabled = false;
+  String _imageProvider = 'auto';
   bool _discordEnabled = false;
   List<Map<String, dynamic>> _discordServers = [];
   bool _isLoadingDiscordServers = false;
@@ -42,6 +58,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final settings = await _api.getSettings();
       _apiUrlController.text = settings['llm_api_url'] as String? ?? '';
       _modelController.text = settings['llm_model'] as String? ?? '';
+      _imageGenerationEnabled = settings['llm_image_enabled'] as bool? ?? false;
+      _imageApiUrlController.text = settings['llm_image_api_url'] as String? ?? '';
+      _imageModelController.text = settings['llm_image_model'] as String? ?? '';
+      _imageProvider = settings['llm_image_provider'] as String? ?? 'auto';
+      _comfyuiApiUrlController.text = settings['llm_comfyui_api_url'] as String? ?? '';
+      _comfyuiOutputNodeController.text =
+          (settings['llm_comfyui_output_node'] ?? '9').toString();
+      _comfyuiNegativePromptController.text =
+          settings['llm_comfyui_negative_prompt'] as String? ??
+              'blurry, low quality, 3d, realistic';
+      _comfyuiWidthController.text =
+          (settings['llm_comfyui_width'] ?? 512).toString();
+      _comfyuiHeightController.text =
+          (settings['llm_comfyui_height'] ?? 512).toString();
+      _comfyuiStepsController.text =
+          (settings['llm_comfyui_steps'] ?? 20).toString();
+      _comfyuiCfgController.text =
+          (settings['llm_comfyui_cfg'] ?? 7.0).toString();
+      _comfyuiSamplerController.text =
+          settings['llm_comfyui_sampler'] as String? ?? 'euler';
+      _comfyuiSchedulerController.text =
+          settings['llm_comfyui_scheduler'] as String? ?? 'normal';
+      _comfyuiSeedController.text =
+          (settings['llm_comfyui_seed'] ?? 42).toString();
+      _comfyuiWorkflowController.text =
+          settings['llm_comfyui_workflow'] as String? ?? '';
+      _publicBaseUrlController.text = settings['app_public_base_url'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
       _apiKeyController.text = '';
       _contextWindowController.text = (settings['llm_context_window'] ?? 8192)
@@ -65,6 +108,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {
       _apiUrlController.text = '';
       _modelController.text = 'llama3.1';
+      _imageGenerationEnabled = false;
+      _imageApiUrlController.text = '';
+      _imageModelController.text = '';
+      _imageProvider = 'auto';
+      _comfyuiApiUrlController.text = '';
+      _comfyuiOutputNodeController.text = '9';
+      _comfyuiNegativePromptController.text = 'blurry, low quality, 3d, realistic';
+      _comfyuiWidthController.text = '512';
+      _comfyuiHeightController.text = '512';
+      _comfyuiStepsController.text = '20';
+      _comfyuiCfgController.text = '7.0';
+      _comfyuiSamplerController.text = 'euler';
+      _comfyuiSchedulerController.text = 'normal';
+      _comfyuiSeedController.text = '42';
+      _comfyuiWorkflowController.text = '';
+      _publicBaseUrlController.text = '';
       _contextWindowController.text = '8192';
       _maxIterationsController.text = '25';
       _preserveRecentController.text = '10';
@@ -109,6 +168,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final payload = <String, dynamic>{
         'llm_api_url': _apiUrlController.text,
         'llm_model': _modelController.text,
+        'llm_image_enabled': _imageGenerationEnabled,
+        'llm_image_api_url': _imageApiUrlController.text,
+        'llm_image_model': _imageModelController.text,
+        'llm_image_provider': _imageProvider,
+        'llm_comfyui_api_url': _comfyuiApiUrlController.text,
+        'llm_comfyui_output_node': _comfyuiOutputNodeController.text,
+        'llm_comfyui_negative_prompt': _comfyuiNegativePromptController.text,
+        'llm_comfyui_width': int.tryParse(_comfyuiWidthController.text) ?? 512,
+        'llm_comfyui_height': int.tryParse(_comfyuiHeightController.text) ?? 512,
+        'llm_comfyui_steps': int.tryParse(_comfyuiStepsController.text) ?? 20,
+        'llm_comfyui_cfg':
+            double.tryParse(_comfyuiCfgController.text) ?? 7.0,
+        'llm_comfyui_sampler': _comfyuiSamplerController.text,
+        'llm_comfyui_scheduler': _comfyuiSchedulerController.text,
+        'llm_comfyui_seed': int.tryParse(_comfyuiSeedController.text) ?? 42,
+        'llm_comfyui_workflow': _comfyuiWorkflowController.text,
+        'app_public_base_url': _publicBaseUrlController.text,
         'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
         'llm_compaction_threshold': _compactionThreshold,
@@ -163,6 +239,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _apiUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
+    _imageApiUrlController.dispose();
+    _imageModelController.dispose();
+    _comfyuiApiUrlController.dispose();
+    _comfyuiOutputNodeController.dispose();
+    _comfyuiNegativePromptController.dispose();
+    _comfyuiWidthController.dispose();
+    _comfyuiHeightController.dispose();
+    _comfyuiStepsController.dispose();
+    _comfyuiCfgController.dispose();
+    _comfyuiSamplerController.dispose();
+    _comfyuiSchedulerController.dispose();
+    _comfyuiSeedController.dispose();
+    _comfyuiWorkflowController.dispose();
+    _publicBaseUrlController.dispose();
     _maxIterationsController.dispose();
     _contextWindowController.dispose();
     _preserveRecentController.dispose();
@@ -378,6 +468,166 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       const SizedBox(height: 32),
       _buildSection(
+        'Image Generation',
+        'Use a separate image model/backend for generated images',
+        Icons.image_outlined,
+        [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _imageGenerationEnabled,
+            onChanged: (v) => setState(() => _imageGenerationEnabled = v),
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('Enable image generation'),
+            subtitle: Text(
+              'When enabled, ThreadBot can call the built-in generate_image tool. Image analysis still uses the main multimodal chat model.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _buildImageProviderDropdown(),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _imageApiUrlController,
+            label: 'Image API URL',
+            hint: 'http://ollama.home:11434 or http://host:port/v1',
+            icon: Icons.link_rounded,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _imageModelController,
+            label: 'Image Model',
+            hint: 'x/z-image-turbo:fp8',
+            icon: Icons.auto_awesome_rounded,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _publicBaseUrlController,
+            label: 'Public Base URL',
+            hint: 'https://threadbot.example.com (optional)',
+            icon: Icons.public_rounded,
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations. Select ComfyUI to submit a workflow to a local ComfyUI server (e.g. http://ollama.home:8188).',
+          ),
+          if (_imageProvider == 'comfyui') ...[
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _comfyuiApiUrlController,
+              label: 'ComfyUI API URL',
+              hint: 'http://ollama.home:8188',
+              icon: Icons.hub_outlined,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _comfyuiOutputNodeController,
+              label: 'Save Image Node ID',
+              hint: '9',
+              icon: Icons.output_rounded,
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _comfyuiNegativePromptController,
+              label: 'Negative Prompt',
+              hint: 'blurry, low quality, 3d, realistic',
+              icon: Icons.block_rounded,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiWidthController,
+                    label: 'Width',
+                    hint: '512',
+                    icon: Icons.straighten_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiHeightController,
+                    label: 'Height',
+                    hint: '512',
+                    icon: Icons.straighten_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiStepsController,
+                    label: 'Steps',
+                    hint: '20',
+                    icon: Icons.repeat_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiCfgController,
+                    label: 'CFG',
+                    hint: '7.0',
+                    icon: Icons.tune_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiSeedController,
+                    label: 'Seed',
+                    hint: '42',
+                    icon: Icons.casino_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiSamplerController,
+                    label: 'Sampler',
+                    hint: 'euler',
+                    icon: Icons.gradient_rounded,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildField(
+                    controller: _comfyuiSchedulerController,
+                    label: 'Scheduler',
+                    hint: 'normal',
+                    icon: Icons.schedule_rounded,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            _buildField(
+              controller: _comfyuiWorkflowController,
+              label: 'Workflow JSON (optional)',
+              hint: 'Leave blank to use bundled SDXL pixel-art workflow',
+              icon: Icons.data_object_rounded,
+              maxLines: 6,
+            ),
+          ],
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
         'Context Management',
         'Control how long conversations are handled',
         Icons.compress_rounded,
@@ -529,6 +779,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+
+  Widget _buildImageProviderDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Image Provider',
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.white.withValues(alpha: 0.03),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: DropdownButtonFormField<String>(
+            initialValue: _imageProvider,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.hub_outlined, color: Color(0xFF71717A)),
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            ),
+            dropdownColor: const Color(0xFF16161E),
+            style: const TextStyle(color: Color(0xFFE4E4E7), fontSize: 14),
+            items: const [
+              DropdownMenuItem(value: 'auto', child: Text('Auto')),
+              DropdownMenuItem(value: 'ollama', child: Text('Ollama')),
+              DropdownMenuItem(value: 'openai_compatible', child: Text('OpenAI-compatible')),
+              DropdownMenuItem(value: 'comfyui', child: Text('ComfyUI')),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _imageProvider = value);
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -1564,11 +1854,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required IconData icon,
     bool obscure = false,
     TextInputType? keyboardType,
+    int maxLines = 1,
   }) {
     return TextField(
       controller: controller,
       obscureText: obscure,
       keyboardType: keyboardType,
+      maxLines: maxLines,
       style: const TextStyle(fontSize: 14),
       decoration: InputDecoration(
         labelText: label,

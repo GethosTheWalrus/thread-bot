@@ -1278,19 +1278,84 @@ async def _execute_builtin(
 
 
 async def _generate_image(tool_args: dict, config: dict) -> str:
-    """Generate an image through an OpenAI-compatible images endpoint."""
+    """Generate an image through the configured image-generation backend."""
     import base64
     import os
     import uuid
     import aiohttp
 
+    if not config.get("image_enabled"):
+        return "Error: image generation is disabled. Enable it in Settings > LLM > Image Generation and configure an image generation endpoint/model."
+
     prompt = str(tool_args.get("prompt") or "").strip()
     if not prompt:
         return "Error: prompt is required"
     size = str(tool_args.get("size") or "1024x1024").strip()
+    provider = str(config.get("image_provider") or "auto").lower()
     api_url = (config.get("image_api_url") or config.get("api_url") or "").rstrip("/")
+    if not api_url and provider not in {"comfyui", "auto"}:
+        return "Error: image API URL is not configured"
+    if provider == "auto":
+        provider = "ollama" if ":11434" in api_url or "ollama" in api_url.lower() else "openai_compatible"
+
+    if provider == "comfyui":
+        return await _generate_image_comfyui(prompt, config, tool_args)
+
     if not api_url:
         return "Error: image API URL is not configured"
+    def _store_b64_image(b64_value: str) -> str:
+        raw = base64.b64decode(b64_value)
+        image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+        os.makedirs(image_dir, exist_ok=True)
+        filename = f"{uuid.uuid4().hex}.png"
+        path = os.path.join(image_dir, filename)
+        with open(path, "wb") as f:
+            f.write(raw)
+        public_base_url = str(config.get("public_base_url") or "").rstrip("/")
+        return f"{public_base_url}/api/generated-images/{filename}" if public_base_url else f"/api/generated-images/{filename}"
+
+    if provider == "ollama":
+        endpoint = f"{api_url}/api/generate" if not api_url.endswith("/api") else f"{api_url}/generate"
+        payload = {
+            "model": config.get("image_model") or config.get("model"),
+            "prompt": prompt,
+            "stream": False,
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=int(config.get("stream_timeout", 600) or 600))
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(endpoint, json=payload) as resp:
+                    text = await resp.text()
+                    if resp.status >= 400:
+                        return f"Error generating image: Ollama HTTP {resp.status}: {text[:1000]}"
+                    if not text.strip():
+                        return (
+                            "Error generating image: Ollama returned an empty response. "
+                            "The selected image model may have crashed or may not be compatible with this Ollama host."
+                        )
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        return f"Error generating image: Ollama returned non-JSON response: {text[:1000]}"
+        except Exception as exc:
+            return f"Error generating image: Ollama request failed: {exc}"
+
+        images = data.get("images") if isinstance(data, dict) else None
+        if images and isinstance(images, list) and images[0]:
+            try:
+                image_url = _store_b64_image(str(images[0]))
+                return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
+            except Exception as exc:
+                return f"Error saving generated image: {exc}"
+        response = str(data.get("response") or "") if isinstance(data, dict) else ""
+        if response.startswith("data:image/") and ";base64," in response:
+            try:
+                image_url = _store_b64_image(response.split(";base64,", 1)[1])
+                return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
+            except Exception as exc:
+                return f"Error saving generated image: {exc}"
+        return "Error generating image: Ollama response did not include image data."
+
     endpoint = f"{api_url}/images/generations"
     payload = {
         "model": config.get("image_model") or config.get("model"),
@@ -1325,6 +1390,11 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
             payload.pop("response_format", None)
             data = await _post(payload)
     except Exception as exc:
+        if "HTTP 404" in str(exc):
+            return (
+                "Error generating image: the configured OpenAI-compatible endpoint does not expose "
+                "/images/generations. Use a separate image-generation endpoint, or set the Image Generation provider to Ollama."
+            )
         return f"Error generating image: {exc}"
 
     images = data.get("data") if isinstance(data, dict) else None
@@ -1340,20 +1410,230 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
     if not b64_json:
         return "Error generating image: response did not include url or b64_json"
     try:
-        raw = base64.b64decode(b64_json)
+        image_url = _store_b64_image(b64_json)
     except Exception as exc:
         return f"Error decoding generated image: {exc}"
+    return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
+
+
+async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) -> str:
+    """Submit a workflow to a ComfyUI server, poll history, fetch the image."""
+    import asyncio
+    import base64
+    import json
+    import os
+    import uuid
+    import aiohttp
+
+    comfyui_url = (config.get("comfyui_api_url") or "").rstrip("/")
+    if not comfyui_url:
+        return (
+            "Error: ComfyUI API URL is not configured. Set it in Settings > LLM > "
+            "Image Generation > ComfyUI API URL (e.g. http://ollama.home:8188)."
+        )
+
+    try:
+        from app.config import get_comfyui_workflow_json
+        workflow_text = get_comfyui_workflow_json()
+        workflow = json.loads(workflow_text)
+    except Exception as exc:
+        return f"Error parsing ComfyUI workflow JSON: {exc}"
+    if not isinstance(workflow, dict) or not workflow:
+        return "Error: ComfyUI workflow JSON is empty or invalid."
+
+    output_node = str(config.get("comfyui_output_node") or "9")
+    width = int(config.get("comfyui_width") or 512)
+    height = int(config.get("comfyui_height") or 512)
+    steps = int(config.get("comfyui_steps") or 20)
+    cfg = float(config.get("comfyui_cfg") or 7.0)
+    sampler = str(config.get("comfyui_sampler") or "euler")
+    scheduler = str(config.get("comfyui_scheduler") or "normal")
+    seed = int(config.get("comfyui_seed") or 42)
+    negative_prompt = str(config.get("comfyui_negative_prompt") or "")
+
+    size = str(tool_args.get("size") or "").strip()
+    if size and "x" in size:
+        try:
+            w_str, h_str = size.lower().split("x", 1)
+            parsed_w, parsed_h = int(w_str), int(h_str)
+            if parsed_w > 0 and parsed_h > 0:
+                width, height = parsed_w, parsed_h
+        except (ValueError, TypeError):
+            pass
+
+    # Apply the prompt to whichever CLIPTextEncode nodes we can find, and the
+    # sampler/dimensions/steps/cfg/seed to the matching nodes. We do not assume
+    # a specific workflow shape — we walk the graph and patch the obvious
+    # slots. Unrecognised nodes are left untouched, so the user's workflow
+    # template can keep its own customisations.
+    def _walk_inputs(node):
+        inputs = node.get("inputs")
+        return inputs if isinstance(inputs, dict) else {}
+
+    prompt_nodes_seen = 0
+    for node in workflow.values():
+        if not isinstance(node, dict):
+            continue
+        cls = node.get("class_type")
+        inputs = _walk_inputs(node)
+        if cls == "CLIPTextEncode":
+            if prompt_nodes_seen == 0:
+                inputs["text"] = prompt
+                prompt_nodes_seen += 1
+            elif prompt_nodes_seen == 1 and negative_prompt:
+                inputs["text"] = negative_prompt
+                prompt_nodes_seen += 1
+            else:
+                # Subsequent CLIPTextEncode nodes: leave alone.
+                pass
+        elif cls == "EmptyLatentImage":
+            if width:
+                inputs["width"] = width
+            if height:
+                inputs["height"] = height
+        elif cls == "KSampler":
+            if steps:
+                inputs["steps"] = steps
+            if cfg:
+                inputs["cfg"] = cfg
+            if sampler:
+                inputs["sampler_name"] = sampler
+            if scheduler:
+                inputs["scheduler"] = scheduler
+            try:
+                inputs["seed"] = seed
+            except Exception:
+                pass
+        elif cls == "KSamplerAdvanced":
+            if steps:
+                inputs["steps"] = steps
+            if cfg:
+                inputs["cfg"] = cfg
+            if sampler:
+                inputs["sampler_name"] = sampler
+            if scheduler:
+                inputs["scheduler"] = scheduler
+            try:
+                inputs["noise_seed"] = seed
+            except Exception:
+                pass
+
+    client_id = f"threadbot-{uuid.uuid4()}"
+    timeout_total = int(config.get("stream_timeout", 600) or 600)
+    submit_timeout = aiohttp.ClientTimeout(total=60)
+    poll_timeout = aiohttp.ClientTimeout(total=timeout_total)
+    fetch_timeout = aiohttp.ClientTimeout(total=120)
+
+    try:
+        async with aiohttp.ClientSession(timeout=submit_timeout) as session:
+            async with session.post(
+                f"{comfyui_url}/prompt",
+                json={"prompt": workflow, "client_id": client_id},
+            ) as resp:
+                submit_text = await resp.text()
+                if resp.status >= 400:
+                    return f"Error submitting ComfyUI prompt: HTTP {resp.status}: {submit_text[:1500]}"
+                try:
+                    submit_data = json.loads(submit_text)
+                except Exception:
+                    return f"Error parsing ComfyUI /prompt response: {submit_text[:1500]}"
+                prompt_id = submit_data.get("prompt_id")
+                node_errors = submit_data.get("node_errors")
+                if not prompt_id:
+                    return f"ComfyUI /prompt did not return prompt_id: {submit_data}"
+                if node_errors:
+                    return f"ComfyUI reported node errors: {json.dumps(node_errors)[:1500]}"
+    except Exception as exc:
+        return f"Error contacting ComfyUI: {exc}"
+
+    # Poll /history/{prompt_id} until status.completed.
+    deadline = asyncio.get_event_loop().time() + timeout_total
+    history = None
+    last_status = None
+    async with aiohttp.ClientSession(timeout=poll_timeout) as session:
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(2)
+            try:
+                async with session.get(f"{comfyui_url}/history/{prompt_id}") as resp:
+                    if resp.status != 200:
+                        last_status = f"history http {resp.status}"
+                        continue
+                    payload = await resp.json(content_type=None)
+            except Exception as exc:
+                last_status = f"history exception {exc}"
+                continue
+            entry = payload.get(prompt_id)
+            if not entry:
+                last_status = "no entry yet"
+                continue
+            status = entry.get("status") or {}
+            completed = bool(status.get("completed"))
+            last_status = json.dumps({k: status.get(k) for k in ("status", "completed", "messages")})[:500]
+            if completed:
+                history = entry
+                break
+
+    if history is None:
+        return (
+            f"ComfyUI prompt {prompt_id} did not complete within {timeout_total}s "
+            f"(last status: {last_status})."
+        )
+
+    outputs = history.get("outputs") or {}
+    node_output = outputs.get(output_node) or outputs.get(str(output_node))
+    if not node_output and outputs:
+        # Fall back to the first node that has images.
+        for nid, nout in outputs.items():
+            if isinstance(nout, dict) and nout.get("images"):
+                node_output = nout
+                break
+    if not node_output:
+        return f"ComfyUI prompt {prompt_id} produced no outputs (output_node={output_node!r})."
+
+    images = node_output.get("images") or []
+    if not images:
+        return f"ComfyUI prompt {prompt_id} output node {output_node!r} has no images."
 
     image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
     os.makedirs(image_dir, exist_ok=True)
-    filename = f"{uuid.uuid4().hex}.png"
-    path = os.path.join(image_dir, filename)
-    with open(path, "wb") as f:
-        f.write(raw)
-
     public_base_url = str(config.get("public_base_url") or "").rstrip("/")
-    image_url = f"{public_base_url}/api/generated-images/{filename}" if public_base_url else f"/api/generated-images/{filename}"
-    return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
+
+    saved_urls: list[str] = []
+    async with aiohttp.ClientSession(timeout=fetch_timeout) as session:
+        for image_info in images[:1]:
+            filename = image_info.get("filename")
+            subfolder = image_info.get("subfolder") or ""
+            folder_type = image_info.get("type") or "output"
+            if not filename:
+                continue
+            try:
+                params = {
+                    "filename": filename,
+                    "subfolder": subfolder,
+                    "type": folder_type,
+                }
+                async with session.get(f"{comfyui_url}/view", params=params) as resp:
+                    if resp.status != 200:
+                        return (
+                            f"ComfyUI returned HTTP {resp.status} when fetching {filename}."
+                        )
+                    raw = await resp.read()
+            except Exception as exc:
+                return f"Error fetching ComfyUI image {filename}: {exc}"
+
+            local_name = f"{uuid.uuid4().hex}.png"
+            with open(os.path.join(image_dir, local_name), "wb") as f:
+                f.write(raw)
+            url = f"{public_base_url}/api/generated-images/{local_name}" if public_base_url else f"/api/generated-images/{local_name}"
+            saved_urls.append(url)
+
+    if not saved_urls:
+        return f"ComfyUI prompt {prompt_id} did not yield any fetchable images."
+
+    if len(saved_urls) == 1:
+        return f"Generated image:\n\n![Generated image]({saved_urls[0]})\n\nPrompt: {prompt}"
+    links = "\n".join(f"![Generated image]({u})" for u in saved_urls)
+    return f"Generated images:\n\n{links}\n\nPrompt: {prompt}"
 
 
 async def _context_overview(thread_id: str, tool_args: dict) -> str:
