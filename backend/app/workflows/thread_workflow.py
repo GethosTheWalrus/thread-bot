@@ -142,7 +142,7 @@ class RunThreadWorkflow:
             from app.activities.llm_activities import (
                 save_message, get_messages,
                 compact_history, delete_messages_before, discover_tools,
-                execute_agent_tool_activity,
+                execute_agent_tool_activity, generated_images_for_latest_turn,
             )
         thread_id = input["thread_id"]
         message = input["message"]
@@ -670,6 +670,16 @@ class RunThreadWorkflow:
                 await self._publish_event(agent_llm_config, {"type": "thinking", "content": reasoning_buffer.strip()})
             if result.final_output and not full_response_content:
                 await self._publish_event(agent_llm_config, {"type": "text", "content": str(result.final_output)})
+
+            missing_image_markdown = await execute_activity(
+                generated_images_for_latest_turn,
+                {"thread_id": thread_id, "assistant_content": llm_response},
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+            if missing_image_markdown:
+                image_block = "\n\n" + "\n".join(missing_image_markdown)
+                llm_response = f"{llm_response.rstrip()}{image_block}"
+                await self._publish_event(agent_llm_config, {"type": "token", "content": image_block})
 
             # ── Save final assistant response ────────────────────────────
             await execute_activity(

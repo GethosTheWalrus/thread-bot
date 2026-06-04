@@ -11,6 +11,7 @@ from app.activities.llm_activities import (
     compact_history, delete_messages_before, discover_tools,
     execute_agent_tool_activity, sync_discord_title, claim_discord_event,
     generate_and_update_title, index_discord_thread_history, run_agent_response,
+    generated_images_for_latest_turn,
 )
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
 from app.temporal_client import build_worker_versioning_config, connect_temporal_client
@@ -58,6 +59,7 @@ async def run_worker():
             generate_and_update_title,
             save_message,
             get_messages,
+            generated_images_for_latest_turn,
             update_title,
             sync_discord_title,
             compact_history,

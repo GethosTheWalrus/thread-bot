@@ -2429,6 +2429,40 @@ async def get_messages(thread_id: str) -> list[dict]:
 
 
 @defn
+async def generated_images_for_latest_turn(args: dict) -> list[str]:
+    """Return generated image markdown omitted from the latest assistant response."""
+    import re
+    from uuid import UUID
+    from app.database import AsyncSessionLocal
+    from app.database.crud import get_thread_messages
+
+    thread_id = args["thread_id"]
+    assistant_content = args.get("assistant_content") or ""
+    image_markdown = []
+    seen = set()
+
+    async with AsyncSessionLocal() as db:
+        messages = await get_thread_messages(db, UUID(thread_id))
+
+    for message in reversed(messages):
+        if message.role == "user":
+            break
+        if message.role != "tool_result":
+            continue
+        meta = message.metadata_ or {}
+        if meta.get("tool_name") != "generate_image":
+            continue
+        for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", message.content or ""):
+            url = match.group(1).strip()
+            if not url or url in seen or url in assistant_content:
+                continue
+            seen.add(url)
+            image_markdown.append(f"![Generated image]({url})")
+
+    return list(reversed(image_markdown))
+
+
+@defn
 async def update_title(args: dict) -> None:
     """Update thread title."""
     from uuid import UUID
