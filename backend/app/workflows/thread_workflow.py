@@ -369,17 +369,44 @@ class RunThreadWorkflow:
             # ── Build initial message list ───────────────────────────────
             current_messages = list(chat_history)
 
+            server_tools = {}
+            for info in mcp_tools_map.values():
+                server_name = info.get("server_name")
+                tool_name = info.get("original_name")
+                if server_name and tool_name:
+                    server_tools.setdefault(server_name, []).append(tool_name)
+            tool_summary_lines = [
+                "Currently enabled MCP tool servers and tools:",
+                *[
+                    f"- {server}: {', '.join(sorted(set(tools)))}"
+                    for server, tools in sorted(server_tools.items())
+                ],
+                "Available built-in tools: " + ", ".join(
+                    tool["function"]["name"] for tool in builtin_tools
+                ),
+                "Do not claim access to disabled or absent tool servers.",
+            ]
+            tool_summary = "\n".join(tool_summary_lines)
+
             # Inject system message when tools are available
-            if openai_tools and (not current_messages or current_messages[0].get("role") != "system"):
-                current_messages.insert(0, {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant with access to tools. "
-                        "Use tools as many times as needed to thoroughly answer the user's question. "
-                        "Gather information, verify it, and refine your answer "
-                        "before providing a final response. You may call multiple tools in sequence."
-                    ),
-                })
+            if openai_tools:
+                tool_instructions = (
+                    "You are a helpful assistant with access to tools. "
+                    "Use tools as many times as needed to thoroughly answer the user's question. "
+                    "Gather information, verify it, and refine your answer "
+                    "before providing a final response. You may call multiple tools in sequence.\n\n"
+                    f"{tool_summary}"
+                )
+                if current_messages and current_messages[0].get("role") == "system":
+                    current_messages[0] = {
+                        **current_messages[0],
+                        "content": f"{current_messages[0].get('content') or ''}\n\n{tool_instructions}",
+                    }
+                else:
+                    current_messages.insert(0, {
+                        "role": "system",
+                        "content": tool_instructions,
+                    })
 
             # Run the Agents SDK in an activity so each workflow builds its
             # model provider from the llm_config captured at workflow start.
