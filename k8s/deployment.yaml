@@ -97,8 +97,8 @@ spec:
 # Requirements:
 #  * `registry-credentials` Secret must exist in the `threadbot` namespace
 #    (the infra `worker-namespace-prep` step mirrors it in).
-#  * `temporal` connection (TemporalConnection CR) must exist in the `temporal`
-#    namespace.
+#  * `temporal` connection (TemporalConnection CR) must exist in the `threadbot`
+#    namespace because the controller resolves connectionRef there.
 #  * Argo CD must have the TemporalWorkerDeployment health check installed
 #    (see argocd-cm customizations in the infra repo).
 apiVersion: temporal.io/v1alpha1
@@ -122,8 +122,8 @@ spec:
       - rampPercentage: 99
         pauseDuration: 30s
   sunset:
-    deleteDelay: 24h
-    scaledownDelay: 1h
+    deleteDelay: 2h
+    scaledownDelay: 10m
   template:
     spec:
       serviceAccountName: threadbot-sa
