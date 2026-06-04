@@ -61,7 +61,23 @@ build-frontend-image:
 
 update-k8s-images:
   stage: update-manifests
-  image: docker:27
+  image: alpine/git:2.47
+  needs:
+    - job: build-backend-images
+      optional: true
+    - job: build-frontend-image
+      optional: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - k8s/deployment.yaml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - backend/**/*
+        - frontend/**/*
+        - docker/**/*
+        - docker-compose.yml
+        - .gitlab-ci.yml
   before_script:
     - git config user.name "gitlab-ci"
     - git config user.email "gitlab-ci@$CI_SERVER_HOST"
