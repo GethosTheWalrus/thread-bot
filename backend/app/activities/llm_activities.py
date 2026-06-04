@@ -475,7 +475,7 @@ async def _execute_agent_tool(
     stream_channel = config.get("stream_channel")
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
-        "continue_thinking", "web_fetch", "current_datetime", "calculator",
+        "continue_thinking", "web_fetch", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
@@ -1151,6 +1151,10 @@ async def _execute_builtin(
 
     if tool_name == "web_fetch":
         import aiohttp
+        import html as html_mod
+        import re
+        from urllib.parse import urljoin
+
         url = tool_args.get("url", "")
         start_index = int(tool_args.get("start_index", 0))
         max_chars = int(tool_args.get("max_chars", 5000))
@@ -1159,8 +1163,56 @@ async def _execute_builtin(
         context_chars = int(tool_args.get("context_chars", 800))
         max_matches = int(tool_args.get("max_matches", 5))
         case_sensitive = bool(tool_args.get("case_sensitive", False))
+        include_images = bool(tool_args.get("include_images", False))
+        max_images = max(1, min(int(tool_args.get("max_images", 12) or 12), 40))
         if not url.startswith(("http://", "https://")):
             return "Error: URL must start with http:// or https://"
+
+        def _extract_images(text: str, base_url: str) -> str:
+            candidates = []
+            seen = set()
+
+            def add_image(src: str, label: str = "", alt: str = "") -> None:
+                src = html_mod.unescape((src or "").strip())
+                if not src or src.startswith("data:"):
+                    return
+                absolute = urljoin(base_url, src)
+                if absolute in seen or not absolute.startswith(("http://", "https://")):
+                    return
+                seen.add(absolute)
+                candidates.append((absolute, html_mod.unescape(label or "").strip(), html_mod.unescape(alt or "").strip()))
+
+            for match in re.finditer(r'<meta\s+[^>]*(?:property|name)=["\'](?:og:image|twitter:image|twitter:image:src)["\'][^>]*>', text, re.I):
+                tag = match.group(0)
+                content = re.search(r'content=["\']([^"\']+)["\']', tag, re.I)
+                if content:
+                    add_image(content.group(1), "meta image")
+
+            for match in re.finditer(r'<img\s+[^>]*>', text, re.I):
+                tag = match.group(0)
+                src = re.search(r'(?:src|data-src|data-original)=["\']([^"\']+)["\']', tag, re.I)
+                srcset = re.search(r'srcset=["\']([^"\']+)["\']', tag, re.I)
+                alt = re.search(r'alt=["\']([^"\']*)["\']', tag, re.I)
+                title = re.search(r'title=["\']([^"\']*)["\']', tag, re.I)
+                if src:
+                    add_image(src.group(1), "img", alt.group(1) if alt else (title.group(1) if title else ""))
+                elif srcset:
+                    first_src = srcset.group(1).split(",", 1)[0].strip().split(" ", 1)[0]
+                    add_image(first_src, "srcset", alt.group(1) if alt else (title.group(1) if title else ""))
+
+            if not candidates:
+                return "\n\n[Images: no image URLs found in page markup.]"
+            lines = [f"\n\n[Images: showing {min(len(candidates), max_images)} of {len(candidates)} discovered image candidate(s). Use inspect_image_url(url=...) to inspect pixels.]"]
+            for idx, (image_url, label, alt) in enumerate(candidates[:max_images], start=1):
+                details = []
+                if label:
+                    details.append(label)
+                if alt:
+                    details.append(f"alt/title={alt!r}")
+                suffix = f" ({'; '.join(details)})" if details else ""
+                lines.append(f"{idx}. {image_url}{suffix}")
+            return "\n".join(lines)
+
         try:
             timeout = aiohttp.ClientTimeout(total=30)
             async with aiohttp.ClientSession() as session:
@@ -1217,7 +1269,8 @@ async def _execute_builtin(
                                 f"[Page content: {total_len:,} chars total. Found {len(matches)} "
                                 f"match(es) for {'regex' if use_regex else 'query'} {query!r}.]"
                             )
-                            return header + "\n\n" + "\n\n---\n\n".join(snippets)
+                            result = header + "\n\n" + "\n\n---\n\n".join(snippets)
+                            return result + (_extract_images(text, str(resp.url)) if include_images else "")
 
                         # Clamp start_index
                         start_index = max(0, min(start_index, total_len))
@@ -1227,11 +1280,57 @@ async def _execute_builtin(
                         if end_index < total_len:
                             remaining = total_len - end_index
                             header += f"\n[{remaining:,} chars remaining. Use start_index={end_index} to continue reading.]"
-                        return header + "\n\n" + chunk
+                        result = header + "\n\n" + chunk
+                        return result + (_extract_images(text, str(resp.url)) if include_images else "")
                     else:
                         return f"Binary content ({content_type}), {resp.content_length or 'unknown'} bytes — cannot display as text."
         except Exception as e:
             return f"Error fetching URL: {str(e)}"
+
+    if tool_name == "inspect_image_url":
+        import aiohttp
+        import base64
+
+        image_url = str(tool_args.get("url") or "").strip()
+        question = str(tool_args.get("question") or "Describe this image concisely but with enough detail to answer the user's request.").strip()
+        if not image_url.startswith(("http://", "https://", "data:image/")):
+            return "Error: image URL must start with http://, https://, or data:image/"
+
+        llm_image_url = image_url
+        if image_url.startswith(("http://", "https://")):
+            try:
+                timeout = aiohttp.ClientTimeout(total=45)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(image_url, allow_redirects=True) as resp:
+                        if resp.status != 200:
+                            return f"Error inspecting image: HTTP {resp.status}"
+                        content_type = resp.headers.get("Content-Type", "image/png").split(";", 1)[0]
+                        if not content_type.startswith("image/"):
+                            return f"Error inspecting image: URL returned {content_type}, not an image"
+                        raw = await resp.content.read(12 * 1024 * 1024 + 1)
+                        if len(raw) > 12 * 1024 * 1024:
+                            return "Error inspecting image: image exceeds 12MB"
+                        llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+            except Exception as exc:
+                return f"Error inspecting image: {exc}"
+
+        try:
+            completion = await _agents_chat_completion(
+                [{
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": llm_image_url},
+                        {"type": "input_text", "text": question},
+                    ],
+                }],
+                config,
+                temperature=0.2,
+                max_tokens=800,
+            )
+            content = (completion.get("message") or {}).get("content") or completion.get("content") or ""
+            return f"Image inspection for {image_url}:\n{content}" if content else "Image inspection completed without text output."
+        except Exception as exc:
+            return f"Error inspecting image with LLM: {exc}"
 
     if tool_name == "current_datetime":
         from datetime import datetime, timezone
@@ -1941,7 +2040,7 @@ async def execute_tools(args: dict) -> dict:
 
     # Names of built-in tools that don't require MCP containers
     BUILTIN_TOOLS = {
-        "continue_thinking", "web_fetch", "current_datetime", "calculator",
+        "continue_thinking", "web_fetch", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }

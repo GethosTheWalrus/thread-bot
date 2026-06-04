@@ -248,6 +248,9 @@ class RunThreadWorkflow:
                             "By default, returns a paginated window of the page content. Use start_index "
                             "and max_chars to paginate through large pages. To find specific information, "
                             "pass query to search the whole fetched page and return matched snippets. "
+                            "Set include_images=true when visual content on the page may matter; this returns "
+                            "discovered image URLs and alt text. If you need to know what an image shows, call "
+                            "inspect_image_url with the selected image URL. "
                             "The query is a literal substring search by default, not a search-engine query: "
                             "do not use OR, AND, quotes, or multiple alternatives unless use_regex is true. "
                             "Set use_regex=true when you need regex alternation, optional text, or flexible "
@@ -287,6 +290,39 @@ class RunThreadWorkflow:
                                 "case_sensitive": {
                                     "type": "boolean",
                                     "description": "Whether query matching is case-sensitive. Defaults to false.",
+                                },
+                                "include_images": {
+                                    "type": "boolean",
+                                    "description": "When true, include discovered page image URLs, alt/title text, and OpenGraph/Twitter image URLs in the result. Defaults to false.",
+                                },
+                                "max_images": {
+                                    "type": "integer",
+                                    "description": "Maximum image candidates to include when include_images=true. Defaults to 12.",
+                                },
+                            },
+                            "required": ["url"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "inspect_image_url",
+                        "description": (
+                            "Inspect the visual content of an image URL using the configured multimodal LLM "
+                            "and return a concise text description or answer. Use this after web_fetch returns "
+                            "image URLs, or any time you need to understand what a remote image shows."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "The image URL to inspect. Must start with http://, https://, or data:image/.",
+                                },
+                                "question": {
+                                    "type": "string",
+                                    "description": "Specific question or instruction for visual inspection. Defaults to a detailed concise description.",
                                 },
                             },
                             "required": ["url"],
@@ -595,6 +631,8 @@ class RunThreadWorkflow:
                     "answer the user's question. Gather information, verify it, and refine your "
                     "answer before providing a final response. When user messages include images, "
                     "inspect the images directly and incorporate relevant visual details in your answer. "
+                    "When webpage visual content matters, call web_fetch with include_images=true, then call "
+                    "inspect_image_url for the relevant image URLs before answering. "
                     "When the user asks to create an image, call generate_image and include the generated "
                     "image link or markdown in your final response. Choose the generate_image style_preset "
                     "that best matches the user's requested medium or intent; use auto only when the user's "
