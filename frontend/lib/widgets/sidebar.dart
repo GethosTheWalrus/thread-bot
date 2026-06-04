@@ -194,64 +194,90 @@ class Sidebar extends StatelessWidget {
   }
 
   Widget _buildGroupedThreadList(BuildContext context) {
-    // Group threads: Today, Yesterday, Previous 7 Days, Older
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final yesterday = today.subtract(const Duration(days: 1));
-    final weekAgo = today.subtract(const Duration(days: 7));
-
-    final todayThreads = <ThreadListItem>[];
-    final yesterdayThreads = <ThreadListItem>[];
-    final weekThreads = <ThreadListItem>[];
-    final olderThreads = <ThreadListItem>[];
-
-    for (final t in threads) {
-      final date = DateTime(t.updatedAt.year, t.updatedAt.month, t.updatedAt.day);
-      if (!date.isBefore(today)) {
-        todayThreads.add(t);
-      } else if (!date.isBefore(yesterday)) {
-        yesterdayThreads.add(t);
-      } else if (!date.isBefore(weekAgo)) {
-        weekThreads.add(t);
-      } else {
-        olderThreads.add(t);
-      }
-    }
+    final grouped = _groupThreadsBySidebarCategory();
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       children: [
-        if (todayThreads.isNotEmpty) ...[
-          _buildGroupHeader('Today'),
-          ...todayThreads.map((t) => _buildThreadTile(context, t)),
-        ],
-        if (yesterdayThreads.isNotEmpty) ...[
-          _buildGroupHeader('Yesterday'),
-          ...yesterdayThreads.map((t) => _buildThreadTile(context, t)),
-        ],
-        if (weekThreads.isNotEmpty) ...[
-          _buildGroupHeader('Previous 7 days'),
-          ...weekThreads.map((t) => _buildThreadTile(context, t)),
-        ],
-        if (olderThreads.isNotEmpty) ...[
-          _buildGroupHeader('Older'),
-          ...olderThreads.map((t) => _buildThreadTile(context, t)),
+        for (final group in grouped) ...[
+          _buildSidebarGroup(context, group),
         ],
         const SizedBox(height: 8),
       ],
     );
   }
 
-  Widget _buildGroupHeader(String label) {
+  List<_SidebarThreadGroup> _groupThreadsBySidebarCategory() {
+    final grouped = <String, List<ThreadListItem>>{};
+    for (final thread in threads) {
+      final groupName = thread.isDiscordThread
+          ? (thread.discordServerName?.trim().isNotEmpty == true
+              ? thread.discordServerName!.trim()
+              : 'Discord')
+          : 'ThreadBot';
+      grouped.putIfAbsent(groupName, () => <ThreadListItem>[]).add(thread);
+    }
+
+    final entries = grouped.entries.toList()
+      ..sort((a, b) {
+        if (a.key == 'ThreadBot') return -1;
+        if (b.key == 'ThreadBot') return 1;
+        return a.key.toLowerCase().compareTo(b.key.toLowerCase());
+      });
+
+    for (final entry in entries) {
+      entry.value.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    }
+
+    return entries
+        .map((entry) => _SidebarThreadGroup(name: entry.key, threads: entry.value))
+        .toList();
+  }
+
+  Widget _buildSidebarGroup(BuildContext context, _SidebarThreadGroup group) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: Colors.white.withValues(alpha: 0.3),
-          letterSpacing: 0.5,
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          key: PageStorageKey<String>('sidebar-group-${group.name}'),
+          initiallyExpanded: true,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+          childrenPadding: const EdgeInsets.only(left: 8, right: 8, bottom: 4),
+          iconColor: const Color(0xFF8B5CF6),
+          collapsedIconColor: Colors.white.withValues(alpha: 0.35),
+          title: Row(
+            children: [
+              Icon(
+                group.name == 'ThreadBot' ? Icons.chat_bubble_outline : Icons.discord,
+                size: 16,
+                color: group.name == 'ThreadBot'
+                    ? Colors.white.withValues(alpha: 0.45)
+                    : const Color(0xFF8B5CF6),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  group.name,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  color: Colors.white.withValues(alpha: 0.06),
+                ),
+                child: Text(
+                  '${group.threads.length}',
+                  style: TextStyle(fontSize: 11, color: Colors.white.withValues(alpha: 0.6)),
+                ),
+              ),
+            ],
+          ),
+          children: group.threads.map((t) => _buildThreadTile(context, t)).toList(),
         ),
       ),
     );
@@ -450,6 +476,13 @@ class Sidebar extends StatelessWidget {
       ),
     );
   }
+}
+
+class _SidebarThreadGroup {
+  final String name;
+  final List<ThreadListItem> threads;
+
+  const _SidebarThreadGroup({required this.name, required this.threads});
 }
 
 class _DiscordGlyph extends StatelessWidget {

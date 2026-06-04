@@ -313,6 +313,16 @@ async def _get_discord_link_for_thread(db: AsyncSession, thread_id: UUID):
     return await get_discord_link(db, thread_id)
 
 
+async def _get_discord_server_name_for_thread(db: AsyncSession, thread_id: UUID) -> str | None:
+    discord_link = await get_discord_link(db, thread_id)
+    if not discord_link or not discord_link.is_active:
+        return None
+    server = await get_discord_server(db, discord_link.guild_id)
+    if not server:
+        return None
+    return server.guild_name or server.guild_id
+
+
 def _build_workflow_discord_config(discord_config: dict, link) -> dict | None:
     if not link or not link.is_active:
         return None
@@ -595,6 +605,7 @@ async def list_threads_endpoint(
         )
         msg_count = msg_count_result.scalar_one()
         discord_link = await _get_discord_link_for_thread(db, t.id)
+        discord_server_name = await _get_discord_server_name_for_thread(db, t.id)
         thread_items.append(ThreadListItem(
             id=t.id,
             title=t.title,
@@ -603,6 +614,7 @@ async def list_threads_endpoint(
             updated_at=t.updated_at,
             message_count=msg_count,
             is_discord_thread=bool(discord_link and discord_link.is_active),
+            discord_server_name=discord_server_name,
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -684,6 +696,7 @@ async def get_thread_replies_endpoint(
     for t in replies:
         cnt = await db.execute(select(func.count(Message.id)).where(Message.thread_id == t.id))
         discord_link = await _get_discord_link_for_thread(db, t.id)
+        discord_server_name = await _get_discord_server_name_for_thread(db, t.id)
         items.append(ThreadListItem(
             id=t.id,
             title=t.title,
@@ -692,6 +705,7 @@ async def get_thread_replies_endpoint(
             updated_at=t.updated_at,
             message_count=cnt.scalar_one(),
             is_discord_thread=bool(discord_link and discord_link.is_active),
+            discord_server_name=discord_server_name,
         ))
     return items
 

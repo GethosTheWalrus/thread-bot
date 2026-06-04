@@ -74,6 +74,7 @@ class ThreadListItem(BaseModel):
     updated_at: datetime
     message_count: int = 0
     is_discord_thread: bool = False
+    discord_server_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

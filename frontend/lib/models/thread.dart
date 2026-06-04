@@ -62,6 +62,7 @@ class ThreadListItem {
   final DateTime updatedAt;
   final int messageCount;
   final bool isDiscordThread;
+  final String? discordServerName;
 
   ThreadListItem({
     required this.id,
@@ -71,6 +72,7 @@ class ThreadListItem {
     required this.updatedAt,
     required this.messageCount,
     this.isDiscordThread = false,
+    this.discordServerName,
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
@@ -82,6 +84,7 @@ class ThreadListItem {
       updatedAt: DateTime.parse(json['updated_at'] as String),
       messageCount: json['message_count'] as int? ?? 0,
       isDiscordThread: json['is_discord_thread'] as bool? ?? false,
+      discordServerName: json['discord_server_name'] as String?,
     );
   }
 }
