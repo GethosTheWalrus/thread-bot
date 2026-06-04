@@ -15,7 +15,22 @@ async def lifespan(app: FastAPI):
     await load_settings_from_db()
 
     from app.temporal_client import connect_temporal_client
-    client = await connect_temporal_client()
+    from app.config import get_llm_config
+    from app.agents_provider import build_agents_model_provider
+    from datetime import timedelta
+    from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
+
+    llm_config = get_llm_config()
+    plugin = OpenAIAgentsPlugin(
+        model_params=ModelActivityParameters(
+            start_to_close_timeout=timedelta(seconds=llm_config.get("stream_timeout", 600)),
+            heartbeat_timeout=timedelta(seconds=120),
+            streaming_topic="threadbot-model-events",
+            streaming_batch_interval=timedelta(milliseconds=100),
+        ),
+        model_provider=build_agents_model_provider(llm_config),
+    )
+    client = await connect_temporal_client(plugins=[plugin])
     set_temporal_client(client)
     import asyncio
     from app.discord_bot import run_discord_bot
