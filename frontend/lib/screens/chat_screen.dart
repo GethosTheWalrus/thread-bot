@@ -399,10 +399,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     );
   }
 
-  Future<void> _sendMessage(String content) async {
+  Future<void> _sendMessage(String content, [List<String> imageUrls = const []]) async {
     if (_isSending) return;
 
     setState(() => _isSending = true);
+
+    final messageMetadata = imageUrls.isNotEmpty
+        ? {
+            'image_attachments': imageUrls.map((url) => {'url': url}).toList(),
+          }
+        : null;
 
     // Optimistic UI: add user message immediately
     final optimisticMsg = Message(
@@ -411,6 +417,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       role: 'user',
       content: content,
       createdAt: DateTime.now(),
+      metadata: messageMetadata,
     );
     setState(() => _messages.add(optimisticMsg));
     _scrollToBottom(force: true);
@@ -437,6 +444,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         content,
         threadId: _activeThreadId,
         overrides: _activeThreadId == null ? _pendingToolOverrides : null,
+        imageUrls: imageUrls.isEmpty ? null : imageUrls,
       );
       await _processStreamChunks(stream, tempIds);
 
@@ -477,6 +485,25 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final content = event['content'] as String? ?? '';
 
     switch (type) {
+      case 'retry':
+        // A retry means the previous streamed attempt failed. Keep the
+        // optimistic user message and assistant placeholder, but clear any
+        // partial assistant text/intermediate events from the failed attempt.
+        setState(() {
+          final keepIds = tempIds.take(2).toSet();
+          _messages.removeWhere((m) => tempIds.contains(m.id) && !keepIds.contains(m.id));
+          if (tempIds.length > 2) {
+            tempIds.removeRange(2, tempIds.length);
+          }
+          final placeholder = _messages.where(
+            (m) => m.id.startsWith('temp-ast-'),
+          ).firstOrNull;
+          if (placeholder != null) {
+            placeholder.content = '';
+          }
+        });
+        break;
+
       case 'thinking':
         final id = 'temp-thinking-${DateTime.now().millisecondsSinceEpoch}';
         tempIds.add(id);
@@ -1303,7 +1330,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () => _sendMessage(text),
+        onTap: () => _sendMessage(text, const []),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(

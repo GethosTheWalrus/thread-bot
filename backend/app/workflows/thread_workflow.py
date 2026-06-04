@@ -528,6 +528,8 @@ class RunThreadWorkflow:
             # at startup and cannot safely represent runtime Settings changes.
             agent_llm_config = dict(llm_config)
             agent_llm_config["tool_inventory"] = tool_summary
+            agent_retry_max_attempts = int(agent_llm_config.get("agent_retry_max_attempts") or 3)
+            agent_llm_config["agent_retry_max_attempts"] = agent_retry_max_attempts
 
             agent_result = await execute_activity(
                 run_agent_response,
@@ -539,8 +541,13 @@ class RunThreadWorkflow:
                     "thread_id": thread_id,
                 },
                 start_to_close_timeout=timedelta(seconds=llm_config.get("stream_timeout", 600)),
-                heartbeat_timeout=timedelta(seconds=120),
-                retry_policy=RetryPolicy(maximum_attempts=1),
+                heartbeat_timeout=timedelta(seconds=min(int(llm_config.get("stream_timeout", 600) or 600), 300)),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=5),
+                    backoff_coefficient=2.0,
+                    maximum_interval=timedelta(seconds=60),
+                    maximum_attempts=agent_retry_max_attempts,
+                ),
                 summary="Run agent response",
             )
 

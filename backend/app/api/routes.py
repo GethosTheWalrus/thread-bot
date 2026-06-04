@@ -50,8 +50,10 @@ from app.models.schemas import (
     DiscordServerListResponse,
     DiscordServerMcpOverridesResponse,
     DiscordServerMcpOverridesRequest,
+    ImageUploadResponse,
+    UploadedImageResponse,
 )
-from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -370,6 +372,13 @@ def _content_with_image_lines(content: str, attachments: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _clean_image_attachment_lines(content: str) -> str:
+    return "\n".join(
+        line for line in (content or "").splitlines()
+        if not line.startswith("Image attachment: ")
+    ).strip()
+
+
 def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None) -> ThreadResponse:
     msgs = messages or []
     config = get_llm_config()
@@ -518,6 +527,7 @@ async def chat_websocket(websocket: WebSocket):
         thread_id,
         "user",
         message_content,
+        metadata=message_metadata or {},
         discord_config=llm_config.get("discord"),
     )
     if discord_message_id and llm_config.get("discord"):
@@ -589,6 +599,72 @@ async def get_generated_image(filename: str, db: AsyncSession = Depends(get_db))
             raise HTTPException(status_code=404, detail="Image not found")
         return Response(content=image.content, media_type=image.content_type or "image/png")
     return FileResponse(path)
+
+
+@router.post("/uploads/images", response_model=ImageUploadResponse)
+async def upload_images_endpoint(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    import mimetypes
+    import os
+    import uuid as uuid_mod
+
+    from app.config import get_llm_config
+
+    max_files = 8
+    max_image_bytes = 15 * 1024 * 1024
+    max_total_bytes = 40 * 1024 * 1024
+
+    if len(files) > max_files:
+        raise HTTPException(status_code=413, detail=f"Too many images; maximum is {max_files}")
+
+    image_dir = get_llm_config().get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    os.makedirs(image_dir, exist_ok=True)
+
+    public_base_url = str(get_llm_config().get("public_base_url") or str(request.base_url).rstrip("/")).rstrip("/")
+    uploaded: list[UploadedImageResponse] = []
+    total_bytes = 0
+
+    for upload in files:
+        filename = upload.filename or "image"
+        content_type = upload.content_type or ""
+        if not content_type.startswith("image/"):
+            content_type = mimetypes.guess_type(filename)[0] or content_type
+        if not content_type.startswith("image/"):
+            continue
+        raw = await upload.read(max_image_bytes + 1)
+        if not raw:
+            continue
+        if len(raw) > max_image_bytes:
+            raise HTTPException(status_code=413, detail=f"Image {filename} exceeds 15MB")
+        total_bytes += len(raw)
+        if total_bytes > max_total_bytes:
+            raise HTTPException(status_code=413, detail="Combined image upload exceeds 40MB")
+        ext = os.path.splitext(filename)[1].lower()
+        if not ext:
+            ext = mimetypes.guess_extension(content_type) or ".png"
+        if ext == ".jpe":
+            ext = ".jpg"
+        stored_filename = f"upload-{uuid_mod.uuid4().hex}{ext}"
+        path = os.path.join(image_dir, stored_filename)
+        with open(path, "wb") as f:
+            f.write(raw)
+        await db.merge(GeneratedImage(filename=stored_filename, content=raw, content_type=content_type))
+        uploaded.append(
+            UploadedImageResponse(
+                filename=stored_filename,
+                url=f"{public_base_url}/api/generated-images/{stored_filename}",
+                content_type=content_type,
+            )
+        )
+
+    if not uploaded:
+        raise HTTPException(status_code=400, detail="No valid image files uploaded")
+
+    await db.commit()
+    return ImageUploadResponse(images=uploaded)
 
 
 @router.get("/threads", response_model=ThreadListResponse)

@@ -1,8 +1,13 @@
-import 'package:flutter/material.dart';
 import 'dart:math' as math;
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:threadbot/services/api_service.dart';
+import 'package:threadbot/utils/web_image_io.dart';
 
 class ChatInput extends StatefulWidget {
-  final Function(String) onSend;
+  final Future<void> Function(String content, List<String> imageUrls) onSend;
   final bool isSending;
   final VoidCallback? onToolsPressed;
   final bool hasToolOverrides;
@@ -26,7 +31,11 @@ class ChatInput extends StatefulWidget {
 class _ChatInputState extends State<ChatInput> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
+  final ApiService _api = ApiService();
+  final List<_AttachedImage> _attachments = [];
   bool _hasText = false;
+  bool _isUploadingImages = false;
+  StreamSubscription? _pasteSubscription;
 
   @override
   void initState() {
@@ -38,20 +47,88 @@ class _ChatInputState extends State<ChatInput> {
       }
     });
     _focusNode.addListener(() => setState(() {}));
+    _pasteSubscription = listenForImagePaste(_handlePastedImages);
   }
 
   @override
   void dispose() {
+    _pasteSubscription?.cancel();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  void _handleSend() {
-    final text = _controller.text.trim();
-    if (text.isEmpty || widget.isSending) return;
+  bool get _canSend =>
+      ( _hasText || _attachments.isNotEmpty ) && !widget.isSending && !_isUploadingImages;
 
-    widget.onSend(text);
+  Future<void> _handlePastedImages(List<WebImageFile> files) async {
+    if (files.isEmpty || !mounted) return;
+    await _uploadImages(files);
+  }
+
+  Future<void> _pickImages() async {
+    if (_isUploadingImages || widget.isSending) return;
+    try {
+      final files = await pickImageFiles(multiple: true);
+      if (!mounted || files.isEmpty) return;
+      await _uploadImages(files);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to add image: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _uploadImages(List<WebImageFile> files) async {
+    if (files.isEmpty) return;
+    setState(() => _isUploadingImages = true);
+    try {
+      final urls = await _api.uploadImages(files);
+      if (!mounted || urls.isEmpty) return;
+      setState(() {
+        _attachments.addAll(urls.map((url) => _AttachedImage(url: url)));
+      });
+      _focusNode.requestFocus();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Image upload failed: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingImages = false);
+    }
+  }
+
+  void _removeAttachment(int index) {
+    setState(() {
+      _attachments.removeAt(index);
+    });
+  }
+
+  Future<void> _handleSend() async {
+    final text = _controller.text.trim();
+    if ((text.isEmpty && _attachments.isEmpty) || !_canSend) return;
+
+    final imageUrls = _attachments.map((attachment) => attachment.url).toList(growable: false);
+    await widget.onSend(text, imageUrls);
+    if (!mounted) return;
+    setState(() {
+      _attachments.clear();
+      _hasText = false;
+    });
     _controller.clear();
     _focusNode.requestFocus();
   }
@@ -66,6 +143,101 @@ class _ChatInputState extends State<ChatInput> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (_attachments.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: List.generate(_attachments.length, (index) {
+                        final attachment = _attachments[index];
+                        final resolved = Uri.base.resolve(attachment.url).toString();
+                        final filename = Uri.parse(attachment.url).pathSegments.last;
+                        return Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            Container(
+                              width: 84,
+                              height: 84,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(14),
+                                color: const Color(0xFF111118),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: Stack(
+                                children: [
+                                  Positioned.fill(
+                                    child: Image.network(
+                                      resolved,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, __, ___) => Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(8),
+                                          child: Text(
+                                            filename,
+                                            maxLines: 3,
+                                            overflow: TextOverflow.ellipsis,
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.white.withValues(alpha: 0.55),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Positioned(
+                                    left: 6,
+                                    right: 6,
+                                    bottom: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withValues(alpha: 0.55),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        filename,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(fontSize: 10, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Positioned(
+                              top: -6,
+                              right: -6,
+                              child: Material(
+                                color: Colors.transparent,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(999),
+                                  onTap: () => _removeAttachment(index),
+                                  child: Container(
+                                    width: 22,
+                                    height: 22,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF111118),
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                    ),
+                                    child: const Icon(Icons.close_rounded, size: 14, color: Colors.white70),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      }),
+                    ),
+                  ),
+                ),
               Container(
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
@@ -86,18 +258,16 @@ class _ChatInputState extends State<ChatInput> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    // Text field with stack-based hint to avoid native placeholder doubling
                     Expanded(
                       child: Stack(
                         children: [
-                          // Hint overlay (avoids browser native placeholder)
                           if (!_hasText)
                             Positioned(
                               left: 20,
                               top: 14,
                               child: IgnorePointer(
                                 child: Text(
-                                  'Message ThreadBot...',
+                                  _attachments.isEmpty ? 'Message ThreadBot...' : 'Add a note...',
                                   style: TextStyle(
                                     fontSize: 15,
                                     height: 1.5,
@@ -116,7 +286,7 @@ class _ChatInputState extends State<ChatInput> {
                               maxLines: 6,
                               minLines: 1,
                               textInputAction: TextInputAction.send,
-                              onSubmitted: (_) => _handleSend(),
+                              onSubmitted: (_) { _handleSend(); },
                               cursorColor: const Color(0xFF8B5CF6),
                               enableSuggestions: false,
                               autocorrect: false,
@@ -129,15 +299,45 @@ class _ChatInputState extends State<ChatInput> {
                                 border: InputBorder.none,
                                 contentPadding: EdgeInsets.fromLTRB(20, 14, 8, 14),
                                 filled: false,
-                                // No hintText — using Stack overlay instead
                               ),
                             ),
                           ),
                         ],
                       ),
                     ),
-
-                    // Context donut
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: kIsWeb && !_isUploadingImages && !widget.isSending ? _pickImages : null,
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              color: _isUploadingImages
+                                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                  : Colors.transparent,
+                            ),
+                            child: _isUploadingImages
+                                ? const Padding(
+                                    padding: EdgeInsets.all(10),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation(Colors.white),
+                                    ),
+                                  )
+                                : Icon(
+                                    Icons.add_photo_alternate_outlined,
+                                    size: 16,
+                                    color: Colors.white.withValues(alpha: 0.3),
+                                  ),
+                          ),
+                        ),
+                      ),
+                    ),
                     if (widget.estimatedTokens > 0)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 6),
@@ -146,8 +346,6 @@ class _ChatInputState extends State<ChatInput> {
                           contextWindow: widget.contextWindow,
                         ),
                       ),
-
-                    // Tools button
                     if (widget.onToolsPressed != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 6),
@@ -176,26 +374,22 @@ class _ChatInputState extends State<ChatInput> {
                           ),
                         ),
                       ),
-
-                    // Send button
                     Padding(
                       padding: const EdgeInsets.only(right: 8, bottom: 6),
                       child: AnimatedScale(
-                        scale: _hasText && !widget.isSending ? 1.0 : 0.85,
+                        scale: _canSend ? 1.0 : 0.85,
                         duration: const Duration(milliseconds: 150),
                         child: Material(
                           color: Colors.transparent,
                           child: InkWell(
                             borderRadius: BorderRadius.circular(12),
-                            onTap: _hasText && !widget.isSending ? _handleSend : null,
+                            onTap: _canSend ? () { _handleSend(); } : null,
                             child: Container(
                               width: 36,
                               height: 36,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
-                                color: _hasText && !widget.isSending
-                                    ? const Color(0xFF8B5CF6)
-                                    : Colors.white.withValues(alpha: 0.06),
+                                color: _canSend ? const Color(0xFF8B5CF6) : Colors.white.withValues(alpha: 0.06),
                               ),
                               child: widget.isSending
                                   ? const Padding(
@@ -208,9 +402,7 @@ class _ChatInputState extends State<ChatInput> {
                                   : Icon(
                                       Icons.arrow_upward_rounded,
                                       size: 18,
-                                      color: _hasText
-                                          ? Colors.white
-                                          : Colors.white.withValues(alpha: 0.2),
+                                      color: _canSend ? Colors.white : Colors.white.withValues(alpha: 0.2),
                                     ),
                             ),
                           ),
@@ -234,6 +426,12 @@ class _ChatInputState extends State<ChatInput> {
       ),
     );
   }
+}
+
+class _AttachedImage {
+  final String url;
+
+  const _AttachedImage({required this.url});
 }
 
 

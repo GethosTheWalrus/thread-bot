@@ -1391,18 +1391,109 @@ class _ChatBubbleState extends State<_ChatBubble> {
       blockquotePadding: const EdgeInsets.only(left: 16, top: 4, bottom: 4),
     );
 
+    final body = widget.message.displayContent.trim();
+    final hasAttachments = widget.message.imageAttachments.isNotEmpty;
+
     if (!isUser && widget.message.id.startsWith('temp-ast-')) {
-      return _AnimatedMarkdown(data: widget.message.displayContent, styleSheet: style);
+      return _AnimatedMarkdown(data: body, styleSheet: style);
     }
 
-    return MarkdownBody(
-      data: widget.message.displayContent,
-      selectable: true,
-      sizedImageBuilder: (config) => _buildMarkdownImage(config.uri),
-      onTapLink: (text, href, title) {
-        if (href != null) launchUrl(Uri.parse(href));
-      },
-      styleSheet: style,
+    final bodyWidget = body.isNotEmpty
+        ? MarkdownBody(
+            data: body,
+            selectable: true,
+            sizedImageBuilder: (config) => _buildMarkdownImage(config.uri),
+            onTapLink: (text, href, title) {
+              if (href != null) launchUrl(Uri.parse(href));
+            },
+            styleSheet: style,
+          )
+        : const SizedBox.shrink();
+
+    if (!hasAttachments) {
+      return bodyWidget;
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        bodyWidget,
+        if (body.isNotEmpty) const SizedBox(height: 10),
+        _InlineImageAttachments(images: widget.message.imageAttachments),
+      ],
+    );
+  }
+}
+
+class _InlineImageAttachments extends StatelessWidget {
+  final List<Map<String, dynamic>> images;
+
+  const _InlineImageAttachments({required this.images});
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: images.map((image) {
+        final url = image['url'] as String?;
+        if (url == null || url.isEmpty) return const SizedBox.shrink();
+        final filename = (image['filename'] as String?) ?? Uri.parse(url).pathSegments.last;
+        final resolved = Uri.base.resolve(url).toString();
+        return GestureDetector(
+          onTap: () => launchUrl(Uri.parse(resolved)),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 280, maxHeight: 280),
+              decoration: BoxDecoration(
+                color: const Color(0xFF111118),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Image.network(
+                      resolved,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        alignment: Alignment.center,
+                        padding: const EdgeInsets.all(16),
+                        child: Text(
+                          filename,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: 0.6),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    left: 8,
+                    right: 8,
+                    bottom: 8,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        filename,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 11, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }).toList(),
     );
   }
 }

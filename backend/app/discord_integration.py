@@ -532,6 +532,13 @@ def format_threadbot_message(role: str, content: str) -> str | None:
     return None
 
 
+def _remove_image_attachment_lines(content: str) -> str:
+    return "\n".join(
+        line for line in (content or "").splitlines()
+        if not line.startswith("Image attachment: ")
+    ).strip()
+
+
 def _format_assistant_for_discord(content: str, discord_config: dict | None = None) -> str:
     prefix = (discord_config or {}).get("assistant_response_prefix") or ""
     return f"{prefix}{content}" if prefix else content
@@ -547,6 +554,7 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
         return content, []
 
     import os
+    import mimetypes
     from urllib.parse import urlparse
     from app.config import get_llm_config
 
@@ -587,7 +595,7 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
                 return {
                     "filename": filename,
                     "content": f.read(),
-                    "content_type": "image/png",
+                    "content_type": mimetypes.guess_type(filename)[0] or "image/png",
                 }
 
         if parsed.scheme not in {"http", "https"}:
@@ -629,6 +637,91 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
     cleaned = re.sub(r"(?im)^\s*Generated image:\s*$", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned or "Generated image:", files
+
+
+async def _discord_files_from_image_urls(urls: list[dict] | list[str], discord_config: dict | None = None) -> list[dict]:
+    if not urls:
+        return []
+
+    import os
+    import mimetypes
+    from urllib.parse import urlparse
+    from app.config import get_llm_config
+
+    llm_config = get_llm_config()
+    image_dir = llm_config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    files = []
+
+    async def _file_from_url(url: str, index: int) -> dict | None:
+        parsed = urlparse(url)
+        local_match = re.search(r"/api/generated-images/([^/?#]+)", parsed.path or url)
+        if local_match:
+            filename = local_match.group(1)
+            if "/" in filename or "\\" in filename or filename.startswith("."):
+                return None
+            path = os.path.join(image_dir, filename)
+            if not os.path.isfile(path):
+                try:
+                    from sqlalchemy import select
+                    from app.database import AsyncSessionLocal
+                    from app.models.models import GeneratedImage
+
+                    async with AsyncSessionLocal() as db:
+                        result = await db.execute(
+                            select(GeneratedImage).where(GeneratedImage.filename == filename)
+                        )
+                        image = result.scalar_one_or_none()
+                    if not image:
+                        return None
+                    return {
+                        "filename": filename,
+                        "content": image.content,
+                        "content_type": image.content_type or "image/png",
+                    }
+                except Exception as exc:
+                    print(f"[discord] failed to load uploaded image {filename} from DB: {exc}", flush=True)
+                    return None
+            with open(path, "rb") as f:
+                return {
+                    "filename": filename,
+                    "content": f.read(),
+                    "content_type": mimetypes.guess_type(filename)[0] or "image/png",
+                }
+
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        return None
+                    content_type = resp.headers.get("Content-Type", "image/png")
+                    if not content_type.startswith("image/"):
+                        return None
+                    raw = await resp.read()
+                    if len(raw) > 24 * 1024 * 1024:
+                        return None
+                    ext = content_type.split("/", 1)[1].split(";", 1)[0] or "png"
+                    if ext == "jpeg":
+                        ext = "jpg"
+                    return {
+                        "filename": f"generated-image-{index}.{ext}",
+                        "content": raw,
+                        "content_type": content_type,
+                    }
+        except Exception as exc:
+            print(f"[discord] failed to download uploaded image {url}: {exc}", flush=True)
+            return None
+
+    for idx, url in enumerate([u.get("url") if isinstance(u, dict) else u for u in urls][:10], start=1):
+        if not isinstance(url, str) or not url:
+            continue
+        file_info = await _file_from_url(url.strip(), idx)
+        if file_info:
+            files.append(file_info)
+
+    return files
 
 
 def _mention_display_names(user: dict) -> list[str]:
@@ -709,21 +802,26 @@ async def sync_message_to_discord(
                 return None
             discord_thread_id = link.discord_thread_id
     try:
-        files = None
+        files = []
+        image_attachments = (metadata or {}).get("image_attachments") or []
         if role == "assistant":
             formatted = await _resolve_readable_mentions_for_discord(
                 discord_thread_id,
                 formatted,
                 discord_config=config,
             )
-            formatted, files = await _discord_files_from_markdown_images(formatted, discord_config=config)
+            formatted, markdown_files = await _discord_files_from_markdown_images(formatted, discord_config=config)
+            files.extend(markdown_files)
+        if image_attachments:
+            files.extend(await _discord_files_from_image_urls(image_attachments, discord_config=config))
+            formatted = _remove_image_attachment_lines(formatted)
         reply_to_message_id = config.get("reply_to_message_id") if role == "assistant" else None
         return await post_discord_message(
             discord_thread_id,
             formatted,
             discord_config=config,
             reply_to_message_id=reply_to_message_id,
-            files=files,
+            files=files or None,
         )
     except Exception as exc:
         print(f"[discord] failed to post message for thread {thread_id}: {exc}", flush=True)
@@ -763,6 +861,7 @@ async def post_existing_thread_to_discord(thread_id: UUID) -> str | None:
     from app.database import AsyncSessionLocal
     from app.database.crud import get_discord_link, get_thread_messages, update_discord_link_cursor
 
+    config = await _load_fresh_discord_config()
     async with AsyncSessionLocal() as db:
         link = await get_discord_link(db, thread_id)
         if not link:
@@ -770,9 +869,13 @@ async def post_existing_thread_to_discord(thread_id: UUID) -> str | None:
         messages = await get_thread_messages(db, thread_id)
         last_id = None
         for message in messages:
-            formatted = format_threadbot_message(message.role, message.content)
-            if formatted:
-                last_id = await post_discord_message(link.discord_thread_id, formatted)
+            last_id = await sync_message_to_discord(
+                thread_id,
+                message.role,
+                message.content,
+                metadata=message.metadata_ or {},
+                discord_config=config,
+            )
         if last_id:
             await update_discord_link_cursor(db, link, last_id)
             await db.commit()

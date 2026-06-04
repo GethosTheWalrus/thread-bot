@@ -1,4 +1,4 @@
-from temporalio.activity import defn, heartbeat
+from temporalio.activity import defn, heartbeat, info
 import asyncio
 import os
 
@@ -217,6 +217,33 @@ async def _save_inline(thread_id: str, role: str, content: str, metadata: dict |
     async with AsyncSessionLocal() as db:
         await add_message(db, UUID(thread_id), role, content, metadata=metadata)
         await db.commit()
+
+
+async def _cleanup_prior_agent_attempts(thread_id: str, attempt: int) -> None:
+    """Remove transient inline rows from failed prior Temporal activity attempts."""
+    if attempt <= 1:
+        return
+    try:
+        from uuid import UUID
+        from sqlalchemy import select
+        from app.database import AsyncSessionLocal
+        from app.models.models import Message
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(Message).where(
+                    Message.thread_id == UUID(thread_id),
+                    Message.role.in_(["thinking", "tool_call", "tool_result"]),
+                )
+            )
+            for message in result.scalars().all():
+                meta = message.metadata_ or {}
+                row_attempt = meta.get("agent_attempt")
+                if isinstance(row_attempt, int) and row_attempt < attempt:
+                    await db.delete(message)
+            await db.commit()
+    except Exception as exc:
+        print(f"[agent-retry] failed to clean prior attempt rows: {exc}", flush=True)
 
 
 async def _typing_pulse(discord_config: dict | None) -> None:
@@ -453,6 +480,7 @@ async def _execute_agent_tool(
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
+    agent_attempt = config.get("agent_attempt")
     tool_call = {
         "id": tool_call_id,
         "type": "function",
@@ -466,7 +494,7 @@ async def _execute_agent_tool(
                 thread_id,
                 "tool_call",
                 f"Calling {display_name}",
-                metadata={"tool_calls": [tool_call]},
+                metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
             )
             await _publish(redis_url, stream_channel, {
                 "type": "tool_call",
@@ -481,7 +509,7 @@ async def _execute_agent_tool(
                 thread_id,
                 "tool_result",
                 result_text,
-                metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+                metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
             )
             await _publish(redis_url, stream_channel, {
                 "type": "tool_result",
@@ -497,7 +525,7 @@ async def _execute_agent_tool(
             thread_id,
             "tool_result",
             not_found,
-            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
         )
         await _publish(redis_url, stream_channel, {
             "type": "tool_result",
@@ -513,7 +541,7 @@ async def _execute_agent_tool(
         thread_id,
         "tool_call",
         f"Calling {display_name}",
-        metadata={"tool_calls": [tool_call]},
+        metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
     )
     await _publish(redis_url, stream_channel, {
         "type": "tool_call",
@@ -556,7 +584,7 @@ async def _execute_agent_tool(
             thread_id,
             "tool_result",
             result_text,
-            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+            metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
         )
         await _publish(redis_url, stream_channel, {
             "type": "tool_result",
@@ -570,7 +598,7 @@ async def _execute_agent_tool(
         thread_id,
         "tool_result",
         result_text,
-        metadata={"tool_call_id": tool_call_id, "tool_name": tool_name},
+        metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
     )
     await _publish(redis_url, stream_channel, {
         "type": "tool_result",
@@ -866,9 +894,21 @@ async def run_agent_response(args: dict) -> dict:
     stream_channel = config.get("stream_channel")
     max_turns = config.get("max_iterations", 25)
     discord_config = config.get("discord")
+    attempt = info().attempt
+    max_attempts = int(config.get("agent_retry_max_attempts") or 3)
+    config["agent_attempt"] = attempt
 
-    heartbeat({"step": "agent_run", "max_turns": max_turns})
+    heartbeat({"step": "agent_run", "max_turns": max_turns, "attempt": attempt})
     set_tracing_disabled(True)
+
+    if attempt > 1:
+        await _cleanup_prior_agent_attempts(thread_id, attempt)
+        await _publish(redis_url, stream_channel, {
+            "type": "retry",
+            "content": f"Retrying LLM stream after a transient failure (attempt {attempt}/{max_attempts}).",
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+        })
 
     provider, model = _agents_provider_and_model(config)
     discord_instruction = ""
@@ -919,7 +959,7 @@ async def run_agent_response(args: dict) -> dict:
                         token_count += 1
                         await _publish(redis_url, stream_channel, {"type": "token", "content": token})
                         if token_count % 50 == 0:
-                            heartbeat({"step": "agent_streaming", "tokens": token_count})
+                            heartbeat({"step": "agent_streaming", "tokens": token_count, "attempt": attempt})
                 elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
                     reasoning_buffer += getattr(raw, "delta", "") or ""
                 elif raw_type == "response.completed":
@@ -945,7 +985,7 @@ async def run_agent_response(args: dict) -> dict:
                         parts.append(text)
                 thinking = "\n".join(parts).strip()
                 if thinking:
-                    await _save_inline(thread_id, "thinking", thinking)
+                    await _save_inline(thread_id, "thinking", thinking, metadata={"agent_attempt": attempt})
                     await _publish(redis_url, stream_channel, {"type": "thinking", "content": thinking})
 
         if result.run_loop_exception:
@@ -953,14 +993,22 @@ async def run_agent_response(args: dict) -> dict:
 
         final_output = "" if result.final_output is None else str(result.final_output)
         if reasoning_buffer.strip():
-            await _save_inline(thread_id, "thinking", reasoning_buffer.strip())
+            await _save_inline(thread_id, "thinking", reasoning_buffer.strip(), metadata={"agent_attempt": attempt})
             await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning_buffer.strip()})
         if final_output and not full_response_content:
             await _publish(redis_url, stream_channel, {"type": "text", "content": final_output})
-        heartbeat({"step": "agent_done", "tokens": token_count})
+        heartbeat({"step": "agent_done", "tokens": token_count, "attempt": attempt})
         return {"content": final_output or full_response_content}
     except Exception as e:
-        await _publish(redis_url, stream_channel, f"[ERROR] Agent run failed: {str(e)}")
+        if attempt >= max_attempts:
+            await _publish(redis_url, stream_channel, f"[ERROR] Agent run failed after {attempt} attempt(s): {str(e)}")
+        else:
+            await _publish(redis_url, stream_channel, {
+                "type": "retry",
+                "content": f"LLM stream failed; Temporal will retry (next attempt {attempt + 1}/{max_attempts}).",
+                "attempt": attempt + 1,
+                "max_attempts": max_attempts,
+            })
         raise
     finally:
         typing_stop.set()
@@ -1337,6 +1385,8 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(endpoint, json=payload) as resp:
                     text = await resp.text()
+                    if resp.status >= 500:
+                        raise RuntimeError(f"Ollama image endpoint transient HTTP {resp.status}: {text[:1000]}")
                     if resp.status >= 400:
                         return f"Error generating image: Ollama HTTP {resp.status}: {text[:1000]}"
                     if not text.strip():
@@ -1349,7 +1399,7 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
                     except Exception:
                         return f"Error generating image: Ollama returned non-JSON response: {text[:1000]}"
         except Exception as exc:
-            return f"Error generating image: Ollama request failed: {exc}"
+            raise RuntimeError(f"Ollama image request failed: {exc}") from exc
 
         images = data.get("images") if isinstance(data, dict) else None
         if images and isinstance(images, list) and images[0]:
@@ -1385,6 +1435,8 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(endpoint, json=body, headers=headers) as resp:
                 text = await resp.text()
+                if resp.status >= 500:
+                    raise RuntimeError(f"Transient HTTP {resp.status}: {text[:1000]}")
                 if resp.status >= 400:
                     raise RuntimeError(f"HTTP {resp.status}: {text[:1000]}")
                 try:
@@ -1406,7 +1458,11 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
                 "Error generating image: the configured OpenAI-compatible endpoint does not expose "
                 "/images/generations. Use a separate image-generation endpoint, or set the Image Generation provider to Ollama."
             )
-        return f"Error generating image: {exc}"
+        if "Transient HTTP" in str(exc):
+            raise RuntimeError(f"Image generation request failed: {exc}") from exc
+        if str(exc).startswith("HTTP 4") or str(exc).startswith("Invalid JSON response"):
+            return f"Error generating image: {exc}"
+        raise RuntimeError(f"Image generation request failed: {exc}") from exc
 
     images = data.get("data") if isinstance(data, dict) else None
     if not images or not isinstance(images, list) or not isinstance(images[0], dict):
@@ -1601,6 +1657,8 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
                 json={"prompt": workflow, "client_id": client_id},
             ) as resp:
                 submit_text = await resp.text()
+                if resp.status >= 500:
+                    raise RuntimeError(f"ComfyUI /prompt transient HTTP {resp.status}: {submit_text[:1500]}")
                 if resp.status >= 400:
                     return f"Error submitting ComfyUI prompt: HTTP {resp.status}: {submit_text[:1500]}"
                 try:
@@ -1614,7 +1672,7 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
                 if node_errors:
                     return f"ComfyUI reported node errors: {json.dumps(node_errors)[:1500]}"
     except Exception as exc:
-        return f"Error contacting ComfyUI: {exc}"
+        raise RuntimeError(f"Error contacting ComfyUI: {exc}") from exc
 
     # Poll /history/{prompt_id} until status.completed.
     deadline = asyncio.get_event_loop().time() + timeout_total
@@ -1644,7 +1702,7 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
                 break
 
     if history is None:
-        return (
+        raise RuntimeError(
             f"ComfyUI prompt {prompt_id} did not complete within {timeout_total}s "
             f"(last status: {last_status})."
         )
@@ -1686,13 +1744,15 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
                     "type": folder_type,
                 }
                 async with session.get(f"{comfyui_url}/view", params=params) as resp:
+                    if resp.status >= 500:
+                        raise RuntimeError(f"ComfyUI /view transient HTTP {resp.status} for {filename}")
                     if resp.status != 200:
                         return (
                             f"ComfyUI returned HTTP {resp.status} when fetching {filename}."
                         )
                     raw = await resp.read()
             except Exception as exc:
-                return f"Error fetching ComfyUI image {filename}: {exc}"
+                raise RuntimeError(f"Error fetching ComfyUI image {filename}: {exc}") from exc
 
             local_name = f"{uuid.uuid4().hex}.png"
             with open(os.path.join(image_dir, local_name), "wb") as f:
@@ -2262,7 +2322,54 @@ async def get_messages(thread_id: str) -> list[dict]:
     async with AsyncSessionLocal() as db:
         messages = await get_thread_messages(db, UUID(thread_id))
 
-    def _message_content_with_images(text: str, metadata: dict) -> str | list[dict]:
+    async def _llm_image_url(url: str) -> str:
+        """Prefer inline data URLs for ThreadBot-hosted images so local LLMs can see them."""
+        import base64
+        import mimetypes
+        import re
+        from urllib.parse import urlparse
+
+        local_match = re.search(r"/api/generated-images/([^/?#]+)", urlparse(url).path or url)
+        if not local_match:
+            return url
+
+        filename = local_match.group(1)
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            return url
+
+        raw = None
+        content_type = mimetypes.guess_type(filename)[0] or "image/png"
+        try:
+            from app.config import get_llm_config
+
+            image_dir = get_llm_config().get("generated_image_dir") or "/tmp/threadbot-generated-images"
+            path = os.path.join(image_dir, filename)
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    raw = f.read()
+        except Exception:
+            raw = None
+
+        if raw is None:
+            try:
+                from sqlalchemy import select
+                from app.models.models import GeneratedImage
+
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(select(GeneratedImage).where(GeneratedImage.filename == filename))
+                    image = result.scalar_one_or_none()
+                if image:
+                    raw = image.content
+                    content_type = image.content_type or content_type
+            except Exception:
+                raw = None
+
+        if not raw:
+            return url
+        encoded = base64.b64encode(raw).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+
+    async def _message_content_with_images(text: str, metadata: dict) -> str | list[dict]:
         attachments = metadata.get("image_attachments") or []
         image_parts = []
         for attachment in attachments:
@@ -2271,7 +2378,7 @@ async def get_messages(thread_id: str) -> list[dict]:
             url = attachment.get("url")
             if not isinstance(url, str) or not url.startswith(("http://", "https://", "data:image/")):
                 continue
-            image_parts.append({"type": "input_image", "image_url": url})
+            image_parts.append({"type": "input_image", "image_url": await _llm_image_url(url)})
         if not image_parts:
             return text
         text_without_attachment_lines = "\n".join(
@@ -2315,7 +2422,7 @@ async def get_messages(thread_id: str) -> list[dict]:
                 if prefix and content.startswith(prefix):
                     content = content[len(prefix):]
             if m.role == "user":
-                content = _message_content_with_images(content, meta)
+                content = await _message_content_with_images(content, meta)
             result.append({"role": m.role, "content": content})
 
     return result

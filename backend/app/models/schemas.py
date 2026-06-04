@@ -184,3 +184,13 @@ class DiscordServerMcpOverridesResponse(BaseModel):
 
 class DiscordServerMcpOverridesRequest(BaseModel):
     overrides: list[ToolOverrideItem] = []
+
+
+class UploadedImageResponse(BaseModel):
+    filename: str
+    url: str
+    content_type: str
+
+
+class ImageUploadResponse(BaseModel):
+    images: list[UploadedImageResponse] = []

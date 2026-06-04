@@ -1,5 +1,6 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:threadbot/utils/web_image_io.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
@@ -79,6 +80,40 @@ class ApiService {
     } finally {
       await channel.sink.close();
     }
+  }
+
+  Future<List<String>> uploadImages(List<WebImageFile> files) async {
+    if (files.isEmpty) return const [];
+
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/uploads/images'),
+    );
+
+    for (final file in files) {
+      request.files.add(
+        http.MultipartFile.fromBytes(
+          'files',
+          file.bytes,
+          filename: file.filename,
+        ),
+      );
+    }
+
+    final streamed = await request.send();
+    final response = await http.Response.fromStream(streamed);
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to upload images: ${response.statusCode}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final images = (data['images'] as List<dynamic>? ?? [])
+        .map((item) => item as Map<String, dynamic>)
+        .map((item) => item['url'] as String?)
+        .whereType<String>()
+        .toList();
+    return images;
   }
 
   /// Reconnect to an in-progress generation stream after page refresh.

@@ -48,19 +48,67 @@ class Message {
 
   String get displayContent {
     final legacyDiscordSeparator = content.indexOf(' (Discord): ');
-    if (!isFromDiscord && legacyDiscordSeparator <= 0) return content;
+    var text = content;
     final senderName = metadata?['sender_name'] as String?;
     if (senderName != null && senderName.isNotEmpty) {
       final prefix = '$senderName (Discord): ';
-      if (content.startsWith(prefix)) return content.substring(prefix.length);
+      if (text.startsWith(prefix)) text = text.substring(prefix.length);
     }
     if (legacyDiscordSeparator > 0) {
-      return content.substring(legacyDiscordSeparator + ' (Discord): '.length);
+      text = text.substring(legacyDiscordSeparator + ' (Discord): '.length);
     }
-    return content;
+    text = text
+        .split('\n')
+        .where((line) {
+      if (line.startsWith('Image attachment: ')) return false;
+      // Hide bare Discord / generated-image URLs that appear on their own line,
+      // so a Discord-uploaded image never renders as a clickable text link.
+      final trimmed = line.trim();
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        final lower = trimmed.toLowerCase();
+        if (lower.contains('cdn.discordapp.com') ||
+            lower.contains('/api/generated-images/')) {
+          return false;
+        }
+      }
+      return true;
+    }).join('\n').trim();
+    return text;
   }
 
   bool get isCompactionSummary =>
       role == 'system' &&
       metadata?['type'] == 'compaction_event';
+
+  List<Map<String, dynamic>> get imageAttachments {
+    final attachments = metadata?['image_attachments'];
+    if (attachments is List && attachments.isNotEmpty) {
+      return attachments
+          .whereType<Map>()
+          .map((item) => item.map((key, value) => MapEntry(key.toString(), value)))
+          .toList();
+    }
+    // Fallback: parse URLs from legacy "Image attachment: <name> <url>" lines
+    // and from bare Discord/generated-image URLs that appear on their own line.
+    final urls = <Map<String, dynamic>>[];
+    final seen = <String>{};
+    for (final line in content.split('\n')) {
+      final match = RegExp(r'Image attachment: \S+\s+(https?://\S+)').firstMatch(line);
+      if (match != null) {
+        final url = match.group(1) ?? '';
+        if (url.isNotEmpty && seen.add(url)) {
+          urls.add({'url': url, 'filename': url.split('/').last});
+        }
+        continue;
+      }
+      final trimmed = line.trim();
+      if ((trimmed.startsWith('http://') || trimmed.startsWith('https://')) &&
+          (trimmed.toLowerCase().contains('cdn.discordapp.com') ||
+              trimmed.contains('/api/generated-images/')) &&
+          seen.add(trimmed)) {
+        urls.add({'url': trimmed, 'filename': trimmed.split('/').last});
+      }
+    }
+    return urls;
+  }
 }
