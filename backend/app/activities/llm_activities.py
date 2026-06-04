@@ -291,6 +291,23 @@ def _agents_tools(openai_tools: list[dict], mcp_tools_map: dict | None = None, t
     return tools
 
 
+def _normalize_discord_tool_args(tool_name: str, args: dict) -> dict:
+    if not tool_name.startswith("Discord_"):
+        return args
+    normalized = dict(args)
+    for key in (
+        "application_id", "channel_id", "command_id", "emoji_id", "event_id",
+        "guild_id", "message_id", "role_id", "sticker_id", "thread_id",
+        "user_id", "webhook_id",
+    ):
+        value = normalized.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {'"', "'"}:
+                normalized[key] = stripped[1:-1]
+    return normalized
+
+
 def _dump_agents_item(item) -> dict:
     if hasattr(item, "model_dump"):
         return item.model_dump()
@@ -408,7 +425,7 @@ async def _execute_agent_tool(
         "continue_thinking", "web_fetch", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode",
     }
-    tool_args = json.loads(arguments or "{}")
+    tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
     tool_call = {
         "id": tool_call_id,
         "type": "function",
@@ -835,6 +852,8 @@ async def run_agent_response(args: dict) -> dict:
             "Discord user mentions such as @name or <@123> refer to people being tagged by the user. "
             "Respond only to the user's actual request, in a concise style appropriate for Discord."
         )
+    tool_inventory = config.get("tool_inventory")
+    tool_inventory_instruction = f"\n\n{tool_inventory}" if tool_inventory else ""
     agent = Agent(
         name="ThreadBot",
         instructions=(
@@ -842,6 +861,7 @@ async def run_agent_response(args: dict) -> dict:
             "answer the user's question. Gather information, verify it, and refine your "
             "answer before providing a final response."
             f"{discord_instruction}"
+            f"{tool_inventory_instruction}"
         ),
         model=model,
         model_settings=_agents_model_settings(config),

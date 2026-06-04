@@ -412,11 +412,14 @@ class RunThreadWorkflow:
             # model provider from the llm_config captured at workflow start.
             # The worker-level OpenAIAgentsPlugin provider is initialized once
             # at startup and cannot safely represent runtime Settings changes.
+            agent_llm_config = dict(llm_config)
+            agent_llm_config["tool_inventory"] = tool_summary
+
             agent_result = await execute_activity(
                 run_agent_response,
                 {
                     "messages": self._agents_input(current_messages),
-                    "llm_config": llm_config,
+                    "llm_config": agent_llm_config,
                     "openai_tools": openai_tools,
                     "mcp_tools_map": mcp_tools_map,
                     "thread_id": thread_id,
