@@ -9,14 +9,14 @@
   "4": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "pixel art, dark fantasy creature, game sprite, high quality, detailed",
+      "text": "high quality, detailed, well-composed image",
       "clip": ["3", 1]
     }
   },
   "5": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "blurry, low quality, 3d, realistic",
+      "text": "blurry, low quality, distorted, deformed, artifacts, watermark, text, signature",
       "clip": ["3", 1]
     }
   },
@@ -28,20 +28,10 @@
       "batch_size": 1
     }
   },
-  "7": {
-    "class_type": "LoraLoader",
-    "inputs": {
-      "model": ["3", 0],
-      "clip": ["3", 1],
-      "lora_name": "pixel-art-xl.safetensors",
-      "strength_model": 1.0,
-      "strength_clip": 1.0
-    }
-  },
   "10": {
     "class_type": "KSampler",
     "inputs": {
-      "model": ["7", 0],
+      "model": ["3", 0],
       "positive": ["4", 0],
       "negative": ["5", 0],
       "seed": 42,
@@ -64,7 +54,7 @@
     "class_type": "SaveImage",
     "inputs": {
       "images": ["8", 0],
-      "filename_prefix": "pixel_art_xl_test"
+      "filename_prefix": "threadbot_sdxl"
     }
   }
 }

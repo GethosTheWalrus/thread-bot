@@ -889,7 +889,9 @@ async def run_agent_response(args: dict) -> dict:
             "answer before providing a final response. When user messages include images, "
             "inspect the images directly and incorporate relevant visual details in your answer. "
             "When the user asks to create an image, call generate_image and include the generated "
-            "image link or markdown in your final response."
+            "image link or markdown in your final response. Choose the generate_image style_preset "
+            "that best matches the user's requested medium or intent; use auto only when the user's "
+            "prompt already clearly specifies the visual style."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -1459,6 +1461,65 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
     scheduler = str(config.get("comfyui_scheduler") or "normal")
     seed = int(config.get("comfyui_seed") or 42)
     negative_prompt = str(config.get("comfyui_negative_prompt") or "")
+    style_preset = str(tool_args.get("style_preset") or "auto").strip().lower()
+
+    style_presets = {
+        "photorealistic": {
+            "positive": "photorealistic, natural camera perspective, realistic materials, realistic lighting, high detail, sharp focus",
+            "negative": "cartoon, illustration, anime, painting, CGI, plastic-looking",
+        },
+        "cinematic": {
+            "positive": "cinematic still, dramatic composition, film lighting, depth of field, atmospheric, high production value",
+            "negative": "flat lighting, amateur, low contrast, cluttered composition",
+        },
+        "illustration": {
+            "positive": "high quality illustration, clean composition, expressive shapes, polished editorial art",
+            "negative": "photorealistic, messy, muddy colors, unfinished sketch",
+        },
+        "digital_art": {
+            "positive": "digital art, concept art, rich colors, detailed rendering, artstation quality",
+            "negative": "photograph, plain, low detail, muddy",
+        },
+        "anime": {
+            "positive": "anime style, clean line art, expressive character design, polished cel shading, vibrant colors",
+            "negative": "photorealistic, western comic style, rough sketch, distorted anatomy",
+        },
+        "pixel_art": {
+            "positive": "pixel art, crisp pixel edges, limited palette, game sprite aesthetic, retro game art",
+            "negative": "smooth gradients, photorealistic, blurry pixels, anti-aliased edges",
+        },
+        "logo": {
+            "positive": "clean vector logo design, simple shapes, strong silhouette, scalable mark, minimal, professional branding",
+            "negative": "photorealistic, cluttered, detailed background, small unreadable text, watermark",
+        },
+        "diagram": {
+            "positive": "clear explanatory diagram, simple layout, labeled components, clean infographic style, white background",
+            "negative": "photorealistic, complex background, decorative clutter, tiny unreadable text",
+        },
+        "watercolor": {
+            "positive": "watercolor painting, soft pigment washes, textured paper, gentle edges, artistic composition",
+            "negative": "photorealistic, hard vector edges, digital 3d render, harsh contrast",
+        },
+        "oil_painting": {
+            "positive": "oil painting, visible brush strokes, rich texture, painterly lighting, traditional fine art",
+            "negative": "photograph, vector art, flat colors, plastic 3d render",
+        },
+        "sketch": {
+            "positive": "pencil sketch, hand-drawn linework, shaded graphite, expressive contours, white paper",
+            "negative": "full color painting, photorealistic, digital render, heavy background",
+        },
+        "comic_book": {
+            "positive": "comic book art, bold ink outlines, dynamic pose, halftone shading, dramatic panels, vibrant colors",
+            "negative": "photorealistic, soft watercolor, bland composition, muddy colors",
+        },
+    }
+    if style_preset in style_presets:
+        style = style_presets[style_preset]
+        prompt = f"{style['positive']}. {prompt}"
+        if style.get("negative"):
+            negative_prompt = ", ".join(
+                part for part in [negative_prompt, style["negative"]] if part
+            )
 
     size = str(tool_args.get("size") or "").strip()
     if size and "x" in size:

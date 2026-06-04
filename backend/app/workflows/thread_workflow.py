@@ -391,6 +391,27 @@ class RunThreadWorkflow:
                                     "type": "string",
                                     "description": "Requested image size, e.g. 1024x1024, 1024x768, or 768x1024. Defaults to 1024x1024.",
                                 },
+                                "style_preset": {
+                                    "type": "string",
+                                    "enum": [
+                                        "auto",
+                                        "photorealistic",
+                                        "cinematic",
+                                        "illustration",
+                                        "digital_art",
+                                        "anime",
+                                        "pixel_art",
+                                        "logo",
+                                        "diagram",
+                                        "watercolor",
+                                        "oil_painting",
+                                        "sketch",
+                                        "comic_book",
+                                    ],
+                                    "description": (
+                                        "Visual style preset. Choose based on the user's request. Use auto when the user's prompt already specifies a style."
+                                    ),
+                                },
                             },
                             "required": ["prompt"],
                         },
