@@ -44,14 +44,10 @@ class RunThreadWorkflow:
                 if content:
                     result.append({"role": "assistant", "content": content})
                 elif msg.get("tool_calls"):
-                    names = [
-                        tc.get("function", {}).get("name", "unknown")
-                        for tc in msg.get("tool_calls", [])
-                    ]
-                    result.append({
-                        "role": "assistant",
-                        "content": "Called tools: " + ", ".join(names),
-                    })
+                    # Tool-call rows are persisted for UI/timeline state. Do not
+                    # feed a textual placeholder back to the model or it may
+                    # imitate it instead of making a real structured tool call.
+                    pass
             elif role == "tool" and content:
                 name = msg.get("name") or msg.get("tool_call_id") or "tool"
                 result.append({
@@ -636,7 +632,8 @@ class RunThreadWorkflow:
                     "When the user asks to create an image, call generate_image and include the generated "
                     "image link or markdown in your final response. Choose the generate_image style_preset "
                     "that best matches the user's requested medium or intent; use auto only when the user's "
-                    "prompt already clearly specifies the visual style."
+                    "prompt already clearly specifies the visual style. Never say you called generate_image "
+                    "or list tool names as a substitute for making the structured tool call."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),

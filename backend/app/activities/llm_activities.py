@@ -931,7 +931,8 @@ async def run_agent_response(args: dict) -> dict:
             "When the user asks to create an image, call generate_image and include the generated "
             "image link or markdown in your final response. Choose the generate_image style_preset "
             "that best matches the user's requested medium or intent; use auto only when the user's "
-            "prompt already clearly specifies the visual style."
+            "prompt already clearly specifies the visual style. Never say you called generate_image "
+            "or list tool names as a substitute for making the structured tool call."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
