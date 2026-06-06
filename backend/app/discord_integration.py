@@ -573,12 +573,12 @@ def _tool_input_lines(tool_name: str, args: dict) -> list[str]:
     return lines[:3]
 
 
-def _status_label(status: str, success: bool | None = None) -> str:
+def _status_emoji(status: str, success: bool | None = None) -> str:
     if status == "running":
-        return "running"
+        return "⏳"
     if success is False:
-        return "failed"
-    return "done"
+        return "❌"
+    return "✅"
 
 
 def _format_activity_trace(state: dict) -> str:
@@ -588,15 +588,16 @@ def _format_activity_trace(state: dict) -> str:
     if not order:
         lines.append("Preparing tools...")
         return "\n".join(lines)
-    for index, call_id in enumerate(order[-8:], start=max(1, len(order) - 7)):
+    visible_steps = order[-8:]
+    for call_id in visible_steps:
         step = steps.get(call_id) or {}
         tool = _preview(str(step.get("tool") or "tool"), 80)
-        status = _status_label(str(step.get("status") or "running"), step.get("success"))
-        lines.append(f"**{index}. {tool}** - {status}")
+        emoji = _status_emoji(str(step.get("status") or "running"), step.get("success"))
+        lines.append(f"{emoji} **{tool}**")
         for detail in step.get("details") or []:
             lines.append(f"> {detail}")
     if len(order) > 8:
-        lines.append(f"_Showing latest 8 of {len(order)} tool steps._")
+        lines.append(f"_Showing latest {len(visible_steps)} of {len(order)} tool steps._")
     if state.get("final_response_posted"):
         lines.append("**Final response posted.**")
     return "\n".join(lines)[:1900]
