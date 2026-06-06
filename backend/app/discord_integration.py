@@ -95,29 +95,51 @@ async def persist_discord_image_attachments(image_attachments: list[dict] | None
                 persisted.append(attachment)
                 continue
 
-            source_url = str(attachment.get("source_url") or attachment.get("proxy_url") or current_url)
-            if not source_url.startswith(("http://", "https://")):
-                persisted.append(attachment)
-                continue
-
+            raw = attachment.get("content") if isinstance(attachment.get("content"), bytes) else None
+            content_type = str(attachment.get("content_type") or "image/png").split(";", 1)[0]
+            source_url = ""
             try:
-                async with session.get(source_url, allow_redirects=True) as resp:
-                    if resp.status != 200:
-                        print(f"[discord] failed to copy image attachment: HTTP {resp.status} {source_url}", flush=True)
-                        persisted.append(attachment)
+                if raw is None:
+                    candidates = []
+                    for value in (attachment.get("source_url"), attachment.get("proxy_url"), current_url):
+                        candidate = str(value or "")
+                        if candidate.startswith(("http://", "https://")) and candidate not in candidates:
+                            candidates.append(candidate)
+                    candidates.sort(key=lambda url: "placeholder.png" in url)
+
+                    for candidate in candidates:
+                        async with session.get(candidate, allow_redirects=True) as resp:
+                            if resp.status != 200:
+                                print(f"[discord] failed to copy image attachment: HTTP {resp.status} {candidate}", flush=True)
+                                continue
+                            response_type = (resp.headers.get("Content-Type") or content_type or "image/png").split(";", 1)[0]
+                            if not response_type.startswith("image/"):
+                                continue
+                            fetched = await resp.content.read(12 * 1024 * 1024 + 1)
+                            if len(fetched) > 12 * 1024 * 1024:
+                                print(f"[discord] skipped oversized image attachment {candidate}", flush=True)
+                                continue
+                            raw = fetched
+                            content_type = response_type
+                            source_url = candidate
+                            break
+
+                    if raw is None:
+                        persisted.append({k: v for k, v in attachment.items() if k != "content"})
                         continue
-                    content_type = (resp.headers.get("Content-Type") or attachment.get("content_type") or "image/png").split(";", 1)[0]
-                    if not content_type.startswith("image/"):
-                        persisted.append(attachment)
-                        continue
-                    raw = await resp.content.read(12 * 1024 * 1024 + 1)
-                    if len(raw) > 12 * 1024 * 1024:
-                        print(f"[discord] skipped oversized image attachment {source_url}", flush=True)
-                        persisted.append(attachment)
-                        continue
+                else:
+                    source_url = str(attachment.get("source_url") or attachment.get("proxy_url") or current_url)
             except Exception as exc:
                 print(f"[discord] failed to copy image attachment {source_url}: {exc}", flush=True)
-                persisted.append(attachment)
+                persisted.append({k: v for k, v in attachment.items() if k != "content"})
+                continue
+
+            if len(raw) > 12 * 1024 * 1024:
+                print(f"[discord] skipped oversized image attachment {source_url or current_url}", flush=True)
+                persisted.append({k: v for k, v in attachment.items() if k != "content"})
+                continue
+            if not content_type.startswith("image/"):
+                persisted.append({k: v for k, v in attachment.items() if k != "content"})
                 continue
 
             ext = os.path.splitext(str(attachment.get("filename") or ""))[1].lower()
@@ -141,7 +163,7 @@ async def persist_discord_image_attachments(image_attachments: list[dict] | None
                 await db.commit()
 
             local_url = f"{public_base_url}/api/generated-images/{stored_filename}" if public_base_url else f"/api/generated-images/{stored_filename}"
-            updated = dict(attachment)
+            updated = {k: v for k, v in attachment.items() if k != "content"}
             updated["url"] = local_url
             updated["source_url"] = source_url
             updated["content_type"] = content_type

@@ -40,7 +40,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         from app.discord_integration import normalize_discord_user_mentions
         return normalize_discord_user_mentions(content, list(message.mentions)).strip()
 
-    def _image_attachments(message: discord.Message) -> list[dict]:
+    async def _image_attachments(message: discord.Message) -> list[dict]:
         images = []
         for attachment in message.attachments:
             content_type = attachment.content_type or ""
@@ -49,12 +49,20 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                 (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
             )
             if is_image:
+                content = None
+                try:
+                    content = await attachment.read(use_cached=True)
+                except Exception as exc:
+                    print(f"[discord] failed to read attachment bytes for {filename}: {exc}", flush=True)
                 images.append({
                     "url": attachment.url,
+                    "source_url": attachment.url,
+                    "proxy_url": attachment.proxy_url,
                     "filename": filename,
                     "content_type": content_type or "image/*",
                     "width": attachment.width,
                     "height": attachment.height,
+                    "content": content,
                 })
         return images
 
@@ -160,7 +168,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
                     source_event_id=str(message.id),
-                    source_image_attachments=_image_attachments(message),
+                    source_image_attachments=await _image_attachments(message),
                 )
             else:
                 await start_thread_from_discord_prompt(
@@ -173,7 +181,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     channel_id=str(message.channel.id),
                     guild_id=guild_id,
                     guild_name=guild_name,
-                    source_image_attachments=_image_attachments(message),
+                    source_image_attachments=await _image_attachments(message),
                 )
         except Exception as exc:
             print(f"[discord] mention handling failed: {exc}", flush=True)
