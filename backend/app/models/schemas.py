@@ -29,6 +29,10 @@ class ChatRequest(BaseModel):
     image_urls: Optional[list[str]] = Field(None, description="Optional image URLs to include in the user message")
 
 
+class ContinueWorkflowRequest(BaseModel):
+    should_continue: bool = Field(..., description="Whether the active workflow should continue iterating")
+
+
 class MessageResponse(BaseModel):
     id: UUID
     thread_id: UUID

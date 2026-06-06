@@ -29,6 +29,7 @@ from app.models.models import Thread, Message, DiscordThreadLink, GeneratedImage
 from app.models.schemas import (
     ThreadCreateRequest,
     ChatRequest,
+    ContinueWorkflowRequest,
     ThreadResponse,
     MessageResponse,
     ThreadListItem,
@@ -711,6 +712,26 @@ async def get_thread_endpoint(
 
     discord_link = await _get_discord_link_for_thread(db, thread_id)
     return _build_thread_response(thread, thread.messages, is_generating=is_generating, discord_link=discord_link)
+
+
+@router.post("/threads/{thread_id}/continue")
+async def continue_thread_workflow_endpoint(
+    thread_id: UUID,
+    request: ContinueWorkflowRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    temporal_client = get_temporal_client()
+    if not temporal_client:
+        raise HTTPException(status_code=503, detail="Temporal client not available")
+    workflow_id = await _active_thread_workflow_id(temporal_client, thread_id)
+    if not workflow_id:
+        raise HTTPException(status_code=409, detail="No active workflow for thread")
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    await handle.signal("respond_continue", request.should_continue)
+    return {"ok": True, "workflow_id": workflow_id}
 
 
 @router.websocket("/threads/{thread_id}/ws")

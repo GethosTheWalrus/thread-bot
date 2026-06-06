@@ -1335,6 +1335,44 @@ async def start_discord_reply_workflow(
     ))
 
 
+async def _active_thread_workflow_id(temporal_client: TemporalClient, thread_id) -> str | None:
+    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-"):
+        query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "{prefix}"'
+        async for execution in temporal_client.list_workflows(query=query, limit=1):
+            return execution.id
+    return None
+
+
+async def _maybe_signal_continue_response(
+    temporal_client: TemporalClient,
+    *,
+    thread_id,
+    discord_thread_id: str,
+    content: str,
+) -> bool:
+    normalized = content.strip().lower()
+    if normalized in {"continue", "yes", "y", "keep going", "go", "resume", "yes please"}:
+        should_continue = True
+    elif normalized in {"stop", "no", "n", "finish", "done", "no thanks"}:
+        should_continue = False
+    else:
+        return False
+
+    workflow_id = await _active_thread_workflow_id(temporal_client, thread_id)
+    if not workflow_id:
+        return False
+
+    handle = temporal_client.get_workflow_handle(workflow_id)
+    await handle.signal("respond_continue", should_continue)
+    config = await _load_fresh_discord_config()
+    await post_discord_message(
+        discord_thread_id,
+        "Continuing." if should_continue else "Stopping here.",
+        discord_config={**config, "discord_thread_id": discord_thread_id},
+    )
+    return True
+
+
 def _discord_index_in_progress(link) -> bool:
     if link.indexing_status not in {"queued", "running"} or not link.indexed_at:
         return False
@@ -1469,6 +1507,17 @@ async def reply_to_existing_discord_thread(
             metadata["discord_message_link"] = source_message_link
         if image_attachments:
             metadata["image_attachments"] = image_attachments
+        if await _maybe_signal_continue_response(
+            temporal_client,
+            thread_id=link.thread_id,
+            discord_thread_id=discord_thread_id,
+            content=content,
+        ):
+            return {
+                "thread_id": str(link.thread_id),
+                "discord_thread_id": link.discord_thread_id,
+                "discord_thread_name": link.discord_thread_name,
+            }
         await add_message(
             db,
             link.thread_id,
@@ -1544,6 +1593,13 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                     _discord_user_content(content, mentions),
                     image_attachments,
                 )
+                if await _maybe_signal_continue_response(
+                    temporal_client,
+                    thread_id=link.thread_id,
+                    discord_thread_id=link.discord_thread_id,
+                    content=content,
+                ):
+                    continue
                 metadata = {
                     "source": "discord",
                     "sender_name": username,

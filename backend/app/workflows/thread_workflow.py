@@ -1,4 +1,4 @@
-from temporalio.workflow import defn, execute_activity, init, run
+from temporalio.workflow import defn, execute_activity, init, run, signal
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from typing import Any
@@ -12,6 +12,7 @@ with workflow.unsafe.imports_passed_through():
     import pydantic_core.core_schema  # noqa: F401
 
     from agents import Agent, FunctionTool, ModelSettings, Runner
+    from agents.exceptions import MaxTurnsExceeded
 
 
 @defn
@@ -30,6 +31,11 @@ class RunThreadWorkflow:
     def __init__(self, input: dict) -> None:
         self._stream = WorkflowStream()
         self._events = self._stream.topic("events", type=dict)
+        self._continue_decision: bool | None = None
+
+    @signal
+    async def respond_continue(self, should_continue: bool) -> None:
+        self._continue_decision = bool(should_continue)
 
     def _agents_input(self, messages: list[dict]) -> list[dict]:
         """Convert OpenAI chat history into Agents SDK input items."""
@@ -139,6 +145,7 @@ class RunThreadWorkflow:
                 save_message, get_messages,
                 compact_history, delete_messages_before, discover_tools,
                 execute_agent_tool_activity, generated_images_for_latest_turn,
+                send_continue_prompt,
             )
         thread_id = input["thread_id"]
         message = input["message"]
@@ -648,54 +655,101 @@ class RunThreadWorkflow:
                 ),
             )
 
-            full_response_content = ""
-            reasoning_buffer = ""
-            result = Runner.run_streamed(
-                agent,
-                input=self._agents_input(current_messages),
-                max_turns=agent_llm_config.get("max_iterations", 25),
-            )
-            async for event in result.stream_events():
-                if event.type == "raw_response_event":
-                    raw = event.data
-                    raw_type = getattr(raw, "type", None)
-                    if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
-                        full_response_content += getattr(raw, "delta", "") or ""
-                    elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
-                        reasoning_buffer += getattr(raw, "delta", "") or ""
-                    elif raw_type == "response.completed":
-                        usage = getattr(raw.response, "usage", None)
-                        total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
-                        if total_tokens:
-                            await self._publish_event(agent_llm_config, {
-                                "type": "context",
-                                "estimated_tokens": total_tokens,
-                                "context_window": agent_llm_config.get("context_window", 8192),
-                            })
-                elif event.type == "run_item_stream_event" and event.name == "reasoning_item_created":
-                    data = event.item.raw_item.model_dump() if hasattr(event.item.raw_item, "model_dump") else {}
-                    parts = []
-                    for summary in data.get("summary") or []:
-                        text = summary.get("text")
-                        if text:
-                            parts.append(text)
-                    for part in data.get("content") or []:
-                        text = part.get("text")
-                        if text:
-                            parts.append(text)
-                    thinking = "\n".join(parts).strip()
-                    if thinking:
-                        await execute_activity(
-                            save_message,
-                            {"thread_id": thread_id, "role": "thinking", "content": thinking},
-                            start_to_close_timeout=timedelta(seconds=10),
-                        )
-                        await self._publish_event(agent_llm_config, {"type": "thinking", "content": thinking})
+            while True:
+                full_response_content = ""
+                reasoning_buffer = ""
+                max_turns_exceeded = False
+                result = Runner.run_streamed(
+                    agent,
+                    input=self._agents_input(current_messages),
+                    max_turns=agent_llm_config.get("max_iterations", 25),
+                )
+                try:
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event":
+                            raw = event.data
+                            raw_type = getattr(raw, "type", None)
+                            if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
+                                full_response_content += getattr(raw, "delta", "") or ""
+                            elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
+                                reasoning_buffer += getattr(raw, "delta", "") or ""
+                            elif raw_type == "response.completed":
+                                usage = getattr(raw.response, "usage", None)
+                                total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+                                if total_tokens:
+                                    await self._publish_event(agent_llm_config, {
+                                        "type": "context",
+                                        "estimated_tokens": total_tokens,
+                                        "context_window": agent_llm_config.get("context_window", 8192),
+                                    })
+                        elif event.type == "run_item_stream_event" and event.name == "reasoning_item_created":
+                            data = event.item.raw_item.model_dump() if hasattr(event.item.raw_item, "model_dump") else {}
+                            parts = []
+                            for summary in data.get("summary") or []:
+                                text = summary.get("text")
+                                if text:
+                                    parts.append(text)
+                            for part in data.get("content") or []:
+                                text = part.get("text")
+                                if text:
+                                    parts.append(text)
+                            thinking = "\n".join(parts).strip()
+                            if thinking:
+                                await execute_activity(
+                                    save_message,
+                                    {"thread_id": thread_id, "role": "thinking", "content": thinking},
+                                    start_to_close_timeout=timedelta(seconds=10),
+                                )
+                                await self._publish_event(agent_llm_config, {"type": "thinking", "content": thinking})
+                except MaxTurnsExceeded:
+                    max_turns_exceeded = True
 
-            if result.run_loop_exception:
-                raise result.run_loop_exception
+                if result.run_loop_exception:
+                    if isinstance(result.run_loop_exception, MaxTurnsExceeded):
+                        max_turns_exceeded = True
+                    else:
+                        raise result.run_loop_exception
 
-            llm_response = str(result.final_output or full_response_content or "(Agent completed without a response.)")
+                if not max_turns_exceeded:
+                    llm_response = str(result.final_output or full_response_content or "(Agent completed without a response.)")
+                    break
+
+                await self._publish_event(agent_llm_config, {
+                    "type": "continue_prompt",
+                    "thread_id": thread_id,
+                    "content": "I hit my tool/turn limit before finishing. Continue iterating?",
+                })
+                if agent_llm_config.get("discord"):
+                    await execute_activity(
+                        send_continue_prompt,
+                        {"thread_id": thread_id, "discord": agent_llm_config.get("discord")},
+                        start_to_close_timeout=timedelta(seconds=15),
+                    )
+                self._continue_decision = None
+                await workflow.wait_condition(lambda: self._continue_decision is not None)
+                if self._continue_decision:
+                    await self._publish_event(agent_llm_config, {
+                        "type": "thinking",
+                        "content": "Continuing after user approval.",
+                    })
+                    current_messages = await execute_activity(
+                        get_messages,
+                        thread_id,
+                        start_to_close_timeout=timedelta(seconds=10),
+                    )
+                    continue
+
+                notice = (
+                    "I hit my tool/turn limit before I could finish. "
+                    "Please ask me to continue, or narrow the request so I can complete it in fewer steps."
+                )
+                if full_response_content.strip():
+                    llm_response = f"{full_response_content.rstrip()}\n\n{notice}"
+                    await self._publish_event(agent_llm_config, {"type": "token", "content": f"\n\n{notice}"})
+                else:
+                    llm_response = notice
+                    await self._publish_final_response(agent_llm_config, notice)
+                break
             if reasoning_buffer.strip():
                 await execute_activity(
                     save_message,

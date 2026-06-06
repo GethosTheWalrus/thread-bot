@@ -43,6 +43,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   int _contextWindow = 8192;
   Timer? _threadRefreshTimer;
   WebSocketChannel? _broadcastChannel;
+  bool _continuePromptOpen = false;
 
   // Animation
   late final AnimationController _fadeController;
@@ -659,6 +660,57 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _contextWindow = contextWindow;
         });
         break;
+
+      case 'continue_prompt':
+        _showContinuePrompt(event);
+        break;
+    }
+  }
+
+  Future<void> _showContinuePrompt(Map<String, dynamic> event) async {
+    if (_continuePromptOpen || !mounted) return;
+    final threadId = event['thread_id'] as String? ?? _activeThreadId;
+    if (threadId == null) return;
+
+    setState(() => _continuePromptOpen = true);
+    final shouldContinue = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF16161E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Continue iterating?'),
+        content: Text(
+          event['content'] as String? ?? 'ThreadBot hit its tool/turn limit before finishing.',
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.72)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Stop'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    try {
+      await _api.respondContinue(threadId, shouldContinue ?? false);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to respond: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _continuePromptOpen = false);
     }
   }
 

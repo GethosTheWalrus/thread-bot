@@ -2468,6 +2468,29 @@ async def save_message(args: dict) -> None:
 
 
 @defn
+async def send_continue_prompt(args: dict) -> None:
+    """Ask a Discord user whether an active workflow should keep iterating."""
+    discord_config = args.get("discord") or {}
+    if not discord_config.get("enabled"):
+        return
+    from app.discord_integration import post_discord_message
+
+    discord_thread_id = discord_config.get("discord_thread_id")
+    if not discord_thread_id:
+        return
+    content = (
+        "I hit my tool/turn limit before finishing. Continue iterating?\n\n"
+        "Reply `continue` to keep going or `stop` to finish here."
+    )
+    await post_discord_message(
+        discord_thread_id,
+        content,
+        discord_config=discord_config,
+        reply_to_message_id=discord_config.get("reply_to_message_id"),
+    )
+
+
+@defn
 async def get_messages(thread_id: str) -> list[dict]:
     """Get chat history for a thread, reconstructing OpenAI-compatible message format."""
     from uuid import UUID

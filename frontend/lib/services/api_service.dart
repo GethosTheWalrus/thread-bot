@@ -46,6 +46,17 @@ class ApiService {
     throw Exception('Failed to load thread: ${response.statusCode}');
   }
 
+  Future<void> respondContinue(String threadId, bool shouldContinue) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/threads/$threadId/continue'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'should_continue': shouldContinue}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to respond: ${response.statusCode}');
+    }
+  }
+
   /// Send a message. If threadId is provided, appends to that thread.
   /// Otherwise creates a new thread.
   /// LLM config is managed server-side — no need to send it per request.
