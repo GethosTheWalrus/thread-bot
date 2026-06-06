@@ -487,7 +487,7 @@ async def _execute_agent_tool(
     stream_channel = config.get("stream_channel")
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
-        "continue_thinking", "web_fetch", "inspect_image_url", "current_datetime", "calculator",
+        "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
@@ -1233,7 +1233,7 @@ async def _execute_builtin(
 
             if not candidates:
                 return "\n\n[Images: no image URLs found in page markup.]"
-            lines = [f"\n\n[Images: showing {min(len(candidates), max_images)} of {len(candidates)} discovered image candidate(s). Use inspect_image_url(url=...) to inspect pixels.]"]
+            lines = [f"\n\n[Images: showing {min(len(candidates), max_images)} of {len(candidates)} discovered image candidate(s). Use describe_image(url=...) to inspect pixels.]"]
             for idx, (image_url, label, alt) in enumerate(candidates[:max_images], start=1):
                 details = []
                 if label:
@@ -1318,34 +1318,76 @@ async def _execute_builtin(
         except Exception as e:
             return f"Error fetching URL: {str(e)}"
 
-    if tool_name == "inspect_image_url":
+    if tool_name in {"describe_image", "inspect_image_url"}:
         import aiohttp
         import base64
+        import os
+        from urllib.parse import unquote, urlparse
 
         image_url = str(tool_args.get("url") or "").strip()
+        image_base64 = str(tool_args.get("image_base64") or "").strip()
+        content_type = str(tool_args.get("content_type") or "image/png").split(";", 1)[0].strip() or "image/png"
         question = str(tool_args.get("question") or "Describe this image concisely but with enough detail to answer the user's request.").strip()
-        if not image_url.startswith(("http://", "https://", "data:image/")):
-            return "Error: image URL must start with http://, https://, or data:image/"
-
-        llm_image_url = image_url
-        if image_url.startswith(("http://", "https://")):
-            try:
-                timeout = aiohttp.ClientTimeout(total=45)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(image_url, allow_redirects=True) as resp:
-                        if resp.status != 200:
-                            return f"Error inspecting image: HTTP {resp.status}"
-                        content_type = resp.headers.get("Content-Type", "image/png").split(";", 1)[0]
-                        if not content_type.startswith("image/"):
-                            return f"Error inspecting image: URL returned {content_type}, not an image"
-                        raw = await resp.content.read(12 * 1024 * 1024 + 1)
-                        if len(raw) > 12 * 1024 * 1024:
-                            return "Error inspecting image: image exceeds 12MB"
-                        llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
-            except Exception as exc:
-                return f"Error inspecting image: {exc}"
 
         try:
+            source_label = image_url or "provided image bytes"
+            if image_base64:
+                raw = base64.b64decode(image_base64, validate=True)
+            elif image_url.startswith("data:image/"):
+                header, encoded = image_url.split(",", 1)
+                content_type = header.split(":", 1)[1].split(";", 1)[0] or content_type
+                raw = base64.b64decode(encoded, validate=True)
+            else:
+                parsed = urlparse(image_url)
+                marker = "/api/generated-images/"
+                path = parsed.path if parsed.scheme else image_url
+                if marker in path:
+                    filename = unquote(path.rsplit(marker, 1)[-1].split("?", 1)[0].strip())
+                    if not filename or "/" in filename or "\\" in filename or filename.startswith("."):
+                        return "Error: invalid ThreadBot image filename"
+
+                    from app.database import AsyncSessionLocal
+                    from app.models.models import GeneratedImage
+
+                    async with AsyncSessionLocal() as db:
+                        image = await db.get(GeneratedImage, filename)
+                    if image:
+                        raw = image.content
+                        content_type = image.content_type or content_type
+                    else:
+                        image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+                        path_on_disk = os.path.join(image_dir, filename)
+                        if not os.path.isfile(path_on_disk):
+                            return f"Error: local uploaded image {filename!r} was not found"
+                        with open(path_on_disk, "rb") as f:
+                            raw = f.read(12 * 1024 * 1024 + 1)
+                        ext = os.path.splitext(filename)[1].lower()
+                        content_type = {
+                            ".jpg": "image/jpeg",
+                            ".jpeg": "image/jpeg",
+                            ".png": "image/png",
+                            ".gif": "image/gif",
+                            ".webp": "image/webp",
+                        }.get(ext, content_type)
+                elif image_url.startswith(("http://", "https://")):
+                    timeout = aiohttp.ClientTimeout(total=45)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(image_url, allow_redirects=True) as resp:
+                            if resp.status != 200:
+                                return f"Error describing image: HTTP {resp.status}"
+                            content_type = resp.headers.get("Content-Type", content_type).split(";", 1)[0]
+                            if not content_type.startswith("image/"):
+                                return f"Error describing image: URL returned {content_type}, not an image"
+                            raw = await resp.content.read(12 * 1024 * 1024 + 1)
+                else:
+                    return "Error: provide url, data:image URL, or image_base64"
+
+            if len(raw) > 12 * 1024 * 1024:
+                return "Error describing image: image exceeds 12MB"
+            if not content_type.startswith("image/"):
+                return f"Error describing image: content_type must be image/*, got {content_type}"
+
+            llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
             completion = await _agents_chat_completion(
                 [{
                     "role": "user",
@@ -1359,9 +1401,9 @@ async def _execute_builtin(
                 max_tokens=800,
             )
             content = (completion.get("message") or {}).get("content") or completion.get("content") or ""
-            return f"Image inspection for {image_url}:\n{content}" if content else "Image inspection completed without text output."
+            return f"Image description for {source_label}:\n{content}" if content else "Image description completed without text output."
         except Exception as exc:
-            return f"Error inspecting image with LLM: {exc}"
+            return f"Error describing image with LLM: {exc}"
 
     if tool_name == "current_datetime":
         from datetime import datetime, timezone
@@ -2096,7 +2138,7 @@ async def execute_tools(args: dict) -> dict:
 
     # Names of built-in tools that don't require MCP containers
     BUILTIN_TOOLS = {
-        "continue_thinking", "web_fetch", "inspect_image_url", "current_datetime", "calculator",
+        "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
@@ -2500,31 +2542,22 @@ async def get_messages(thread_id: str) -> list[dict]:
     async with AsyncSessionLocal() as db:
         messages = await get_thread_messages(db, UUID(thread_id))
 
-    async def _llm_image_url(url: str) -> str:
-        """Keep image references as URLs so Temporal activity payloads stay small."""
-        return url
-
-    async def _message_content_with_images(text: str, metadata: dict) -> str | list[dict]:
+    def _message_content_with_image_refs(text: str, metadata: dict) -> str:
         attachments = metadata.get("image_attachments") or []
-        image_parts = []
+        image_lines = []
         for attachment in attachments:
             if not isinstance(attachment, dict):
                 continue
             url = attachment.get("url")
             if not isinstance(url, str) or not url.startswith(("http://", "https://", "data:image/")):
                 continue
-            image_parts.append({"type": "input_image", "image_url": await _llm_image_url(url), "detail": "auto"})
-        if not image_parts:
+            line = f"Image attachment: {url}"
+            if url not in (text or ""):
+                image_lines.append(line)
+        if not image_lines:
             return text
-        text_without_attachment_lines = "\n".join(
-            line for line in (text or "").splitlines()
-            if not line.startswith("Image attachment: ")
-        ).strip()
-        parts = []
-        if text_without_attachment_lines:
-            parts.append({"type": "input_text", "text": text_without_attachment_lines})
-        parts.extend(image_parts)
-        return parts
+        parts = [(text or "").strip(), *image_lines]
+        return "\n".join(part for part in parts if part)
 
     result = []
     for m in messages:
@@ -2557,7 +2590,7 @@ async def get_messages(thread_id: str) -> list[dict]:
                 if prefix and content.startswith(prefix):
                     content = content[len(prefix):]
             if m.role == "user":
-                content = await _message_content_with_images(content, meta)
+                content = _message_content_with_image_refs(content, meta)
             result.append({"role": m.role, "content": content})
 
     return result

@@ -1511,7 +1511,7 @@ async def reply_to_existing_discord_thread(
             temporal_client,
             thread_id=link.thread_id,
             discord_thread_id=discord_thread_id,
-            content=content,
+            content=prompt,
         ):
             return {
                 "thread_id": str(link.thread_id),
