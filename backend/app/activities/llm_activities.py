@@ -1711,11 +1711,29 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
             else:
                 # Subsequent CLIPTextEncode nodes: leave alone.
                 pass
-        elif cls == "EmptyLatentImage":
+        elif cls in {"EmptyLatentImage", "EmptySD3LatentImage"}:
             if width:
                 inputs["width"] = width
             if height:
                 inputs["height"] = height
+        elif cls == "ModelSamplingFlux":
+            if width:
+                inputs["width"] = width
+            if height:
+                inputs["height"] = height
+        elif cls == "RandomNoise":
+            try:
+                inputs["noise_seed"] = seed
+            except Exception:
+                pass
+        elif cls == "BasicScheduler":
+            if steps:
+                inputs["steps"] = steps
+            if scheduler:
+                inputs["scheduler"] = scheduler
+        elif cls == "KSamplerSelect":
+            if sampler:
+                inputs["sampler_name"] = sampler
         elif cls == "KSampler":
             if steps:
                 inputs["steps"] = steps

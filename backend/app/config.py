@@ -37,14 +37,14 @@ class Settings(BaseSettings):
     # ComfyUI image generation
     LLM_COMFYUI_API_URL: str = ""  # e.g. http://ollama.home:8188
     LLM_COMFYUI_WORKFLOW: str = ""  # workflow JSON; "" means use bundled default
-    LLM_COMFYUI_OUTPUT_NODE: str = "9"  # node id whose output contains the saved image
-    LLM_COMFYUI_NEGATIVE_PROMPT: str = "blurry, low quality, 3d, realistic"
-    LLM_COMFYUI_WIDTH: int = 512
-    LLM_COMFYUI_HEIGHT: int = 512
-    LLM_COMFYUI_STEPS: int = 20
-    LLM_COMFYUI_CFG: float = 7.0
+    LLM_COMFYUI_OUTPUT_NODE: str = "13"  # node id whose output contains the saved image
+    LLM_COMFYUI_NEGATIVE_PROMPT: str = ""
+    LLM_COMFYUI_WIDTH: int = 1024
+    LLM_COMFYUI_HEIGHT: int = 1024
+    LLM_COMFYUI_STEPS: int = 28
+    LLM_COMFYUI_CFG: float = 1.0
     LLM_COMFYUI_SAMPLER: str = "euler"
-    LLM_COMFYUI_SCHEDULER: str = "normal"
+    LLM_COMFYUI_SCHEDULER: str = "simple"
     LLM_COMFYUI_SEED: int = 42
 
     # Server
@@ -140,7 +140,7 @@ def _load_default_comfyui_workflow() -> str:
     """Return the bundled default ComfyUI workflow JSON as a string."""
     import os
     here = os.path.dirname(__file__)
-    path = os.path.join(here, "assets", "sdxl_pixel_art_workflow.json")
+    path = os.path.join(here, "assets", "flux1_dev_workflow.json")
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
@@ -166,14 +166,14 @@ def get_llm_config() -> dict:
         "public_base_url": get_setting("APP_PUBLIC_BASE_URL") or "",
         "generated_image_dir": get_setting("GENERATED_IMAGE_DIR") or "/tmp/threadbot-generated-images",
         "comfyui_api_url": (get_setting("LLM_COMFYUI_API_URL") or "").rstrip("/"),
-        "comfyui_output_node": str(get_setting("LLM_COMFYUI_OUTPUT_NODE") or "9"),
+        "comfyui_output_node": str(get_setting("LLM_COMFYUI_OUTPUT_NODE") or "13"),
         "comfyui_negative_prompt": get_setting("LLM_COMFYUI_NEGATIVE_PROMPT") or "",
-        "comfyui_width": int(get_setting("LLM_COMFYUI_WIDTH") or 512),
-        "comfyui_height": int(get_setting("LLM_COMFYUI_HEIGHT") or 512),
-        "comfyui_steps": int(get_setting("LLM_COMFYUI_STEPS") or 20),
-        "comfyui_cfg": float(get_setting("LLM_COMFYUI_CFG") or 7.0),
+        "comfyui_width": int(get_setting("LLM_COMFYUI_WIDTH") or 1024),
+        "comfyui_height": int(get_setting("LLM_COMFYUI_HEIGHT") or 1024),
+        "comfyui_steps": int(get_setting("LLM_COMFYUI_STEPS") or 28),
+        "comfyui_cfg": float(get_setting("LLM_COMFYUI_CFG") or 1.0),
         "comfyui_sampler": get_setting("LLM_COMFYUI_SAMPLER") or "euler",
-        "comfyui_scheduler": get_setting("LLM_COMFYUI_SCHEDULER") or "normal",
+        "comfyui_scheduler": get_setting("LLM_COMFYUI_SCHEDULER") or "simple",
         "comfyui_seed": int(get_setting("LLM_COMFYUI_SEED") or 42),
         "provider": get_setting("LLM_PROVIDER"),
         "temperature": get_setting("LLM_TEMPERATURE"),

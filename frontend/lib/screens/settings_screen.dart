@@ -64,22 +64,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageProvider = settings['llm_image_provider'] as String? ?? 'auto';
       _comfyuiApiUrlController.text = settings['llm_comfyui_api_url'] as String? ?? '';
       _comfyuiOutputNodeController.text =
-          (settings['llm_comfyui_output_node'] ?? '9').toString();
+          (settings['llm_comfyui_output_node'] ?? '13').toString();
       _comfyuiNegativePromptController.text =
-          settings['llm_comfyui_negative_prompt'] as String? ??
-              'blurry, low quality, 3d, realistic';
+          settings['llm_comfyui_negative_prompt'] as String? ?? '';
       _comfyuiWidthController.text =
-          (settings['llm_comfyui_width'] ?? 512).toString();
+          (settings['llm_comfyui_width'] ?? 1024).toString();
       _comfyuiHeightController.text =
-          (settings['llm_comfyui_height'] ?? 512).toString();
+          (settings['llm_comfyui_height'] ?? 1024).toString();
       _comfyuiStepsController.text =
-          (settings['llm_comfyui_steps'] ?? 20).toString();
+          (settings['llm_comfyui_steps'] ?? 28).toString();
       _comfyuiCfgController.text =
-          (settings['llm_comfyui_cfg'] ?? 7.0).toString();
+          (settings['llm_comfyui_cfg'] ?? 1.0).toString();
       _comfyuiSamplerController.text =
           settings['llm_comfyui_sampler'] as String? ?? 'euler';
       _comfyuiSchedulerController.text =
-          settings['llm_comfyui_scheduler'] as String? ?? 'normal';
+          settings['llm_comfyui_scheduler'] as String? ?? 'simple';
       _comfyuiSeedController.text =
           (settings['llm_comfyui_seed'] ?? 42).toString();
       _comfyuiWorkflowController.text =
@@ -113,14 +112,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageModelController.text = '';
       _imageProvider = 'auto';
       _comfyuiApiUrlController.text = '';
-      _comfyuiOutputNodeController.text = '9';
-      _comfyuiNegativePromptController.text = 'blurry, low quality, 3d, realistic';
-      _comfyuiWidthController.text = '512';
-      _comfyuiHeightController.text = '512';
-      _comfyuiStepsController.text = '20';
-      _comfyuiCfgController.text = '7.0';
+      _comfyuiOutputNodeController.text = '13';
+      _comfyuiNegativePromptController.text = '';
+      _comfyuiWidthController.text = '1024';
+      _comfyuiHeightController.text = '1024';
+      _comfyuiStepsController.text = '28';
+      _comfyuiCfgController.text = '1.0';
       _comfyuiSamplerController.text = 'euler';
-      _comfyuiSchedulerController.text = 'normal';
+      _comfyuiSchedulerController.text = 'simple';
       _comfyuiSeedController.text = '42';
       _comfyuiWorkflowController.text = '';
       _publicBaseUrlController.text = '';
@@ -175,11 +174,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_comfyui_api_url': _comfyuiApiUrlController.text,
         'llm_comfyui_output_node': _comfyuiOutputNodeController.text,
         'llm_comfyui_negative_prompt': _comfyuiNegativePromptController.text,
-        'llm_comfyui_width': int.tryParse(_comfyuiWidthController.text) ?? 512,
-        'llm_comfyui_height': int.tryParse(_comfyuiHeightController.text) ?? 512,
-        'llm_comfyui_steps': int.tryParse(_comfyuiStepsController.text) ?? 20,
+        'llm_comfyui_width': int.tryParse(_comfyuiWidthController.text) ?? 1024,
+        'llm_comfyui_height': int.tryParse(_comfyuiHeightController.text) ?? 1024,
+        'llm_comfyui_steps': int.tryParse(_comfyuiStepsController.text) ?? 28,
         'llm_comfyui_cfg':
-            double.tryParse(_comfyuiCfgController.text) ?? 7.0,
+            double.tryParse(_comfyuiCfgController.text) ?? 1.0,
         'llm_comfyui_sampler': _comfyuiSamplerController.text,
         'llm_comfyui_scheduler': _comfyuiSchedulerController.text,
         'llm_comfyui_seed': int.tryParse(_comfyuiSeedController.text) ?? 42,
@@ -501,7 +500,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           if (_imageProvider == 'comfyui') ...[
             _buildInfoBox(
-              'ComfyUI uses the workflow to decide the checkpoint/style. The bundled default is neutral SDXL on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
+              'ComfyUI uses the workflow to decide the model/style. The bundled default is Flux.1-dev on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
             ),
             const SizedBox(height: 16),
             _buildField(
@@ -514,14 +513,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildField(
               controller: _comfyuiOutputNodeController,
               label: 'Save Image Node ID',
-              hint: '9',
+              hint: '13',
               icon: Icons.output_rounded,
             ),
             const SizedBox(height: 16),
             _buildField(
               controller: _comfyuiNegativePromptController,
               label: 'Negative Prompt',
-              hint: 'blurry, low quality, 3d, realistic',
+              hint: 'Optional; Flux workflows usually leave this blank',
               icon: Icons.block_rounded,
             ),
             const SizedBox(height: 16),
@@ -531,7 +530,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _buildField(
                     controller: _comfyuiWidthController,
                     label: 'Width',
-                    hint: '512',
+                    hint: '1024',
                     icon: Icons.straighten_rounded,
                     keyboardType: TextInputType.number,
                   ),
@@ -541,7 +540,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _buildField(
                     controller: _comfyuiHeightController,
                     label: 'Height',
-                    hint: '512',
+                    hint: '1024',
                     icon: Icons.straighten_rounded,
                     keyboardType: TextInputType.number,
                   ),
@@ -555,7 +554,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _buildField(
                     controller: _comfyuiStepsController,
                     label: 'Steps',
-                    hint: '20',
+                    hint: '28',
                     icon: Icons.repeat_rounded,
                     keyboardType: TextInputType.number,
                   ),
@@ -565,7 +564,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _buildField(
                     controller: _comfyuiCfgController,
                     label: 'CFG',
-                    hint: '7.0',
+                    hint: '1.0',
                     icon: Icons.tune_rounded,
                     keyboardType: TextInputType.number,
                   ),
@@ -598,7 +597,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: _buildField(
                     controller: _comfyuiSchedulerController,
                     label: 'Scheduler',
-                    hint: 'normal',
+                    hint: 'simple',
                     icon: Icons.schedule_rounded,
                   ),
                 ),
@@ -608,7 +607,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildField(
               controller: _comfyuiWorkflowController,
               label: 'Workflow JSON (optional)',
-              hint: 'Leave blank to use bundled SDXL pixel-art workflow',
+              hint: 'Leave blank to use bundled Flux.1-dev workflow',
               icon: Icons.data_object_rounded,
               maxLines: 6,
             ),
