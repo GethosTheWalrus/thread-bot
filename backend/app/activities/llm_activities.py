@@ -74,7 +74,7 @@ async def index_discord_thread_history(args: dict) -> dict:
         get_thread_discord_message_ids,
         update_discord_link_index_state,
     )
-    from app.discord_integration import fetch_discord_messages, normalize_discord_user_mentions
+    from app.discord_integration import fetch_discord_messages, normalize_discord_user_mentions, persist_discord_image_attachments
     from app.models.models import DiscordThreadLink
 
     link_id = args["link_id"]
@@ -134,7 +134,7 @@ async def index_discord_thread_history(args: dict) -> dict:
                     "indexed": True,
                     "reply_requested": False,
                 }
-                image_attachments = _discord_index_image_attachments(message)
+                image_attachments = await persist_discord_image_attachments(_discord_index_image_attachments(message))
                 if image_attachments:
                     metadata["image_attachments"] = image_attachments
                 await add_message(

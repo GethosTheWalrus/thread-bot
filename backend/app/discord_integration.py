@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import uuid as uuid_mod
 from datetime import datetime, timedelta, timezone
@@ -59,12 +60,94 @@ def _discord_image_attachments(message: dict) -> list[dict]:
             continue
         images.append({
             "url": url,
+            "source_url": attachment.get("url") or url,
+            "proxy_url": attachment.get("proxy_url"),
             "filename": filename,
             "content_type": content_type or "image/*",
             "width": attachment.get("width"),
             "height": attachment.get("height"),
         })
     return images
+
+
+async def persist_discord_image_attachments(image_attachments: list[dict] | None) -> list[dict]:
+    """Copy Discord CDN images into ThreadBot storage before their URLs expire."""
+    if not image_attachments:
+        return []
+
+    from app.database import AsyncSessionLocal
+    from app.models.models import GeneratedImage
+
+    llm_config = get_llm_config()
+    image_dir = llm_config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    public_base_url = str(llm_config.get("public_base_url") or "").rstrip("/")
+    os.makedirs(image_dir, exist_ok=True)
+
+    persisted: list[dict] = []
+    timeout = aiohttp.ClientTimeout(total=45)
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for attachment in image_attachments:
+            if not isinstance(attachment, dict):
+                continue
+            current_url = str(attachment.get("url") or "")
+            if "/api/generated-images/" in current_url:
+                persisted.append(attachment)
+                continue
+
+            source_url = str(attachment.get("source_url") or attachment.get("proxy_url") or current_url)
+            if not source_url.startswith(("http://", "https://")):
+                persisted.append(attachment)
+                continue
+
+            try:
+                async with session.get(source_url, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        print(f"[discord] failed to copy image attachment: HTTP {resp.status} {source_url}", flush=True)
+                        persisted.append(attachment)
+                        continue
+                    content_type = (resp.headers.get("Content-Type") or attachment.get("content_type") or "image/png").split(";", 1)[0]
+                    if not content_type.startswith("image/"):
+                        persisted.append(attachment)
+                        continue
+                    raw = await resp.content.read(12 * 1024 * 1024 + 1)
+                    if len(raw) > 12 * 1024 * 1024:
+                        print(f"[discord] skipped oversized image attachment {source_url}", flush=True)
+                        persisted.append(attachment)
+                        continue
+            except Exception as exc:
+                print(f"[discord] failed to copy image attachment {source_url}: {exc}", flush=True)
+                persisted.append(attachment)
+                continue
+
+            ext = os.path.splitext(str(attachment.get("filename") or ""))[1].lower()
+            if ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+                ext = {
+                    "image/jpeg": ".jpg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/webp": ".webp",
+                    "image/bmp": ".bmp",
+                }.get(content_type, ".png")
+            stored_filename = f"discord-{uuid_mod.uuid4().hex}{ext}"
+            with open(os.path.join(image_dir, stored_filename), "wb") as f:
+                f.write(raw)
+            async with AsyncSessionLocal() as db:
+                await db.merge(GeneratedImage(
+                    filename=stored_filename,
+                    content=raw,
+                    content_type=content_type,
+                ))
+                await db.commit()
+
+            local_url = f"{public_base_url}/api/generated-images/{stored_filename}" if public_base_url else f"/api/generated-images/{stored_filename}"
+            updated = dict(attachment)
+            updated["url"] = local_url
+            updated["source_url"] = source_url
+            updated["content_type"] = content_type
+            persisted.append(updated)
+
+    return persisted
 
 
 def _content_with_image_lines(content: str, image_attachments: list[dict]) -> str:
@@ -1185,7 +1268,7 @@ async def start_thread_from_discord_prompt(
             str(discord_thread["id"]),
             str(discord_thread.get("name") or title_seed or "ThreadBot Thread"),
         )
-        image_attachments = source_image_attachments or []
+        image_attachments = await persist_discord_image_attachments(source_image_attachments or [])
         local_content = _content_with_image_lines(_discord_user_content(prompt), image_attachments)
         metadata = {
             "source": "discord",
@@ -1495,7 +1578,7 @@ async def reply_to_existing_discord_thread(
                 f"as ThreadBot thread {thread.id}",
                 flush=True,
             )
-        image_attachments = source_image_attachments or []
+        image_attachments = await persist_discord_image_attachments(source_image_attachments or [])
         local_content = _content_with_image_lines(_discord_user_content(prompt), image_attachments)
         metadata = {
             "source": "discord",
@@ -1577,7 +1660,7 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 mentions = message.get("mentions") or []
                 should_reply = _discord_mentions_user(raw_content, mentions, bot_user_id)
                 content = _strip_discord_user_mention(raw_content, bot_user_id) if should_reply else raw_content.strip()
-                image_attachments = _discord_image_attachments(message)
+                image_attachments = await persist_discord_image_attachments(_discord_image_attachments(message))
                 if not content and not image_attachments:
                     continue
                 claimed = await _claim_discord_event(
