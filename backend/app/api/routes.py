@@ -537,6 +537,8 @@ async def chat_websocket(websocket: WebSocket):
     import uuid as uuid_mod
 
     run_id = f"thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
+    if llm_config.get("discord"):
+        llm_config["discord"]["workflow_id"] = run_id
 
     try:
         workflow_handle = await temporal_client.start_workflow(

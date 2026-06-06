@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import uuid as uuid_mod
 from datetime import datetime, timedelta, timezone
@@ -524,6 +525,203 @@ async def post_discord_message(
     return last_id
 
 
+async def edit_discord_message(
+    discord_thread_id: str,
+    message_id: str,
+    content: str,
+    discord_config: dict | None = None,
+) -> None:
+    config = discord_config or await _load_fresh_discord_config()
+    if not _discord_enabled(config) or not discord_thread_id or not message_id:
+        return
+    await _request(
+        "PATCH",
+        f"/channels/{discord_thread_id}/messages/{message_id}",
+        json={"content": content[:1900] or " "},
+        discord_config=config,
+    )
+
+
+def _preview(value: str, max_chars: int = 180) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "..."
+
+
+def _tool_input_lines(tool_name: str, args: dict) -> list[str]:
+    name = tool_name.lower()
+    lines = []
+    url = args.get("url") or args.get("href") or args.get("link")
+    query = (
+        args.get("query")
+        or args.get("q")
+        or args.get("search")
+        or args.get("search_terms")
+        or args.get("keywords")
+    )
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        lines.append(f"URL: <{_preview(url, 240)}>")
+    if isinstance(query, str) and query.strip():
+        label = "Search" if "search" in name or "duck" in name else "Query"
+        lines.append(f"{label}: `{_preview(query, 160)}`")
+    if not lines and ("search" in name or "duck" in name):
+        for key, value in args.items():
+            if isinstance(value, str) and value.strip():
+                lines.append(f"Search: `{_preview(value, 160)}`")
+                break
+    return lines[:3]
+
+
+def _status_label(status: str, success: bool | None = None) -> str:
+    if status == "running":
+        return "running"
+    if success is False:
+        return "failed"
+    return "done"
+
+
+def _format_activity_trace(state: dict) -> str:
+    order = state.get("order") or []
+    steps = state.get("steps") or {}
+    lines = ["**ThreadBot activity**"]
+    if not order:
+        lines.append("Preparing tools...")
+        return "\n".join(lines)
+    for index, call_id in enumerate(order[-8:], start=max(1, len(order) - 7)):
+        step = steps.get(call_id) or {}
+        tool = _preview(str(step.get("tool") or "tool"), 80)
+        status = _status_label(str(step.get("status") or "running"), step.get("success"))
+        lines.append(f"**{index}. {tool}** - {status}")
+        for detail in step.get("details") or []:
+            lines.append(f"> {detail}")
+    if len(order) > 8:
+        lines.append(f"_Showing latest 8 of {len(order)} tool steps._")
+    if state.get("final_response_posted"):
+        lines.append("**Final response posted.**")
+    return "\n".join(lines)[:1900]
+
+
+async def _load_activity_state(key: str) -> dict:
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.models import Setting
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Setting).where(Setting.key == key))
+        row = result.scalar_one_or_none()
+    if not row or not row.value:
+        return {"order": [], "steps": {}}
+    try:
+        state = json.loads(row.value)
+        return state if isinstance(state, dict) else {"order": [], "steps": {}}
+    except Exception:
+        return {"order": [], "steps": {}}
+
+
+async def _save_activity_state(key: str, state: dict) -> None:
+    from app.database import AsyncSessionLocal
+    from app.database.crud import upsert_settings
+
+    async with AsyncSessionLocal() as db:
+        await upsert_settings(db, {key: json.dumps(state)})
+        await db.commit()
+
+
+async def sync_discord_tool_activity(
+    event: dict,
+    discord_config: dict | None = None,
+) -> None:
+    """Create/update a compact Discord activity trace for tool calls."""
+    config = discord_config or {}
+    if not _discord_enabled(config):
+        return
+    discord_thread_id = config.get("discord_thread_id")
+    workflow_id = config.get("workflow_id") or config.get("active_workflow_id")
+    if not discord_thread_id or not workflow_id:
+        return
+
+    event_type = event.get("type")
+    if event_type not in {"tool_call", "tool_result"}:
+        return
+
+    key = f"discord:activity:{workflow_id}"
+    state = await _load_activity_state(key)
+    state.setdefault("order", [])
+    state.setdefault("steps", {})
+
+    if event_type == "tool_call":
+        for tool_call in event.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            call_id = str(tool_call.get("id") or f"call-{len(state['order']) + 1}")
+            function = tool_call.get("function") or {}
+            tool_name = str(function.get("name") or "tool")
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            if call_id not in state["order"]:
+                state["order"].append(call_id)
+            state["steps"][call_id] = {
+                "tool": tool_name,
+                "status": "running",
+                "details": _tool_input_lines(tool_name, args),
+            }
+    elif event_type == "tool_result":
+        call_id = str(event.get("tool_call_id") or "")
+        if not call_id and state["order"]:
+            call_id = str(state["order"][-1])
+        if call_id:
+            step = state["steps"].setdefault(call_id, {"tool": str(event.get("tool") or "tool")})
+            step["status"] = "done"
+            step["success"] = bool(event.get("success", True))
+            if event.get("success") is False:
+                content = str(event.get("content") or "")
+                if content:
+                    details = list(step.get("details") or [])
+                    details.append(f"Error: `{_preview(content, 180)}`")
+                    step["details"] = details[-3:]
+
+    content = _format_activity_trace(state)
+    message_id = state.get("message_id")
+    if message_id:
+        await edit_discord_message(discord_thread_id, str(message_id), content, discord_config=config)
+    else:
+        reply_to = config.get("reply_to_message_id")
+        message_id = await post_discord_message(
+            discord_thread_id,
+            content,
+            discord_config=config,
+            reply_to_message_id=reply_to,
+        )
+        if message_id:
+            state["message_id"] = message_id
+    await _save_activity_state(key, state)
+
+
+async def complete_discord_tool_activity(discord_config: dict | None = None) -> None:
+    config = discord_config or {}
+    if not _discord_enabled(config):
+        return
+    discord_thread_id = config.get("discord_thread_id")
+    workflow_id = config.get("workflow_id") or config.get("active_workflow_id")
+    if not discord_thread_id or not workflow_id:
+        return
+    key = f"discord:activity:{workflow_id}"
+    state = await _load_activity_state(key)
+    if not state.get("message_id"):
+        return
+    state["final_response_posted"] = True
+    await edit_discord_message(
+        discord_thread_id,
+        str(state["message_id"]),
+        _format_activity_trace(state),
+        discord_config=config,
+    )
+    await _save_activity_state(key, state)
+
+
 def format_threadbot_message(role: str, content: str) -> str | None:
     if role == "user":
         return f"**ThreadBot UI User:**\n{content}"
@@ -816,13 +1014,19 @@ async def sync_message_to_discord(
             files.extend(await _discord_files_from_image_urls(image_attachments, discord_config=config))
             formatted = _remove_image_attachment_lines(formatted)
         reply_to_message_id = config.get("reply_to_message_id") if role == "assistant" else None
-        return await post_discord_message(
+        posted_id = await post_discord_message(
             discord_thread_id,
             formatted,
             discord_config=config,
             reply_to_message_id=reply_to_message_id,
             files=files or None,
         )
+        if role == "assistant":
+            try:
+                await complete_discord_tool_activity(config)
+            except Exception as exc:
+                print(f"[discord] failed to complete tool activity trace: {exc}", flush=True)
+        return posted_id
     except Exception as exc:
         print(f"[discord] failed to post message for thread {thread_id}: {exc}", flush=True)
     return None
@@ -1115,6 +1319,7 @@ async def start_discord_reply_workflow(
     if assistant_response_prefix:
         llm_config["discord"]["assistant_response_prefix"] = assistant_response_prefix
     run_id = f"discord-thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"
+    llm_config["discord"]["workflow_id"] = run_id
     handle = await temporal_client.start_workflow(
         RunThreadWorkflow.run,
         {"thread_id": str(thread_id), "message": message, "llm_config": llm_config},

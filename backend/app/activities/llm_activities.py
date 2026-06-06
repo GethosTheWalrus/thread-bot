@@ -275,6 +275,17 @@ async def _typing_loop(discord_config: dict | None, stop_event: asyncio.Event, i
             continue
 
 
+async def _sync_discord_tool_event(config: dict, event: dict) -> None:
+    discord_config = (config or {}).get("discord")
+    if not discord_config or not discord_config.get("enabled"):
+        return
+    try:
+        from app.discord_integration import sync_discord_tool_activity
+        await sync_discord_tool_activity(event, discord_config=discord_config)
+    except Exception as exc:
+        print(f"[discord] tool activity sync failed: {exc}", flush=True)
+
+
 def _agents_model_settings(config: dict, *, temperature: float | None = None, max_tokens: int | None = None):
     from agents import ModelSettings
 
@@ -466,6 +477,7 @@ async def _execute_agent_tool(
     config: dict,
 ) -> str:
     import json
+    import uuid
 
     from mcp import ClientSession
     from mcp.client.stdio import stdio_client
@@ -480,6 +492,8 @@ async def _execute_agent_tool(
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
+    if not tool_call_id:
+        tool_call_id = f"{tool_name}-{uuid.uuid4().hex[:8]}"
     agent_attempt = config.get("agent_attempt")
     tool_call = {
         "id": tool_call_id,
@@ -496,12 +510,14 @@ async def _execute_agent_tool(
                 f"Calling {display_name}",
                 metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
             )
-            await _publish(redis_url, stream_channel, {
+            event = {
                 "type": "tool_call",
                 "content": f"Calling {display_name}",
                 "tools": [display_name],
                 "tool_calls": [tool_call],
-            })
+            }
+            await _publish(redis_url, stream_channel, event)
+            await _sync_discord_tool_event(config, event)
 
         result_text = await _execute_builtin(tool_name, tool_args, thread_id, redis_url, stream_channel, config)
         if tool_name != "continue_thinking":
@@ -511,12 +527,15 @@ async def _execute_agent_tool(
                 result_text,
                 metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
             )
-            await _publish(redis_url, stream_channel, {
+            event = {
                 "type": "tool_result",
                 "tool": display_name,
+                "tool_call_id": tool_call_id,
                 "content": result_text,
                 "success": True,
-            })
+            }
+            await _publish(redis_url, stream_channel, event)
+            await _sync_discord_tool_event(config, event)
         return result_text
 
     if tool_name not in mcp_tools_map:
@@ -527,12 +546,15 @@ async def _execute_agent_tool(
             not_found,
             metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
         )
-        await _publish(redis_url, stream_channel, {
+        event = {
             "type": "tool_result",
             "tool": tool_name,
+            "tool_call_id": tool_call_id,
             "content": not_found,
             "success": False,
-        })
+        }
+        await _publish(redis_url, stream_channel, event)
+        await _sync_discord_tool_event(config, event)
         return not_found
 
     info = mcp_tools_map[tool_name]
@@ -543,12 +565,14 @@ async def _execute_agent_tool(
         f"Calling {display_name}",
         metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
     )
-    await _publish(redis_url, stream_channel, {
+    event = {
         "type": "tool_call",
         "content": f"Calling {display_name}",
         "tools": [display_name],
         "tool_calls": [tool_call],
-    })
+    }
+    await _publish(redis_url, stream_channel, event)
+    await _sync_discord_tool_event(config, event)
 
     try:
         exec_env = info["env_vars"]
@@ -586,12 +610,15 @@ async def _execute_agent_tool(
             result_text,
             metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
         )
-        await _publish(redis_url, stream_channel, {
+        event = {
             "type": "tool_result",
             "tool": display_name,
+            "tool_call_id": tool_call_id,
             "content": result_text,
             "success": False,
-        })
+        }
+        await _publish(redis_url, stream_channel, event)
+        await _sync_discord_tool_event(config, event)
         return result_text
 
     await _save_inline(
@@ -600,12 +627,15 @@ async def _execute_agent_tool(
         result_text,
         metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
     )
-    await _publish(redis_url, stream_channel, {
+    event = {
         "type": "tool_result",
         "tool": display_name,
+        "tool_call_id": tool_call_id,
         "content": result_text,
         "success": True,
-    })
+    }
+    await _publish(redis_url, stream_channel, event)
+    await _sync_discord_tool_event(config, event)
 
     max_chars = config.get("tool_result_max_chars", 0)
     if max_chars and len(result_text) > max_chars:
