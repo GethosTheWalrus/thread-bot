@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
@@ -27,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _comfyuiSchedulerController = TextEditingController();
   final _comfyuiSeedController = TextEditingController();
   final _comfyuiWorkflowController = TextEditingController();
+  final _comfyuiWorkflowNameController = TextEditingController();
   final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
@@ -39,6 +42,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _compactionThreshold = 0.75;
   bool _imageGenerationEnabled = false;
   String _imageProvider = 'auto';
+  String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
+  bool _showComfyuiWorkflowJson = false;
+  List<Map<String, dynamic>> _comfyuiWorkflowPresets = [];
   bool _discordEnabled = false;
   List<Map<String, dynamic>> _discordServers = [];
   bool _isLoadingDiscordServers = false;
@@ -59,31 +65,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _apiUrlController.text = settings['llm_api_url'] as String? ?? '';
       _modelController.text = settings['llm_model'] as String? ?? '';
       _imageGenerationEnabled = settings['llm_image_enabled'] as bool? ?? false;
-      _imageApiUrlController.text = settings['llm_image_api_url'] as String? ?? '';
+      _imageApiUrlController.text =
+          settings['llm_image_api_url'] as String? ?? '';
       _imageModelController.text = settings['llm_image_model'] as String? ?? '';
       _imageProvider = settings['llm_image_provider'] as String? ?? 'auto';
-      _comfyuiApiUrlController.text = settings['llm_comfyui_api_url'] as String? ?? '';
+      _comfyuiApiUrlController.text =
+          settings['llm_comfyui_api_url'] as String? ?? '';
       _comfyuiOutputNodeController.text =
-          (settings['llm_comfyui_output_node'] ?? '13').toString();
+          (settings['llm_comfyui_output_node'] ?? '12').toString();
       _comfyuiNegativePromptController.text =
           settings['llm_comfyui_negative_prompt'] as String? ?? '';
-      _comfyuiWidthController.text =
-          (settings['llm_comfyui_width'] ?? 1024).toString();
-      _comfyuiHeightController.text =
-          (settings['llm_comfyui_height'] ?? 1024).toString();
-      _comfyuiStepsController.text =
-          (settings['llm_comfyui_steps'] ?? 28).toString();
-      _comfyuiCfgController.text =
-          (settings['llm_comfyui_cfg'] ?? 1.0).toString();
+      _comfyuiWidthController.text = (settings['llm_comfyui_width'] ?? 1024)
+          .toString();
+      _comfyuiHeightController.text = (settings['llm_comfyui_height'] ?? 1024)
+          .toString();
+      _comfyuiStepsController.text = (settings['llm_comfyui_steps'] ?? 28)
+          .toString();
+      _comfyuiCfgController.text = (settings['llm_comfyui_cfg'] ?? 1.0)
+          .toString();
       _comfyuiSamplerController.text =
           settings['llm_comfyui_sampler'] as String? ?? 'euler';
       _comfyuiSchedulerController.text =
           settings['llm_comfyui_scheduler'] as String? ?? 'simple';
-      _comfyuiSeedController.text =
-          (settings['llm_comfyui_seed'] ?? 42).toString();
+      _comfyuiSeedController.text = (settings['llm_comfyui_seed'] ?? 42)
+          .toString();
       _comfyuiWorkflowController.text =
           settings['llm_comfyui_workflow'] as String? ?? '';
-      _publicBaseUrlController.text = settings['app_public_base_url'] as String? ?? '';
+      _comfyuiWorkflowPresets = _normalizeComfyuiWorkflowPresets(
+        settings['llm_comfyui_workflow_presets'],
+      );
+      _selectedComfyuiWorkflow =
+          settings['llm_comfyui_selected_workflow'] as String? ??
+          (_comfyuiWorkflowPresets.isNotEmpty
+              ? _comfyuiWorkflowPresets.first['name'].toString()
+              : 'Flux.2 Klein 9B');
+      _selectComfyuiWorkflow(_selectedComfyuiWorkflow, updateState: false);
+      _publicBaseUrlController.text =
+          settings['app_public_base_url'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
       _apiKeyController.text = '';
       _contextWindowController.text = (settings['llm_context_window'] ?? 8192)
@@ -112,7 +130,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageModelController.text = '';
       _imageProvider = 'auto';
       _comfyuiApiUrlController.text = '';
-      _comfyuiOutputNodeController.text = '13';
+      _comfyuiOutputNodeController.text = '12';
       _comfyuiNegativePromptController.text = '';
       _comfyuiWidthController.text = '1024';
       _comfyuiHeightController.text = '1024';
@@ -122,6 +140,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _comfyuiSchedulerController.text = 'simple';
       _comfyuiSeedController.text = '42';
       _comfyuiWorkflowController.text = '';
+      _comfyuiWorkflowPresets = [];
+      _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
+      _comfyuiWorkflowNameController.text = _selectedComfyuiWorkflow;
       _publicBaseUrlController.text = '';
       _contextWindowController.text = '8192';
       _maxIterationsController.text = '25';
@@ -153,6 +174,136 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  List<Map<String, dynamic>> _normalizeComfyuiWorkflowPresets(dynamic value) {
+    final presets = <Map<String, dynamic>>[];
+    if (value is List) {
+      for (final item in value) {
+        if (item is! Map) continue;
+        final name = (item['name'] ?? '').toString().trim();
+        final workflow = (item['workflow'] ?? '').toString().trim();
+        if (name.isEmpty || workflow.isEmpty) continue;
+        presets.add({
+          'name': name,
+          'description': (item['description'] ?? '').toString(),
+          'output_node': (item['output_node'] ?? '').toString(),
+          'workflow': workflow,
+          'builtin': item['builtin'] == true,
+        });
+      }
+    }
+    return presets;
+  }
+
+  void _selectComfyuiWorkflow(String name, {bool updateState = true}) {
+    Map<String, dynamic>? preset;
+    for (final item in _comfyuiWorkflowPresets) {
+      if (item['name'] == name) {
+        preset = item;
+        break;
+      }
+    }
+    void apply() {
+      _selectedComfyuiWorkflow = name;
+      _comfyuiWorkflowNameController.text = name;
+      if (preset != null) {
+        _comfyuiWorkflowController.text = preset['workflow']?.toString() ?? '';
+        final outputNode = preset['output_node']?.toString() ?? '';
+        if (outputNode.isNotEmpty) {
+          _comfyuiOutputNodeController.text = outputNode;
+        }
+      }
+    }
+
+    if (updateState) {
+      setState(apply);
+    } else {
+      apply();
+    }
+  }
+
+  void _syncSelectedComfyuiWorkflowFromEditor() {
+    final name = _comfyuiWorkflowNameController.text.trim().isEmpty
+        ? _selectedComfyuiWorkflow
+        : _comfyuiWorkflowNameController.text.trim();
+    if (name.isEmpty || _comfyuiWorkflowController.text.trim().isEmpty) return;
+    final preset = {
+      'name': name,
+      'description': _workflowSummaryText(_comfyuiWorkflowController.text),
+      'output_node': _comfyuiOutputNodeController.text.trim(),
+      'workflow': _comfyuiWorkflowController.text,
+      'builtin': false,
+    };
+    final index = _comfyuiWorkflowPresets.indexWhere(
+      (item) => item['name'] == name,
+    );
+    if (index >= 0) {
+      _comfyuiWorkflowPresets[index] = preset;
+    } else {
+      _comfyuiWorkflowPresets.add(preset);
+    }
+    _selectedComfyuiWorkflow = name;
+  }
+
+  void _saveComfyuiWorkflowPreset() {
+    try {
+      jsonDecode(_comfyuiWorkflowController.text);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Workflow JSON is invalid: $e'),
+          backgroundColor: Colors.red.shade800,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    setState(_syncSelectedComfyuiWorkflowFromEditor);
+  }
+
+  String _workflowSummaryText(String workflowJson) {
+    try {
+      final decoded = jsonDecode(workflowJson);
+      if (decoded is! Map) return 'Invalid workflow shape';
+      final counts = <String, int>{};
+      final models = <String>{};
+      for (final node in decoded.values) {
+        if (node is! Map) continue;
+        final type = (node['class_type'] ?? 'Unknown').toString();
+        counts[type] = (counts[type] ?? 0) + 1;
+        final inputs = node['inputs'];
+        if (inputs is Map) {
+          for (final key in [
+            'unet_name',
+            'ckpt_name',
+            'clip_name',
+            'clip_name1',
+            'clip_name2',
+            'vae_name',
+          ]) {
+            final value = inputs[key];
+            if (value is String && value.isNotEmpty) models.add(value);
+          }
+        }
+      }
+      final important = counts.entries
+          .where(
+            (entry) =>
+                entry.key.contains('Loader') ||
+                entry.key.contains('Sampler') ||
+                entry.key.contains('Scheduler') ||
+                entry.key == 'SaveImage',
+          )
+          .map((entry) => '${entry.key} x${entry.value}')
+          .join(', ');
+      final modelText = models.isEmpty
+          ? 'No explicit model files'
+          : models.join(', ');
+      return '${decoded.length} nodes. Models: $modelText. Key nodes: ${important.isEmpty ? 'none' : important}.';
+    } catch (e) {
+      return 'Invalid JSON: $e';
+    }
+  }
+
   Future<void> _saveSettings() async {
     setState(() => _isSaving = true);
     try {
@@ -162,6 +313,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final toolResultMaxChars =
           int.tryParse(_toolResultMaxCharsController.text) ?? 0;
       final discordPoll = int.tryParse(_discordPollController.text) ?? 10;
+      _syncSelectedComfyuiWorkflowFromEditor();
 
       // Build the settings payload — only include API key if user entered one
       final payload = <String, dynamic>{
@@ -175,14 +327,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_comfyui_output_node': _comfyuiOutputNodeController.text,
         'llm_comfyui_negative_prompt': _comfyuiNegativePromptController.text,
         'llm_comfyui_width': int.tryParse(_comfyuiWidthController.text) ?? 1024,
-        'llm_comfyui_height': int.tryParse(_comfyuiHeightController.text) ?? 1024,
+        'llm_comfyui_height':
+            int.tryParse(_comfyuiHeightController.text) ?? 1024,
         'llm_comfyui_steps': int.tryParse(_comfyuiStepsController.text) ?? 28,
-        'llm_comfyui_cfg':
-            double.tryParse(_comfyuiCfgController.text) ?? 1.0,
+        'llm_comfyui_cfg': double.tryParse(_comfyuiCfgController.text) ?? 1.0,
         'llm_comfyui_sampler': _comfyuiSamplerController.text,
         'llm_comfyui_scheduler': _comfyuiSchedulerController.text,
         'llm_comfyui_seed': int.tryParse(_comfyuiSeedController.text) ?? 42,
         'llm_comfyui_workflow': _comfyuiWorkflowController.text,
+        'llm_comfyui_workflow_presets': _comfyuiWorkflowPresets,
+        'llm_comfyui_selected_workflow': _selectedComfyuiWorkflow,
         'app_public_base_url': _publicBaseUrlController.text,
         'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
@@ -255,6 +409,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _comfyuiSchedulerController.dispose();
     _comfyuiSeedController.dispose();
     _comfyuiWorkflowController.dispose();
+    _comfyuiWorkflowNameController.dispose();
     _publicBaseUrlController.dispose();
     _maxIterationsController.dispose();
     _contextWindowController.dispose();
@@ -491,6 +646,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 16),
           _buildImageProviderDropdown(),
+          const SizedBox(height: 16),
           _buildField(
             controller: _publicBaseUrlController,
             label: 'Public Base URL',
@@ -500,7 +656,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
           if (_imageProvider == 'comfyui') ...[
             _buildInfoBox(
-              'ComfyUI uses the workflow to decide the model/style. The bundled default is Flux.1-dev on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
+              'ComfyUI uses the workflow to decide the model/style. The bundled default is Flux.2 Klein 9B on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
             ),
             const SizedBox(height: 16),
             _buildField(
@@ -513,7 +669,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildField(
               controller: _comfyuiOutputNodeController,
               label: 'Save Image Node ID',
-              hint: '13',
+              hint: '12',
               icon: Icons.output_rounded,
             ),
             const SizedBox(height: 16),
@@ -604,13 +760,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            _buildField(
-              controller: _comfyuiWorkflowController,
-              label: 'Workflow JSON (optional)',
-              hint: 'Leave blank to use bundled Flux.1-dev workflow',
-              icon: Icons.data_object_rounded,
-              maxLines: 6,
-            ),
+            _buildComfyuiWorkflowSelector(),
           ] else ...[
             const SizedBox(height: 16),
             _buildField(
@@ -789,7 +939,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-
   Widget _buildImageProviderDropdown() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -810,20 +959,231 @@ class _SettingsScreenState extends State<SettingsScreen> {
             decoration: const InputDecoration(
               prefixIcon: Icon(Icons.hub_outlined, color: Color(0xFF71717A)),
               border: InputBorder.none,
-              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
+              ),
             ),
             dropdownColor: const Color(0xFF16161E),
             style: const TextStyle(color: Color(0xFFE4E4E7), fontSize: 14),
             items: const [
               DropdownMenuItem(value: 'auto', child: Text('Auto')),
               DropdownMenuItem(value: 'ollama', child: Text('Ollama')),
-              DropdownMenuItem(value: 'openai_compatible', child: Text('OpenAI-compatible')),
+              DropdownMenuItem(
+                value: 'openai_compatible',
+                child: Text('OpenAI-compatible'),
+              ),
               DropdownMenuItem(value: 'comfyui', child: Text('ComfyUI')),
             ],
             onChanged: (value) {
               if (value != null) setState(() => _imageProvider = value);
             },
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildComfyuiWorkflowSelector() {
+    final names = _comfyuiWorkflowPresets
+        .map((item) => item['name']?.toString() ?? '')
+        .where((name) => name.isNotEmpty)
+        .toSet()
+        .toList();
+    if (names.isEmpty) names.add(_selectedComfyuiWorkflow);
+    if (!names.contains(_selectedComfyuiWorkflow)) {
+      names.add(_selectedComfyuiWorkflow);
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.white.withValues(alpha: 0.03),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'ComfyUI Workflow',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            initialValue: _selectedComfyuiWorkflow,
+            decoration: const InputDecoration(
+              labelText: 'Selected Workflow',
+              prefixIcon: Icon(
+                Icons.account_tree_outlined,
+                color: Color(0xFF71717A),
+              ),
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
+              ),
+            ),
+            dropdownColor: const Color(0xFF16161E),
+            style: const TextStyle(color: Color(0xFFE4E4E7), fontSize: 14),
+            items: names
+                .map((name) => DropdownMenuItem(value: name, child: Text(name)))
+                .toList(),
+            onChanged: (value) {
+              if (value != null) _selectComfyuiWorkflow(value);
+            },
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              color: const Color(0xFF0D0D12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: _buildWorkflowReadableSummary(),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _comfyuiWorkflowNameController,
+                  label: 'Workflow Name',
+                  hint: 'Flux.2 Klein 9B',
+                  icon: Icons.badge_outlined,
+                ),
+              ),
+              const SizedBox(width: 12),
+              FilledButton.tonalIcon(
+                onPressed: _saveComfyuiWorkflowPreset,
+                icon: const Icon(Icons.save_outlined, size: 18),
+                label: const Text('Save Workflow'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _showComfyuiWorkflowJson,
+            onChanged: (value) =>
+                setState(() => _showComfyuiWorkflowJson = value),
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('View JSON'),
+            subtitle: Text(
+              'Enable to edit the raw ComfyUI API workflow for the selected preset.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          if (_showComfyuiWorkflowJson) ...[
+            const SizedBox(height: 12),
+            _buildField(
+              controller: _comfyuiWorkflowController,
+              label: 'Workflow JSON',
+              hint: 'ComfyUI API workflow JSON',
+              icon: Icons.data_object_rounded,
+              maxLines: 10,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWorkflowReadableSummary() {
+    try {
+      final decoded = jsonDecode(_comfyuiWorkflowController.text);
+      if (decoded is! Map) {
+        return const Text('Workflow JSON must be an object.');
+      }
+      final counts = <String, int>{};
+      final models = <String>{};
+      for (final node in decoded.values) {
+        if (node is! Map) continue;
+        final type = (node['class_type'] ?? 'Unknown').toString();
+        counts[type] = (counts[type] ?? 0) + 1;
+        final inputs = node['inputs'];
+        if (inputs is Map) {
+          for (final key in [
+            'unet_name',
+            'ckpt_name',
+            'clip_name',
+            'clip_name1',
+            'clip_name2',
+            'vae_name',
+          ]) {
+            final value = inputs[key];
+            if (value is String && value.isNotEmpty) models.add(value);
+          }
+        }
+      }
+      final keyNodes = counts.entries
+          .where(
+            (entry) =>
+                entry.key.contains('Loader') ||
+                entry.key.contains('Sampler') ||
+                entry.key.contains('Scheduler') ||
+                entry.key == 'SaveImage',
+          )
+          .map((entry) => '${entry.key} x${entry.value}')
+          .toList();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${decoded.length} workflow nodes',
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 10),
+          _buildWorkflowChipGroup('Model files', models.toList()),
+          const SizedBox(height: 10),
+          _buildWorkflowChipGroup('Key nodes', keyNodes),
+        ],
+      );
+    } catch (e) {
+      return Text(
+        'Invalid JSON: $e',
+        style: TextStyle(fontSize: 12, color: Colors.red.shade300),
+      );
+    }
+  }
+
+  Widget _buildWorkflowChipGroup(String label, List<String> values) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.white.withValues(alpha: 0.42),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: (values.isEmpty ? ['None detected'] : values).map((value) {
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                color: const Color(0xFF8B5CF6).withValues(alpha: 0.12),
+                border: Border.all(
+                  color: const Color(0xFF8B5CF6).withValues(alpha: 0.18),
+                ),
+              ),
+              child: Text(
+                value,
+                style: const TextStyle(fontSize: 11, color: Color(0xFFC4B5FD)),
+              ),
+            );
+          }).toList(),
         ),
       ],
     );

@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+import json
 
 
 class Settings(BaseSettings):
@@ -37,7 +38,9 @@ class Settings(BaseSettings):
     # ComfyUI image generation
     LLM_COMFYUI_API_URL: str = ""  # e.g. http://ollama.home:8188
     LLM_COMFYUI_WORKFLOW: str = ""  # workflow JSON; "" means use bundled default
-    LLM_COMFYUI_OUTPUT_NODE: str = "13"  # node id whose output contains the saved image
+    LLM_COMFYUI_WORKFLOW_PRESETS: str = ""
+    LLM_COMFYUI_SELECTED_WORKFLOW: str = "Flux.2 Klein 9B"
+    LLM_COMFYUI_OUTPUT_NODE: str = "12"  # node id whose output contains the saved image
     LLM_COMFYUI_NEGATIVE_PROMPT: str = ""
     LLM_COMFYUI_WIDTH: int = 1024
     LLM_COMFYUI_HEIGHT: int = 1024
@@ -123,6 +126,7 @@ async def load_settings_from_db() -> None:
         "llm_preserve_recent": int,
         "llm_tool_result_max_chars": int,
         "llm_image_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_comfyui_workflow_presets": json.loads,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
     }
@@ -140,13 +144,56 @@ def _load_default_comfyui_workflow() -> str:
     """Return the bundled default ComfyUI workflow JSON as a string."""
     import os
     here = os.path.dirname(__file__)
-    path = os.path.join(here, "assets", "flux1_dev_workflow.json")
+    path = os.path.join(here, "assets", "flux2_klein_9b_workflow.json")
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
+def get_comfyui_workflow_presets() -> list[dict]:
+    """Return saved ComfyUI workflow presets, including the bundled default."""
+    presets = [
+        {
+            "name": "Flux.2 Klein 9B",
+            "description": "Default local Flux.2 Klein workflow using qwen_3_8b_fp8mixed and the small decoder VAE.",
+            "output_node": "12",
+            "workflow": _load_default_comfyui_workflow(),
+            "builtin": True,
+        }
+    ]
+    override = get_setting("LLM_COMFYUI_WORKFLOW_PRESETS")
+    if not override:
+        return presets
+    try:
+        saved = override if isinstance(override, list) else json.loads(str(override))
+    except Exception:
+        return presets
+    if not isinstance(saved, list):
+        return presets
+    by_name = {preset["name"]: preset for preset in presets}
+    for item in saved:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        workflow = str(item.get("workflow") or "").strip()
+        if not name or not workflow:
+            continue
+        by_name[name] = {
+            "name": name,
+            "description": str(item.get("description") or ""),
+            "output_node": str(item.get("output_node") or ""),
+            "workflow": workflow,
+            "builtin": bool(item.get("builtin", False)),
+        }
+    return list(by_name.values())
+
+
 def get_comfyui_workflow_json() -> str:
     """Return the ComfyUI workflow JSON the user has selected, or the bundled default."""
+    selected = str(get_setting("LLM_COMFYUI_SELECTED_WORKFLOW") or "").strip()
+    if selected:
+        for preset in get_comfyui_workflow_presets():
+            if preset.get("name") == selected and str(preset.get("workflow") or "").strip():
+                return str(preset["workflow"])
     override = get_setting("LLM_COMFYUI_WORKFLOW")
     if override and str(override).strip():
         return str(override)
@@ -166,7 +213,7 @@ def get_llm_config() -> dict:
         "public_base_url": get_setting("APP_PUBLIC_BASE_URL") or "",
         "generated_image_dir": get_setting("GENERATED_IMAGE_DIR") or "/tmp/threadbot-generated-images",
         "comfyui_api_url": (get_setting("LLM_COMFYUI_API_URL") or "").rstrip("/"),
-        "comfyui_output_node": str(get_setting("LLM_COMFYUI_OUTPUT_NODE") or "13"),
+        "comfyui_output_node": str(get_setting("LLM_COMFYUI_OUTPUT_NODE") or "12"),
         "comfyui_negative_prompt": get_setting("LLM_COMFYUI_NEGATIVE_PROMPT") or "",
         "comfyui_width": int(get_setting("LLM_COMFYUI_WIDTH") or 1024),
         "comfyui_height": int(get_setting("LLM_COMFYUI_HEIGHT") or 1024),

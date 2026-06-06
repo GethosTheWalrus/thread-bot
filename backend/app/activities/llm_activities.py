@@ -1712,7 +1712,14 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
             else:
                 # Subsequent CLIPTextEncode nodes: leave alone.
                 pass
-        elif cls in {"EmptyLatentImage", "EmptySD3LatentImage"}:
+        elif cls in {"EmptyLatentImage", "EmptySD3LatentImage", "EmptyFlux2LatentImage"}:
+            if width:
+                inputs["width"] = width
+            if height:
+                inputs["height"] = height
+        elif cls == "Flux2Scheduler":
+            if steps:
+                inputs["steps"] = steps
             if width:
                 inputs["width"] = width
             if height:

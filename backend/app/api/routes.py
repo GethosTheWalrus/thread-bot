@@ -59,7 +59,8 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from datetime import timedelta
-from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config
+import json
+from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config, get_comfyui_workflow_presets
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
@@ -888,6 +889,8 @@ async def get_settings_endpoint():
         "llm_comfyui_scheduler": config["comfyui_scheduler"],
         "llm_comfyui_seed": config["comfyui_seed"],
         "llm_comfyui_workflow": get_setting("LLM_COMFYUI_WORKFLOW") or "",
+        "llm_comfyui_workflow_presets": get_comfyui_workflow_presets(),
+        "llm_comfyui_selected_workflow": get_setting("LLM_COMFYUI_SELECTED_WORKFLOW") or "Flux.2 Klein 9B",
         "app_public_base_url": config["public_base_url"],
         "llm_temperature": config["temperature"],
         "llm_max_tokens": config["max_tokens"],
@@ -923,6 +926,8 @@ async def update_settings_endpoint(
         "llm_image_provider": "llm_image_provider",
         "llm_comfyui_api_url": "llm_comfyui_api_url",
         "llm_comfyui_workflow": "llm_comfyui_workflow",
+        "llm_comfyui_workflow_presets": "llm_comfyui_workflow_presets",
+        "llm_comfyui_selected_workflow": "llm_comfyui_selected_workflow",
         "llm_comfyui_output_node": "llm_comfyui_output_node",
         "llm_comfyui_negative_prompt": "llm_comfyui_negative_prompt",
         "llm_comfyui_width": "llm_comfyui_width",
@@ -955,7 +960,10 @@ async def update_settings_endpoint(
     if updates:
         update_settings(**updates)
         # Persist to DB so values survive restarts
-        await upsert_settings(db, {k: str(v) for k, v in updates.items()})
+        persisted = {}
+        for k, v in updates.items():
+            persisted[k] = json.dumps(v) if k == "llm_comfyui_workflow_presets" else str(v)
+        await upsert_settings(db, persisted)
 
     config = get_llm_config()
     return {
@@ -977,6 +985,8 @@ async def update_settings_endpoint(
         "llm_comfyui_scheduler": config["comfyui_scheduler"],
         "llm_comfyui_seed": config["comfyui_seed"],
         "llm_comfyui_workflow": get_setting("LLM_COMFYUI_WORKFLOW") or "",
+        "llm_comfyui_workflow_presets": get_comfyui_workflow_presets(),
+        "llm_comfyui_selected_workflow": get_setting("LLM_COMFYUI_SELECTED_WORKFLOW") or "Flux.2 Klein 9B",
         "app_public_base_url": config["public_base_url"],
         "llm_temperature": config["temperature"],
         "llm_max_tokens": config["max_tokens"],
