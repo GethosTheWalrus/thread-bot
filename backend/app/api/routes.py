@@ -25,7 +25,7 @@ from app.database.crud import (
     set_discord_server_tool_overrides,
     get_discord_server,
 )
-from app.models.models import Thread, Message, DiscordThreadLink, GeneratedImage
+from app.models.models import Thread, Message, DiscordThreadLink, GeneratedImage, GeneratedMedia
 from app.models.schemas import (
     ThreadCreateRequest,
     ChatRequest,
@@ -605,6 +605,24 @@ async def get_generated_image(filename: str, db: AsyncSession = Depends(get_db))
     return FileResponse(path)
 
 
+@router.get("/generated-media/{filename}")
+async def get_generated_media(filename: str, db: AsyncSession = Depends(get_db)):
+    import os
+    from app.config import get_llm_config
+
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=404, detail="Media not found")
+    media_dir = get_llm_config().get("generated_media_dir") or "/tmp/threadbot-generated-media"
+    path = os.path.join(media_dir, filename)
+    if not os.path.isfile(path):
+        result = await db.execute(select(GeneratedMedia).where(GeneratedMedia.filename == filename))
+        media = result.scalar_one_or_none()
+        if not media:
+            raise HTTPException(status_code=404, detail="Media not found")
+        return Response(content=media.content, media_type=media.content_type or "application/octet-stream")
+    return FileResponse(path)
+
+
 @router.post("/uploads/images", response_model=ImageUploadResponse)
 async def upload_images_endpoint(
     request: Request,
@@ -911,6 +929,23 @@ async def get_settings_endpoint():
         "llm_comfyui_sampler": config["comfyui_sampler"],
         "llm_comfyui_scheduler": config["comfyui_scheduler"],
         "llm_comfyui_seed": config["comfyui_seed"],
+        "llm_video_enabled": config["video_enabled"],
+        "llm_comfyui_video_workflow": config["comfyui_video_workflow"],
+        "llm_comfyui_video_output_node": config["comfyui_video_output_node"],
+        "llm_comfyui_video_input_image_node": config["comfyui_video_input_image_node"],
+        "llm_comfyui_video_prompt_node": config["comfyui_video_prompt_node"],
+        "llm_comfyui_video_negative_node": config["comfyui_video_negative_node"],
+        "llm_comfyui_video_negative_prompt": config["comfyui_video_negative_prompt"],
+        "llm_comfyui_video_width": config["comfyui_video_width"],
+        "llm_comfyui_video_height": config["comfyui_video_height"],
+        "llm_comfyui_video_frames": config["comfyui_video_frames"],
+        "llm_comfyui_video_fps": config["comfyui_video_fps"],
+        "llm_comfyui_video_steps": config["comfyui_video_steps"],
+        "llm_comfyui_video_cfg": config["comfyui_video_cfg"],
+        "llm_comfyui_video_sampler": config["comfyui_video_sampler"],
+        "llm_comfyui_video_scheduler": config["comfyui_video_scheduler"],
+        "llm_comfyui_video_seed": config["comfyui_video_seed"],
+        "llm_comfyui_video_timeout": config["comfyui_video_timeout"],
         "llm_vision_enabled": config["vision_enabled"],
         "llm_vision_api_url": config["vision_api_url"],
         "llm_vision_model": config["vision_model"],
@@ -973,6 +1008,23 @@ async def update_settings_endpoint(
         "llm_comfyui_sampler": "llm_comfyui_sampler",
         "llm_comfyui_scheduler": "llm_comfyui_scheduler",
         "llm_comfyui_seed": "llm_comfyui_seed",
+        "llm_video_enabled": "llm_video_enabled",
+        "llm_comfyui_video_workflow": "llm_comfyui_video_workflow",
+        "llm_comfyui_video_output_node": "llm_comfyui_video_output_node",
+        "llm_comfyui_video_input_image_node": "llm_comfyui_video_input_image_node",
+        "llm_comfyui_video_prompt_node": "llm_comfyui_video_prompt_node",
+        "llm_comfyui_video_negative_node": "llm_comfyui_video_negative_node",
+        "llm_comfyui_video_negative_prompt": "llm_comfyui_video_negative_prompt",
+        "llm_comfyui_video_width": "llm_comfyui_video_width",
+        "llm_comfyui_video_height": "llm_comfyui_video_height",
+        "llm_comfyui_video_frames": "llm_comfyui_video_frames",
+        "llm_comfyui_video_fps": "llm_comfyui_video_fps",
+        "llm_comfyui_video_steps": "llm_comfyui_video_steps",
+        "llm_comfyui_video_cfg": "llm_comfyui_video_cfg",
+        "llm_comfyui_video_sampler": "llm_comfyui_video_sampler",
+        "llm_comfyui_video_scheduler": "llm_comfyui_video_scheduler",
+        "llm_comfyui_video_seed": "llm_comfyui_video_seed",
+        "llm_comfyui_video_timeout": "llm_comfyui_video_timeout",
         "llm_vision_enabled": "llm_vision_enabled",
         "llm_vision_api_url": "llm_vision_api_url",
         "llm_vision_api_key": "llm_vision_api_key",
@@ -1034,6 +1086,23 @@ async def update_settings_endpoint(
         "llm_comfyui_sampler": config["comfyui_sampler"],
         "llm_comfyui_scheduler": config["comfyui_scheduler"],
         "llm_comfyui_seed": config["comfyui_seed"],
+        "llm_video_enabled": config["video_enabled"],
+        "llm_comfyui_video_workflow": config["comfyui_video_workflow"],
+        "llm_comfyui_video_output_node": config["comfyui_video_output_node"],
+        "llm_comfyui_video_input_image_node": config["comfyui_video_input_image_node"],
+        "llm_comfyui_video_prompt_node": config["comfyui_video_prompt_node"],
+        "llm_comfyui_video_negative_node": config["comfyui_video_negative_node"],
+        "llm_comfyui_video_negative_prompt": config["comfyui_video_negative_prompt"],
+        "llm_comfyui_video_width": config["comfyui_video_width"],
+        "llm_comfyui_video_height": config["comfyui_video_height"],
+        "llm_comfyui_video_frames": config["comfyui_video_frames"],
+        "llm_comfyui_video_fps": config["comfyui_video_fps"],
+        "llm_comfyui_video_steps": config["comfyui_video_steps"],
+        "llm_comfyui_video_cfg": config["comfyui_video_cfg"],
+        "llm_comfyui_video_sampler": config["comfyui_video_sampler"],
+        "llm_comfyui_video_scheduler": config["comfyui_video_scheduler"],
+        "llm_comfyui_video_seed": config["comfyui_video_seed"],
+        "llm_comfyui_video_timeout": config["comfyui_video_timeout"],
         "llm_vision_enabled": config["vision_enabled"],
         "llm_vision_api_url": config["vision_api_url"],
         "llm_vision_model": config["vision_model"],

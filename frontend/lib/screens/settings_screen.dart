@@ -30,6 +30,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _comfyuiSeedController = TextEditingController();
   final _comfyuiWorkflowController = TextEditingController();
   final _comfyuiWorkflowNameController = TextEditingController();
+  final _videoWorkflowController = TextEditingController();
+  final _videoOutputNodeController = TextEditingController();
+  final _videoInputImageNodeController = TextEditingController();
+  final _videoPromptNodeController = TextEditingController();
+  final _videoNegativeNodeController = TextEditingController();
+  final _videoNegativePromptController = TextEditingController();
+  final _videoWidthController = TextEditingController();
+  final _videoHeightController = TextEditingController();
+  final _videoFramesController = TextEditingController();
+  final _videoFpsController = TextEditingController();
+  final _videoStepsController = TextEditingController();
+  final _videoCfgController = TextEditingController();
+  final _videoSamplerController = TextEditingController();
+  final _videoSchedulerController = TextEditingController();
+  final _videoSeedController = TextEditingController();
+  final _videoTimeoutController = TextEditingController();
   final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
@@ -55,6 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _visionEnabled = false;
   bool _visionRecipeEnabled = true;
   bool _visionPipelineEnabled = false;
+  bool _videoGenerationEnabled = true;
   String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
@@ -84,7 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageModelController.text = settings['llm_image_model'] as String? ?? '';
       _imageProvider = settings['llm_image_provider'] as String? ?? 'auto';
       _comfyuiApiUrlController.text =
-          settings['llm_comfyui_api_url'] as String? ?? '';
+          settings['llm_comfyui_api_url'] as String? ?? 'http://ollama.home:8188';
       _comfyuiOutputNodeController.text =
           (settings['llm_comfyui_output_node'] ?? '12').toString();
       _comfyuiNegativePromptController.text =
@@ -114,6 +131,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ? _comfyuiWorkflowPresets.first['name'].toString()
               : 'Flux.2 Klein 9B');
       _selectComfyuiWorkflow(_selectedComfyuiWorkflow, updateState: false);
+      _videoGenerationEnabled = settings['llm_video_enabled'] as bool? ?? true;
+      _videoWorkflowController.text =
+          settings['llm_comfyui_video_workflow'] as String? ?? '';
+      _videoOutputNodeController.text =
+          settings['llm_comfyui_video_output_node'] as String? ?? '';
+      _videoInputImageNodeController.text =
+          settings['llm_comfyui_video_input_image_node'] as String? ?? '';
+      _videoPromptNodeController.text =
+          settings['llm_comfyui_video_prompt_node'] as String? ?? '';
+      _videoNegativeNodeController.text =
+          settings['llm_comfyui_video_negative_node'] as String? ?? '';
+      _videoNegativePromptController.text =
+          settings['llm_comfyui_video_negative_prompt'] as String? ??
+          'low quality, blurry, distorted, watermark, text artifacts';
+      _videoWidthController.text =
+          (settings['llm_comfyui_video_width'] ?? 832).toString();
+      _videoHeightController.text =
+          (settings['llm_comfyui_video_height'] ?? 480).toString();
+      _videoFramesController.text =
+          (settings['llm_comfyui_video_frames'] ?? 81).toString();
+      _videoFpsController.text =
+          (settings['llm_comfyui_video_fps'] ?? 16).toString();
+      _videoStepsController.text =
+          (settings['llm_comfyui_video_steps'] ?? 24).toString();
+      _videoCfgController.text =
+          (settings['llm_comfyui_video_cfg'] ?? 4.0).toString();
+      _videoSamplerController.text =
+          settings['llm_comfyui_video_sampler'] as String? ?? 'euler';
+      _videoSchedulerController.text =
+          settings['llm_comfyui_video_scheduler'] as String? ?? 'simple';
+      _videoSeedController.text =
+          (settings['llm_comfyui_video_seed'] ?? 42).toString();
+      _videoTimeoutController.text =
+          (settings['llm_comfyui_video_timeout'] ?? 1800).toString();
       _publicBaseUrlController.text =
           settings['app_public_base_url'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
@@ -168,7 +219,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageApiUrlController.text = '';
       _imageModelController.text = '';
       _imageProvider = 'auto';
-      _comfyuiApiUrlController.text = '';
+      _comfyuiApiUrlController.text = 'http://ollama.home:8188';
       _comfyuiOutputNodeController.text = '12';
       _comfyuiNegativePromptController.text = '';
       _comfyuiWidthController.text = '1024';
@@ -182,6 +233,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _comfyuiWorkflowPresets = [];
       _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
       _comfyuiWorkflowNameController.text = _selectedComfyuiWorkflow;
+      _videoGenerationEnabled = true;
+      _videoWorkflowController.text = '';
+      _videoOutputNodeController.text = '';
+      _videoInputImageNodeController.text = '';
+      _videoPromptNodeController.text = '';
+      _videoNegativeNodeController.text = '';
+      _videoNegativePromptController.text =
+          'low quality, blurry, distorted, watermark, text artifacts';
+      _videoWidthController.text = '832';
+      _videoHeightController.text = '480';
+      _videoFramesController.text = '81';
+      _videoFpsController.text = '16';
+      _videoStepsController.text = '24';
+      _videoCfgController.text = '4.0';
+      _videoSamplerController.text = 'euler';
+      _videoSchedulerController.text = 'simple';
+      _videoSeedController.text = '42';
+      _videoTimeoutController.text = '1800';
       _publicBaseUrlController.text = '';
       _contextWindowController.text = '8192';
       _maxIterationsController.text = '25';
@@ -390,6 +459,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_comfyui_workflow': _comfyuiWorkflowController.text,
         'llm_comfyui_workflow_presets': _comfyuiWorkflowPresets,
         'llm_comfyui_selected_workflow': _selectedComfyuiWorkflow,
+        'llm_video_enabled': _videoGenerationEnabled,
+        'llm_comfyui_video_workflow': _videoWorkflowController.text,
+        'llm_comfyui_video_output_node': _videoOutputNodeController.text,
+        'llm_comfyui_video_input_image_node':
+            _videoInputImageNodeController.text,
+        'llm_comfyui_video_prompt_node': _videoPromptNodeController.text,
+        'llm_comfyui_video_negative_node': _videoNegativeNodeController.text,
+        'llm_comfyui_video_negative_prompt':
+            _videoNegativePromptController.text,
+        'llm_comfyui_video_width':
+            int.tryParse(_videoWidthController.text) ?? 832,
+        'llm_comfyui_video_height':
+            int.tryParse(_videoHeightController.text) ?? 480,
+        'llm_comfyui_video_frames':
+            int.tryParse(_videoFramesController.text) ?? 81,
+        'llm_comfyui_video_fps': int.tryParse(_videoFpsController.text) ?? 16,
+        'llm_comfyui_video_steps':
+            int.tryParse(_videoStepsController.text) ?? 24,
+        'llm_comfyui_video_cfg':
+            double.tryParse(_videoCfgController.text) ?? 4.0,
+        'llm_comfyui_video_sampler': _videoSamplerController.text,
+        'llm_comfyui_video_scheduler': _videoSchedulerController.text,
+        'llm_comfyui_video_seed': int.tryParse(_videoSeedController.text) ?? 42,
+        'llm_comfyui_video_timeout':
+            int.tryParse(_videoTimeoutController.text) ?? 1800,
         'app_public_base_url': _publicBaseUrlController.text,
         'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
@@ -480,6 +574,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _comfyuiSeedController.dispose();
     _comfyuiWorkflowController.dispose();
     _comfyuiWorkflowNameController.dispose();
+    _videoWorkflowController.dispose();
+    _videoOutputNodeController.dispose();
+    _videoInputImageNodeController.dispose();
+    _videoPromptNodeController.dispose();
+    _videoNegativeNodeController.dispose();
+    _videoNegativePromptController.dispose();
+    _videoWidthController.dispose();
+    _videoHeightController.dispose();
+    _videoFramesController.dispose();
+    _videoFpsController.dispose();
+    _videoStepsController.dispose();
+    _videoCfgController.dispose();
+    _videoSamplerController.dispose();
+    _videoSchedulerController.dispose();
+    _videoSeedController.dispose();
+    _videoTimeoutController.dispose();
     _publicBaseUrlController.dispose();
     _maxIterationsController.dispose();
     _contextWindowController.dispose();
@@ -904,6 +1014,205 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations.',
             ),
           ],
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
+        'Video Generation',
+        'Use ComfyUI/Wan workflows for text-to-video and image-to-video',
+        Icons.movie_creation_outlined,
+        [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _videoGenerationEnabled,
+            onChanged: (v) => setState(() => _videoGenerationEnabled = v),
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('Enable video generation'),
+            subtitle: Text(
+              'Enables generate_video and image_to_video. Uses the same ComfyUI API URL above, defaulting to your ollama.home:8188 instance.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'Defaults are conservative for Wan2.2 14B quantized on an RTX 3090: 832x480, 81 frames, 16 fps, 24 steps, CFG 4.0, timeout 1800s. Paste an exported ComfyUI API workflow JSON below; node ID fields can be left blank for heuristic patching.',
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoOutputNodeController,
+                  label: 'Video Output Node ID',
+                  hint: 'optional; SaveVideo/VHS node',
+                  icon: Icons.output_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoInputImageNodeController,
+                  label: 'Input Image Node ID',
+                  hint: 'optional; LoadImage node for I2V',
+                  icon: Icons.add_photo_alternate_outlined,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoPromptNodeController,
+                  label: 'Prompt Node ID',
+                  hint: 'optional; positive prompt node',
+                  icon: Icons.text_fields_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoNegativeNodeController,
+                  label: 'Negative Node ID',
+                  hint: 'optional; negative prompt node',
+                  icon: Icons.block_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _videoNegativePromptController,
+            label: 'Video Negative Prompt',
+            hint: 'low quality, blurry, distorted, watermark, text artifacts',
+            icon: Icons.block_rounded,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoWidthController,
+                  label: 'Width',
+                  hint: '832',
+                  icon: Icons.straighten_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoHeightController,
+                  label: 'Height',
+                  hint: '480',
+                  icon: Icons.straighten_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoFramesController,
+                  label: 'Frames',
+                  hint: '81',
+                  icon: Icons.video_library_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoFpsController,
+                  label: 'FPS',
+                  hint: '16',
+                  icon: Icons.speed_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoStepsController,
+                  label: 'Steps',
+                  hint: '24',
+                  icon: Icons.repeat_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoCfgController,
+                  label: 'CFG',
+                  hint: '4.0',
+                  icon: Icons.tune_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoSamplerController,
+                  label: 'Sampler',
+                  hint: 'euler',
+                  icon: Icons.gradient_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoSchedulerController,
+                  label: 'Scheduler',
+                  hint: 'simple',
+                  icon: Icons.schedule_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _videoSeedController,
+                  label: 'Seed',
+                  hint: '42',
+                  icon: Icons.casino_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _videoTimeoutController,
+                  label: 'Timeout Seconds',
+                  hint: '1800',
+                  icon: Icons.timer_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _videoWorkflowController,
+            label: 'Wan/ComfyUI Video Workflow JSON',
+            hint: 'Paste ComfyUI API-format workflow JSON exported from your Wan2.2 workflow',
+            icon: Icons.data_object_rounded,
+            maxLines: 10,
+          ),
         ],
       ),
       const SizedBox(height: 32),

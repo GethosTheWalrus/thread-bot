@@ -51,6 +51,14 @@ async def ensure_database_schema() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS generated_media (
+                filename VARCHAR(255) PRIMARY KEY,
+                content BYTEA NOT NULL,
+                content_type VARCHAR(100) NOT NULL DEFAULT 'video/mp4',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
         await conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS args JSONB DEFAULT '{}'::jsonb"))
         await conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS registry_credentials JSONB DEFAULT '{}'::jsonb"))
         await conn.execute(text("ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS cached_tools JSONB DEFAULT NULL"))

@@ -732,6 +732,7 @@ async def _execute_agent_tool(
     builtin_tools = {
         "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
+        "generate_video", "image_to_video",
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
@@ -1206,7 +1207,10 @@ async def run_agent_response(args: dict) -> dict:
             "when the user wants refinement, precision, iteration, or the best possible match. Choose "
             "the image tool style_preset that best matches the user's requested medium or intent; use "
             "auto only when the user's prompt already clearly specifies the visual style. Never say you "
-            "called an image tool or list tool names as a substitute for making the structured tool call."
+            "called an image tool or list tool names as a substitute for making the structured tool call. "
+            "When the user asks to create a video from text, call generate_video. When the user asks to "
+            "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
+            "image_to_video. Include the generated video link in your final response."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -1750,6 +1754,12 @@ async def _execute_builtin(
 
     if tool_name == "iterate_image_generation":
         return await _iterate_image_generation(tool_args, config)
+
+    if tool_name == "generate_video":
+        return await _generate_video(tool_args, config, image_required=False)
+
+    if tool_name == "image_to_video":
+        return await _generate_video(tool_args, config, image_required=True)
 
     if tool_name == "context_overview":
         return await _context_overview(thread_id, tool_args)
@@ -2531,6 +2541,348 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
     return f"Generated images:\n\n{links}\n\nPrompt: {prompt}"
 
 
+def _content_type_for_filename(filename: str) -> str:
+    import mimetypes
+
+    guessed = mimetypes.guess_type(filename)[0]
+    if guessed:
+        return guessed
+    lower = filename.lower()
+    if lower.endswith(".mp4"):
+        return "video/mp4"
+    if lower.endswith(".webm"):
+        return "video/webm"
+    if lower.endswith(".gif"):
+        return "image/gif"
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+
+async def _store_generated_media(raw: bytes, source_filename: str, content_type: str, config: dict) -> str:
+    import os
+    import uuid
+
+    from app.database import AsyncSessionLocal
+    from app.models.models import GeneratedMedia
+
+    ext = os.path.splitext(source_filename or "")[1].lower()
+    if not ext:
+        if content_type == "video/webm":
+            ext = ".webm"
+        elif content_type == "image/gif":
+            ext = ".gif"
+        elif content_type.startswith("image/"):
+            ext = ".png"
+        else:
+            ext = ".mp4"
+    media_dir = config.get("generated_media_dir") or "/tmp/threadbot-generated-media"
+    os.makedirs(media_dir, exist_ok=True)
+    local_name = f"{uuid.uuid4().hex}{ext}"
+    with open(os.path.join(media_dir, local_name), "wb") as f:
+        f.write(raw)
+    async with AsyncSessionLocal() as db:
+        await db.merge(GeneratedMedia(
+            filename=local_name,
+            content=raw,
+            content_type=content_type or _content_type_for_filename(local_name),
+        ))
+        await db.commit()
+    public_base_url = str(config.get("public_base_url") or "").rstrip("/")
+    return f"{public_base_url}/api/generated-media/{local_name}" if public_base_url else f"/api/generated-media/{local_name}"
+
+
+async def _upload_comfyui_input_image(comfyui_url: str, raw: bytes, content_type: str) -> str:
+    import os
+    import uuid
+    import aiohttp
+
+    ext = ".png"
+    if content_type == "image/jpeg":
+        ext = ".jpg"
+    elif content_type == "image/webp":
+        ext = ".webp"
+    filename = f"threadbot-i2v-{uuid.uuid4().hex}{ext}"
+    form = aiohttp.FormData()
+    form.add_field("image", raw, filename=filename, content_type=content_type or "image/png")
+    form.add_field("overwrite", "true")
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(f"{comfyui_url}/upload/image", data=form) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"ComfyUI image upload failed: HTTP {resp.status}: {text[:1000]}")
+            try:
+                data = await resp.json(content_type=None)
+            except Exception:
+                data = {}
+    return str(data.get("name") or data.get("filename") or os.path.basename(filename))
+
+
+async def _generate_video(tool_args: dict, config: dict, *, image_required: bool) -> str:
+    """Generate text-to-video or image-to-video output through a ComfyUI workflow."""
+    import asyncio
+    import json
+    import aiohttp
+
+    if not config.get("video_enabled"):
+        return "Error: video generation is disabled. Enable it in Settings > Media > Video Generation."
+    comfyui_url = (config.get("comfyui_api_url") or "").rstrip("/")
+    if not comfyui_url:
+        return "Error: ComfyUI API URL is not configured. Set it in Settings > Media > Image Generation."
+
+    prompt = str(tool_args.get("prompt") or tool_args.get("goal") or "").strip()
+    if not prompt:
+        return "Error: prompt is required"
+    negative_prompt = str(tool_args.get("negative_prompt") or config.get("comfyui_video_negative_prompt") or "").strip()
+    image_url = str(tool_args.get("image_url") or tool_args.get("url") or "").strip()
+    image_base64 = str(tool_args.get("image_base64") or "").strip()
+    content_type = str(tool_args.get("content_type") or "image/png").strip() or "image/png"
+    if image_required and not image_url and not image_base64:
+        return "Error: image_to_video requires image_url or image_base64"
+
+    workflow_text = str(config.get("comfyui_video_workflow") or "").strip()
+    if not workflow_text:
+        return (
+            "Error: video workflow JSON is not configured. Paste your Wan2.2 ComfyUI API workflow "
+            "in Settings > Media > Video Generation."
+        )
+    try:
+        workflow = json.loads(workflow_text)
+    except Exception as exc:
+        return f"Error parsing ComfyUI video workflow JSON: {exc}"
+    if not isinstance(workflow, dict) or not workflow:
+        return "Error: ComfyUI video workflow JSON is empty or invalid."
+
+    def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(int(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
+        except Exception:
+            return default
+
+    def _float_arg(name: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return max(lo, min(float(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
+        except Exception:
+            return default
+
+    width = _int_arg("width", int(config.get("comfyui_video_width") or 832), 64, 2048)
+    height = _int_arg("height", int(config.get("comfyui_video_height") or 480), 64, 2048)
+    frames = _int_arg("frames", int(config.get("comfyui_video_frames") or 81), 1, 241)
+    fps = _int_arg("fps", int(config.get("comfyui_video_fps") or 16), 1, 60)
+    steps = _int_arg("steps", int(config.get("comfyui_video_steps") or 24), 1, 150)
+    cfg = _float_arg("cfg", float(config.get("comfyui_video_cfg") or 4.0), 0.0, 30.0)
+    try:
+        seed = int(tool_args.get("seed") if tool_args.get("seed") is not None else config.get("comfyui_video_seed") or 42)
+    except Exception:
+        seed = 42
+    sampler = str(tool_args.get("sampler") or config.get("comfyui_video_sampler") or "euler").strip()
+    scheduler = str(tool_args.get("scheduler") or config.get("comfyui_video_scheduler") or "simple").strip()
+
+    uploaded_image_name = ""
+    if image_url or image_base64:
+        resolved = await _resolve_image_bytes(image_url, image_base64, {"content_type": content_type}, config)
+        if isinstance(resolved, str):
+            return resolved
+        raw_image, resolved_content_type, _source_label = resolved
+        try:
+            uploaded_image_name = await _upload_comfyui_input_image(comfyui_url, raw_image, resolved_content_type)
+        except Exception as exc:
+            raise RuntimeError(f"Error uploading source image to ComfyUI: {exc}") from exc
+
+    prompt_node = str(config.get("comfyui_video_prompt_node") or "").strip()
+    negative_node = str(config.get("comfyui_video_negative_node") or "").strip()
+    input_image_node = str(config.get("comfyui_video_input_image_node") or "").strip()
+    output_node = str(config.get("comfyui_video_output_node") or "").strip()
+
+    def _inputs(node):
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        return inputs if isinstance(inputs, dict) else {}
+
+    def _set_text(node_id: str, text: str) -> bool:
+        node = workflow.get(node_id)
+        inputs = _inputs(node)
+        if not inputs:
+            return False
+        if "text" in inputs:
+            inputs["text"] = text
+        elif "prompt" in inputs:
+            inputs["prompt"] = text
+        else:
+            return False
+        return True
+
+    if prompt_node:
+        _set_text(prompt_node, prompt)
+    if negative_node and negative_prompt:
+        _set_text(negative_node, negative_prompt)
+    if input_image_node and uploaded_image_name:
+        inputs = _inputs(workflow.get(input_image_node))
+        if inputs:
+            if "image" in inputs:
+                inputs["image"] = uploaded_image_name
+            elif "file" in inputs:
+                inputs["file"] = uploaded_image_name
+
+    text_nodes_seen = 1 if prompt_node else 0
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        cls = str(node.get("class_type") or "")
+        inputs = _inputs(node)
+        if not inputs:
+            continue
+        if cls == "CLIPTextEncode" or "TextEncode" in cls or "Prompt" in cls:
+            if str(node_id) == prompt_node or str(node_id) == negative_node:
+                continue
+            if not prompt_node and text_nodes_seen == 0 and ("text" in inputs or "prompt" in inputs):
+                inputs["text" if "text" in inputs else "prompt"] = prompt
+                text_nodes_seen += 1
+            elif not negative_node and negative_prompt and text_nodes_seen <= 1 and ("text" in inputs or "prompt" in inputs):
+                inputs["text" if "text" in inputs else "prompt"] = negative_prompt
+                text_nodes_seen += 1
+        if uploaded_image_name and not input_image_node and (cls == "LoadImage" or "LoadImage" in cls):
+            if "image" in inputs:
+                inputs["image"] = uploaded_image_name
+        for key in ("width", "height"):
+            if key in inputs:
+                inputs[key] = width if key == "width" else height
+        for key in ("frames", "num_frames", "length", "video_frames"):
+            if key in inputs:
+                inputs[key] = frames
+        for key in ("fps", "frame_rate"):
+            if key in inputs:
+                inputs[key] = fps
+        if "steps" in inputs:
+            inputs["steps"] = steps
+        if "cfg" in inputs:
+            inputs["cfg"] = cfg
+        if "cfg_scale" in inputs:
+            inputs["cfg_scale"] = cfg
+        if "sampler_name" in inputs and sampler:
+            inputs["sampler_name"] = sampler
+        if "scheduler" in inputs and scheduler:
+            inputs["scheduler"] = scheduler
+        for key in ("seed", "noise_seed"):
+            if key in inputs:
+                inputs[key] = seed
+
+    client_id = f"threadbot-video-{seed}"
+    timeout_total = int(config.get("comfyui_video_timeout") or config.get("stream_timeout") or 1800)
+    submit_timeout = aiohttp.ClientTimeout(total=60)
+    poll_timeout = aiohttp.ClientTimeout(total=timeout_total)
+    fetch_timeout = aiohttp.ClientTimeout(total=300)
+    try:
+        async with aiohttp.ClientSession(timeout=submit_timeout) as session:
+            async with session.post(f"{comfyui_url}/prompt", json={"prompt": workflow, "client_id": client_id}) as resp:
+                submit_text = await resp.text()
+                if resp.status >= 500:
+                    raise RuntimeError(f"ComfyUI /prompt transient HTTP {resp.status}: {submit_text[:1500]}")
+                if resp.status >= 400:
+                    return f"Error submitting ComfyUI video prompt: HTTP {resp.status}: {submit_text[:1500]}"
+                try:
+                    submit_data = json.loads(submit_text)
+                except Exception:
+                    return f"Error parsing ComfyUI /prompt response: {submit_text[:1500]}"
+                prompt_id = submit_data.get("prompt_id")
+                node_errors = submit_data.get("node_errors")
+                if not prompt_id:
+                    return f"ComfyUI /prompt did not return prompt_id: {submit_data}"
+                if node_errors:
+                    return f"ComfyUI reported node errors: {json.dumps(node_errors)[:1500]}"
+    except Exception as exc:
+        raise RuntimeError(f"Error contacting ComfyUI: {exc}") from exc
+
+    started_at = asyncio.get_event_loop().time()
+    deadline = started_at + timeout_total
+    history = None
+    last_status = None
+    async with aiohttp.ClientSession(timeout=poll_timeout) as session:
+        while asyncio.get_event_loop().time() < deadline:
+            heartbeat({
+                "step": "comfyui_video_poll",
+                "prompt_id": prompt_id,
+                "elapsed_seconds": int(asyncio.get_event_loop().time() - started_at),
+                "last_status": last_status,
+            })
+            await asyncio.sleep(3)
+            try:
+                async with session.get(f"{comfyui_url}/history/{prompt_id}") as resp:
+                    if resp.status != 200:
+                        last_status = f"history http {resp.status}"
+                        continue
+                    payload = await resp.json(content_type=None)
+            except Exception as exc:
+                last_status = f"history exception {exc}"
+                continue
+            entry = payload.get(prompt_id)
+            if not entry:
+                last_status = "no entry yet"
+                continue
+            status = entry.get("status") or {}
+            last_status = json.dumps({k: status.get(k) for k in ("status", "completed", "messages")})[:500]
+            if status.get("completed"):
+                history = entry
+                break
+    if history is None:
+        raise RuntimeError(f"ComfyUI video prompt {prompt_id} did not complete within {timeout_total}s (last status: {last_status}).")
+
+    outputs = history.get("outputs") or {}
+    node_output = outputs.get(output_node) or outputs.get(str(output_node)) if output_node else None
+    if not node_output:
+        for nout in outputs.values():
+            if isinstance(nout, dict) and (nout.get("videos") or nout.get("gifs") or nout.get("images")):
+                node_output = nout
+                break
+    if not node_output:
+        return f"ComfyUI video prompt {prompt_id} produced no media outputs."
+
+    media_items = []
+    for key in ("videos", "gifs", "animated", "images"):
+        values = node_output.get(key) if isinstance(node_output, dict) else None
+        if isinstance(values, list) and values:
+            media_items = values
+            break
+    if not media_items:
+        return f"ComfyUI video prompt {prompt_id} output node has no videos/gifs/images."
+
+    saved_urls: list[str] = []
+    async with aiohttp.ClientSession(timeout=fetch_timeout) as session:
+        for item in media_items[:1]:
+            if not isinstance(item, dict):
+                continue
+            filename = item.get("filename")
+            subfolder = item.get("subfolder") or ""
+            folder_type = item.get("type") or "output"
+            if not filename:
+                continue
+            try:
+                params = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+                async with session.get(f"{comfyui_url}/view", params=params) as resp:
+                    if resp.status >= 500:
+                        raise RuntimeError(f"ComfyUI /view transient HTTP {resp.status} for {filename}")
+                    if resp.status != 200:
+                        return f"ComfyUI returned HTTP {resp.status} when fetching {filename}."
+                    raw = await resp.read()
+                    response_content_type = resp.headers.get("content-type", "").split(";", 1)[0]
+            except Exception as exc:
+                raise RuntimeError(f"Error fetching ComfyUI media {filename}: {exc}") from exc
+            media_type = response_content_type or _content_type_for_filename(str(filename))
+            saved_urls.append(await _store_generated_media(raw, str(filename), media_type, config))
+
+    if not saved_urls:
+        return f"ComfyUI video prompt {prompt_id} did not yield fetchable media."
+    mode = "Image-to-video" if image_url or image_base64 else "Text-to-video"
+    return (
+        f"Generated video ({mode}):\n\n"
+        f"[Open generated video]({saved_urls[0]})\n\n"
+        f"Prompt: {prompt}\n"
+        f"Settings: {width}x{height}, {frames} frames, {fps} fps, steps={steps}, cfg={cfg}, seed={seed}"
+    )
+
+
 async def _context_overview(thread_id: str, tool_args: dict) -> str:
     """Return compactable message IDs and previews for the model only."""
     from uuid import UUID
@@ -2698,6 +3050,7 @@ async def execute_tools(args: dict) -> dict:
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
+        "generate_video", "image_to_video",
         "context_overview", "compact_context_topic",
     }
 

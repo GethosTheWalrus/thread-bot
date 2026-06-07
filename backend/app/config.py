@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     LLM_TOOL_RESULT_MAX_CHARS: int = 0  # 0 = no truncation
 
     # ComfyUI image generation
-    LLM_COMFYUI_API_URL: str = ""  # e.g. http://ollama.home:8188
+    LLM_COMFYUI_API_URL: str = "http://ollama.home:8188"
     LLM_COMFYUI_WORKFLOW: str = ""  # workflow JSON; "" means use bundled default
     LLM_COMFYUI_WORKFLOW_PRESETS: str = ""
     LLM_COMFYUI_SELECTED_WORKFLOW: str = "Flux.2 Klein 9B"
@@ -64,6 +64,25 @@ class Settings(BaseSettings):
     LLM_COMFYUI_SCHEDULER: str = "simple"
     LLM_COMFYUI_SEED: int = 42
 
+    # ComfyUI video generation (Wan2.2 or compatible workflows)
+    LLM_VIDEO_ENABLED: bool = True
+    LLM_COMFYUI_VIDEO_WORKFLOW: str = ""
+    LLM_COMFYUI_VIDEO_OUTPUT_NODE: str = ""
+    LLM_COMFYUI_VIDEO_INPUT_IMAGE_NODE: str = ""
+    LLM_COMFYUI_VIDEO_PROMPT_NODE: str = ""
+    LLM_COMFYUI_VIDEO_NEGATIVE_NODE: str = ""
+    LLM_COMFYUI_VIDEO_NEGATIVE_PROMPT: str = "low quality, blurry, distorted, watermark, text artifacts"
+    LLM_COMFYUI_VIDEO_WIDTH: int = 832
+    LLM_COMFYUI_VIDEO_HEIGHT: int = 480
+    LLM_COMFYUI_VIDEO_FRAMES: int = 81
+    LLM_COMFYUI_VIDEO_FPS: int = 16
+    LLM_COMFYUI_VIDEO_STEPS: int = 24
+    LLM_COMFYUI_VIDEO_CFG: float = 4.0
+    LLM_COMFYUI_VIDEO_SAMPLER: str = "euler"
+    LLM_COMFYUI_VIDEO_SCHEDULER: str = "simple"
+    LLM_COMFYUI_VIDEO_SEED: int = 42
+    LLM_COMFYUI_VIDEO_TIMEOUT: int = 1800
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -73,6 +92,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ThreadBot"
     APP_PUBLIC_BASE_URL: str = ""
     GENERATED_IMAGE_DIR: str = "/tmp/threadbot-generated-images"
+    GENERATED_MEDIA_DIR: str = "/tmp/threadbot-generated-media"
 
     # Discord integration (optional)
     DISCORD_ENABLED: bool = False
@@ -145,6 +165,15 @@ async def load_settings_from_db() -> None:
         "llm_vision_pipeline_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "llm_vision_max_tokens": int,
         "llm_comfyui_workflow_presets": json.loads,
+        "llm_video_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_comfyui_video_width": int,
+        "llm_comfyui_video_height": int,
+        "llm_comfyui_video_frames": int,
+        "llm_comfyui_video_fps": int,
+        "llm_comfyui_video_steps": int,
+        "llm_comfyui_video_cfg": float,
+        "llm_comfyui_video_seed": int,
+        "llm_comfyui_video_timeout": int,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
     }
@@ -231,6 +260,7 @@ def get_llm_config() -> dict:
         "image_provider": get_setting("LLM_IMAGE_PROVIDER") or "auto",
         "public_base_url": get_setting("APP_PUBLIC_BASE_URL") or "",
         "generated_image_dir": get_setting("GENERATED_IMAGE_DIR") or "/tmp/threadbot-generated-images",
+        "generated_media_dir": get_setting("GENERATED_MEDIA_DIR") or "/tmp/threadbot-generated-media",
         "comfyui_api_url": (get_setting("LLM_COMFYUI_API_URL") or "").rstrip("/"),
         "comfyui_output_node": str(get_setting("LLM_COMFYUI_OUTPUT_NODE") or "12"),
         "comfyui_negative_prompt": get_setting("LLM_COMFYUI_NEGATIVE_PROMPT") or "",
@@ -241,6 +271,23 @@ def get_llm_config() -> dict:
         "comfyui_sampler": get_setting("LLM_COMFYUI_SAMPLER") or "euler",
         "comfyui_scheduler": get_setting("LLM_COMFYUI_SCHEDULER") or "simple",
         "comfyui_seed": int(get_setting("LLM_COMFYUI_SEED") or 42),
+        "video_enabled": bool(get_setting("LLM_VIDEO_ENABLED")),
+        "comfyui_video_workflow": get_setting("LLM_COMFYUI_VIDEO_WORKFLOW") or "",
+        "comfyui_video_output_node": str(get_setting("LLM_COMFYUI_VIDEO_OUTPUT_NODE") or ""),
+        "comfyui_video_input_image_node": str(get_setting("LLM_COMFYUI_VIDEO_INPUT_IMAGE_NODE") or ""),
+        "comfyui_video_prompt_node": str(get_setting("LLM_COMFYUI_VIDEO_PROMPT_NODE") or ""),
+        "comfyui_video_negative_node": str(get_setting("LLM_COMFYUI_VIDEO_NEGATIVE_NODE") or ""),
+        "comfyui_video_negative_prompt": get_setting("LLM_COMFYUI_VIDEO_NEGATIVE_PROMPT") or "",
+        "comfyui_video_width": int(get_setting("LLM_COMFYUI_VIDEO_WIDTH") or 832),
+        "comfyui_video_height": int(get_setting("LLM_COMFYUI_VIDEO_HEIGHT") or 480),
+        "comfyui_video_frames": int(get_setting("LLM_COMFYUI_VIDEO_FRAMES") or 81),
+        "comfyui_video_fps": int(get_setting("LLM_COMFYUI_VIDEO_FPS") or 16),
+        "comfyui_video_steps": int(get_setting("LLM_COMFYUI_VIDEO_STEPS") or 24),
+        "comfyui_video_cfg": float(get_setting("LLM_COMFYUI_VIDEO_CFG") or 4.0),
+        "comfyui_video_sampler": get_setting("LLM_COMFYUI_VIDEO_SAMPLER") or "euler",
+        "comfyui_video_scheduler": get_setting("LLM_COMFYUI_VIDEO_SCHEDULER") or "simple",
+        "comfyui_video_seed": int(get_setting("LLM_COMFYUI_VIDEO_SEED") or 42),
+        "comfyui_video_timeout": int(get_setting("LLM_COMFYUI_VIDEO_TIMEOUT") or 1800),
         "vision_enabled": vision_enabled,
         "vision_api_url": (
             get_setting("LLM_VISION_API_URL")

@@ -50,6 +50,15 @@ class GeneratedImage(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class GeneratedMedia(Base):
+    __tablename__ = "generated_media"
+
+    filename = Column(String(255), primary_key=True)
+    content = Column(LargeBinary, nullable=False)
+    content_type = Column(String(100), nullable=False, default="video/mp4")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class MCPServer(Base):
     __tablename__ = "mcp_servers"
 

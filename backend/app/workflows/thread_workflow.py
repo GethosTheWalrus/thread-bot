@@ -628,6 +628,77 @@ class RunThreadWorkflow:
                 {
                     "type": "function",
                     "function": {
+                        "name": "generate_video",
+                        "description": (
+                            "Generate a video from a text prompt using the configured ComfyUI video workflow, such as Wan2.2. "
+                            "Use this when the user asks to create, render, or generate a video from text. Return the generated video link."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Detailed video prompt describing subject, motion, camera movement, composition, lighting, style, and constraints.",
+                                },
+                                "negative_prompt": {
+                                    "type": "string",
+                                    "description": "Optional traits/artifacts to avoid, such as flicker, blur, distortion, bad anatomy, watermark, or text artifacts.",
+                                },
+                                "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
+                                "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
+                                "frames": {"type": "integer", "description": "Optional frame count override. Defaults to configured frame count."},
+                                "fps": {"type": "integer", "description": "Optional output frames per second. Defaults to configured fps."},
+                                "steps": {"type": "integer", "description": "Optional sampling steps override."},
+                                "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
+                                "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
+                            },
+                            "required": ["prompt"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "image_to_video",
+                        "description": (
+                            "Generate a video from a source image plus an optional motion/style prompt using the configured ComfyUI image-to-video workflow. "
+                            "Use this when the user asks to animate an uploaded/generated/reference image, or asks for video from both image and text."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Motion and style prompt describing how the source image should animate, camera movement, mood, and constraints.",
+                                },
+                                "image_url": {
+                                    "type": "string",
+                                    "description": "Source image URL. Supports ThreadBot /api/generated-images/ URLs, normal http/https image URLs, and data:image URLs.",
+                                },
+                                "image_base64": {
+                                    "type": "string",
+                                    "description": "Optional raw base64 source image bytes when no URL is available. Do not include a data: prefix.",
+                                },
+                                "content_type": {
+                                    "type": "string",
+                                    "description": "MIME type for image_base64. Defaults to image/png.",
+                                },
+                                "negative_prompt": {"type": "string", "description": "Optional traits/artifacts to avoid."},
+                                "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
+                                "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
+                                "frames": {"type": "integer", "description": "Optional frame count override. Defaults to configured frame count."},
+                                "fps": {"type": "integer", "description": "Optional output frames per second. Defaults to configured fps."},
+                                "steps": {"type": "integer", "description": "Optional sampling steps override."},
+                                "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
+                                "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
+                            },
+                            "required": ["prompt"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "context_overview",
                         "description": (
                             "Inspect the saved conversation context and list compactable message IDs with previews. "
@@ -767,7 +838,10 @@ class RunThreadWorkflow:
                     "when the user wants refinement, precision, iteration, or the best possible match. Choose "
                     "the image tool style_preset that best matches the user's requested medium or intent; use "
                     "auto only when the user's prompt already clearly specifies the visual style. Never say you "
-                    "called an image tool or list tool names as a substitute for making the structured tool call."
+                    "called an image tool or list tool names as a substitute for making the structured tool call. "
+                    "When the user asks to create a video from text, call generate_video. When the user asks to "
+                    "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
+                    "image_to_video. Include the generated video link in your final response."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),
