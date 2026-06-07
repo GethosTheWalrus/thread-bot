@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     # ComfyUI video generation (Wan2.2 or compatible workflows)
     LLM_VIDEO_ENABLED: bool = True
     LLM_COMFYUI_VIDEO_WORKFLOW: str = ""
+    LLM_COMFYUI_IMAGE_TO_VIDEO_WORKFLOW: str = ""
     LLM_COMFYUI_VIDEO_OUTPUT_NODE: str = ""
     LLM_COMFYUI_VIDEO_INPUT_IMAGE_NODE: str = ""
     LLM_COMFYUI_VIDEO_PROMPT_NODE: str = ""
@@ -273,6 +274,7 @@ def get_llm_config() -> dict:
         "comfyui_seed": int(get_setting("LLM_COMFYUI_SEED") or 42),
         "video_enabled": bool(get_setting("LLM_VIDEO_ENABLED")),
         "comfyui_video_workflow": get_setting("LLM_COMFYUI_VIDEO_WORKFLOW") or "",
+        "comfyui_image_to_video_workflow": get_setting("LLM_COMFYUI_IMAGE_TO_VIDEO_WORKFLOW") or "",
         "comfyui_video_output_node": str(get_setting("LLM_COMFYUI_VIDEO_OUTPUT_NODE") or ""),
         "comfyui_video_input_image_node": str(get_setting("LLM_COMFYUI_VIDEO_INPUT_IMAGE_NODE") or ""),
         "comfyui_video_prompt_node": str(get_setting("LLM_COMFYUI_VIDEO_PROMPT_NODE") or ""),

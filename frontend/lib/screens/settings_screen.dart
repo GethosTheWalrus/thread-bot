@@ -46,6 +46,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _videoSchedulerController = TextEditingController();
   final _videoSeedController = TextEditingController();
   final _videoTimeoutController = TextEditingController();
+  final _imageToVideoWorkflowController = TextEditingController();
   final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
@@ -134,6 +135,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _videoGenerationEnabled = settings['llm_video_enabled'] as bool? ?? true;
       _videoWorkflowController.text =
           settings['llm_comfyui_video_workflow'] as String? ?? '';
+      _imageToVideoWorkflowController.text =
+          settings['llm_comfyui_image_to_video_workflow'] as String? ?? '';
       _videoOutputNodeController.text =
           settings['llm_comfyui_video_output_node'] as String? ?? '';
       _videoInputImageNodeController.text =
@@ -235,6 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _comfyuiWorkflowNameController.text = _selectedComfyuiWorkflow;
       _videoGenerationEnabled = true;
       _videoWorkflowController.text = '';
+      _imageToVideoWorkflowController.text = '';
       _videoOutputNodeController.text = '';
       _videoInputImageNodeController.text = '';
       _videoPromptNodeController.text = '';
@@ -461,6 +465,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_comfyui_selected_workflow': _selectedComfyuiWorkflow,
         'llm_video_enabled': _videoGenerationEnabled,
         'llm_comfyui_video_workflow': _videoWorkflowController.text,
+        'llm_comfyui_image_to_video_workflow':
+            _imageToVideoWorkflowController.text,
         'llm_comfyui_video_output_node': _videoOutputNodeController.text,
         'llm_comfyui_video_input_image_node':
             _videoInputImageNodeController.text,
@@ -575,6 +581,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _comfyuiWorkflowController.dispose();
     _comfyuiWorkflowNameController.dispose();
     _videoWorkflowController.dispose();
+    _imageToVideoWorkflowController.dispose();
     _videoOutputNodeController.dispose();
     _videoInputImageNodeController.dispose();
     _videoPromptNodeController.dispose();
@@ -1208,9 +1215,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           _buildField(
             controller: _videoWorkflowController,
-            label: 'Wan/ComfyUI Video Workflow JSON',
-            hint: 'Paste ComfyUI API-format workflow JSON exported from your Wan2.2 workflow',
+            label: 'Text-to-Video Workflow JSON',
+            hint: 'Paste the official Wan2.2 text-to-video workflow JSON. UI export or API format is accepted.',
             icon: Icons.data_object_rounded,
+            maxLines: 10,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _imageToVideoWorkflowController,
+            label: 'Image-to-Video Workflow JSON',
+            hint: 'Paste the official Wan2.2 image-to-video workflow JSON. Leave blank to reuse text-to-video workflow.',
+            icon: Icons.video_camera_back_outlined,
             maxLines: 10,
           ),
         ],

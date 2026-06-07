@@ -2621,6 +2621,72 @@ async def _upload_comfyui_input_image(comfyui_url: str, raw: bytes, content_type
     return str(data.get("name") or data.get("filename") or os.path.basename(filename))
 
 
+async def _comfyui_ui_workflow_to_api(workflow: dict, comfyui_url: str) -> dict:
+    """Convert a normal ComfyUI UI-export workflow to /prompt API format."""
+    import aiohttp
+
+    nodes = workflow.get("nodes")
+    links = workflow.get("links")
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        return workflow
+
+    object_info = {}
+    try:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"{comfyui_url}/object_info") as resp:
+                if resp.status == 200:
+                    object_info = await resp.json(content_type=None)
+    except Exception:
+        object_info = {}
+
+    link_map: dict[int, list] = {}
+    for link in links:
+        if isinstance(link, list) and len(link) >= 4:
+            link_map[link[0]] = [str(link[1]), int(link[2] or 0)]
+
+    api_workflow: dict[str, dict] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "")
+        class_type = str(node.get("type") or "")
+        if not node_id or not class_type or class_type in {"Note", "PrimitiveNode", "Reroute"}:
+            continue
+
+        inputs: dict = {}
+        for ui_input in node.get("inputs") or []:
+            if not isinstance(ui_input, dict):
+                continue
+            link_id = ui_input.get("link")
+            if link_id is not None and link_id in link_map:
+                inputs[str(ui_input.get("name"))] = link_map[link_id]
+
+        widgets = list(node.get("widgets_values") or [])
+        if class_type in {"KSampler", "KSamplerAdvanced"} and len(widgets) > 2:
+            if str(widgets[2]) in {"fixed", "randomize", "increment", "decrement"}:
+                widgets.pop(2)
+        widget_index = 0
+        input_info = object_info.get(class_type, {}).get("input", {})
+        ordered_names: list[str] = []
+        if isinstance(input_info, dict):
+            for section in ("required", "optional"):
+                values = input_info.get(section)
+                if isinstance(values, dict):
+                    ordered_names.extend(str(name) for name in values.keys())
+        for name in ordered_names:
+            if name in inputs:
+                continue
+            if widget_index >= len(widgets):
+                break
+            inputs[name] = widgets[widget_index]
+            widget_index += 1
+
+        api_workflow[node_id] = {"class_type": class_type, "inputs": inputs}
+
+    return api_workflow or workflow
+
+
 async def _generate_video(tool_args: dict, config: dict, *, image_required: bool) -> str:
     """Generate text-to-video or image-to-video output through a ComfyUI workflow."""
     import asyncio
@@ -2643,11 +2709,12 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
     if image_required and not image_url and not image_base64:
         return "Error: image_to_video requires image_url or image_base64"
 
-    workflow_text = str(config.get("comfyui_video_workflow") or "").strip()
+    workflow_key = "comfyui_image_to_video_workflow" if image_required else "comfyui_video_workflow"
+    workflow_text = str(config.get(workflow_key) or config.get("comfyui_video_workflow") or "").strip()
     if not workflow_text:
         return (
-            "Error: video workflow JSON is not configured. Paste your Wan2.2 ComfyUI API workflow "
-            "in Settings > Media > Video Generation."
+            "Error: video workflow JSON is not configured. Paste your Wan2.2 ComfyUI workflow "
+            "in Settings > Media > Video Generation. Text-to-video and image-to-video can use separate workflows."
         )
     try:
         workflow = json.loads(workflow_text)
@@ -2655,6 +2722,7 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
         return f"Error parsing ComfyUI video workflow JSON: {exc}"
     if not isinstance(workflow, dict) or not workflow:
         return "Error: ComfyUI video workflow JSON is empty or invalid."
+    workflow = await _comfyui_ui_workflow_to_api(workflow, comfyui_url)
 
     def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
         try:
