@@ -2829,6 +2829,11 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
             inputs["cfg"] = cfg
         if "cfg_scale" in inputs:
             inputs["cfg_scale"] = cfg
+        if "denoise" in inputs:
+            try:
+                inputs["denoise"] = float(inputs["denoise"])
+            except Exception:
+                inputs["denoise"] = 1.0
         if "sampler_name" in inputs and sampler:
             inputs["sampler_name"] = sampler
         if "scheduler" in inputs and scheduler:
