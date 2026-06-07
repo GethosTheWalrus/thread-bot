@@ -343,6 +343,35 @@ class RunThreadWorkflow:
                 {
                     "type": "function",
                     "function": {
+                        "name": "extract_image_recipe",
+                        "description": (
+                            "Extract a structured image recipe suitable for re-rendering the image with ComfyUI. "
+                            "Returns JSON with positive_prompt, negative_prompt, style_preset, regions, palette, and notes. "
+                            "Pass the resulting recipe to generate_image via the recipe argument when you want the "
+                            "ComfyUI workflow to re-render this image."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "Image URL to analyze. Supports ThreadBot-local /api/generated-images/ URLs, normal http/https image URLs, and data:image URLs.",
+                                },
+                                "image_base64": {
+                                    "type": "string",
+                                    "description": "Optional raw base64-encoded image bytes when no URL is available.",
+                                },
+                                "content_type": {
+                                    "type": "string",
+                                    "description": "MIME type for image_base64. Defaults to image/png.",
+                                },
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "current_datetime",
                         "description": (
                             "Returns the current date, time, and timezone. Use this whenever you need "
@@ -574,6 +603,11 @@ class RunThreadWorkflow:
                     },
                 },
             ]
+            if not llm_config.get("vision_recipe_enabled"):
+                builtin_tools = [
+                    tool for tool in builtin_tools
+                    if tool.get("function", {}).get("name") != "extract_image_recipe"
+                ]
             openai_tools.extend(builtin_tools)
 
             # ── Build initial message list ───────────────────────────────

@@ -439,6 +439,147 @@ def _extract_agents_response(response) -> dict:
     }
 
 
+async def _resolve_image_bytes(image_url: str, image_base64: str, tool_args: dict, config: dict):
+    import aiohttp
+    import base64
+    import os
+    from urllib.parse import unquote, urlparse
+
+    content_type = str(tool_args.get("content_type") or "image/png").split(";", 1)[0].strip() or "image/png"
+    source_label = image_url or "provided image bytes"
+    if image_base64:
+        raw = base64.b64decode(image_base64, validate=True)
+    elif image_url.startswith("data:image/"):
+        header, encoded = image_url.split(",", 1)
+        content_type = header.split(":", 1)[1].split(";", 1)[0] or content_type
+        raw = base64.b64decode(encoded, validate=True)
+    else:
+        parsed = urlparse(image_url)
+        marker = "/api/generated-images/"
+        path = parsed.path if parsed.scheme else image_url
+        if marker in path:
+            filename = unquote(path.rsplit(marker, 1)[-1].split("?", 1)[0].strip())
+            if not filename or "/" in filename or "\\" in filename or filename.startswith("."):
+                return f"Error: invalid ThreadBot image filename"
+
+            from app.database import AsyncSessionLocal
+            from app.models.models import GeneratedImage
+
+            async with AsyncSessionLocal() as db:
+                image = await db.get(GeneratedImage, filename)
+            if image:
+                raw = image.content
+                content_type = image.content_type or content_type
+            else:
+                image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+                path_on_disk = os.path.join(image_dir, filename)
+                if not os.path.isfile(path_on_disk):
+                    return f"Error: local uploaded image {filename!r} was not found"
+                with open(path_on_disk, "rb") as f:
+                    raw = f.read(12 * 1024 * 1024 + 1)
+                ext = os.path.splitext(filename)[1].lower()
+                content_type = {
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".png": "image/png",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }.get(ext, content_type)
+        elif image_url.startswith(("http://", "https://")):
+            timeout = aiohttp.ClientTimeout(total=45)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(image_url, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        return f"Error describing image: HTTP {resp.status}"
+                    content_type = resp.headers.get("Content-Type", content_type).split(";", 1)[0]
+                    if not content_type.startswith("image/"):
+                        return f"Error describing image: URL returned {content_type}, not an image"
+                    raw = await resp.content.read(12 * 1024 * 1024 + 1)
+        else:
+            return "Error: provide url, data:image URL, or image_base64"
+
+    if len(raw) > 12 * 1024 * 1024:
+        return "Error describing image: image exceeds 12MB"
+    if not content_type.startswith("image/"):
+        return f"Error describing image: content_type must be image/*, got {content_type}"
+    return raw, content_type, source_label
+
+
+async def _vision_chat_completion(
+    config: dict,
+    content_parts: list[dict],
+    *,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> dict:
+    """Send an image+text prompt to the configured vision LLM endpoint.
+
+    Falls back to the main LLM endpoint if vision settings are empty.
+    """
+    import aiohttp
+
+    api_url = (config.get("vision_api_url") or "").rstrip("/")
+    api_key = config.get("vision_api_key") or ""
+    model = config.get("vision_model") or config.get("model")
+    if not api_url:
+        return await _agents_chat_completion(
+            [{"role": "user", "content": content_parts}],
+            config,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if api_url.endswith("/v1"):
+        url = f"{api_url}/chat/completions"
+    else:
+        url = f"{api_url}/v1/chat/completions"
+    openai_content_parts = []
+    for part in content_parts:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type == "input_image":
+            image_url = part.get("image_url") or ""
+            openai_content_parts.append({"type": "image_url", "image_url": {"url": image_url}})
+        elif part_type == "input_text":
+            openai_content_parts.append({"type": "text", "text": part.get("text") or ""})
+        else:
+            openai_content_parts.append(part)
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "user", "content": openai_content_parts},
+        ],
+        "temperature": temperature,
+        "stream": False,
+    }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+    timeout = aiohttp.ClientTimeout(total=int(config.get("stream_timeout") or 600))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, headers=headers, json=payload) as resp:
+                text = await resp.text()
+                if resp.status >= 400:
+                    raise RuntimeError(f"vision endpoint HTTP {resp.status}: {text[:1000]}")
+                data = await resp.json()
+    except Exception as exc:
+        print(f"[vision] vision endpoint failed, falling back to main LLM: {exc}", flush=True)
+        return await _agents_chat_completion(
+            [{"role": "user", "content": content_parts}],
+            config,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content") or ""
+    return {"message": {"content": content}, "content": content}
+
+
 async def _agents_chat_completion(
     messages: list[dict],
     config: dict,
@@ -487,7 +628,7 @@ async def _execute_agent_tool(
     stream_channel = config.get("stream_channel")
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
-        "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
+        "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
         "context_overview", "compact_context_topic",
     }
@@ -1319,91 +1460,98 @@ async def _execute_builtin(
             return f"Error fetching URL: {str(e)}"
 
     if tool_name in {"describe_image", "inspect_image_url"}:
-        import aiohttp
-        import base64
-        import os
-        from urllib.parse import unquote, urlparse
-
         image_url = str(tool_args.get("url") or "").strip()
         image_base64 = str(tool_args.get("image_base64") or "").strip()
-        content_type = str(tool_args.get("content_type") or "image/png").split(";", 1)[0].strip() or "image/png"
         question = str(tool_args.get("question") or "Describe this image concisely but with enough detail to answer the user's request.").strip()
 
         try:
-            source_label = image_url or "provided image bytes"
-            if image_base64:
-                raw = base64.b64decode(image_base64, validate=True)
-            elif image_url.startswith("data:image/"):
-                header, encoded = image_url.split(",", 1)
-                content_type = header.split(":", 1)[1].split(";", 1)[0] or content_type
-                raw = base64.b64decode(encoded, validate=True)
-            else:
-                parsed = urlparse(image_url)
-                marker = "/api/generated-images/"
-                path = parsed.path if parsed.scheme else image_url
-                if marker in path:
-                    filename = unquote(path.rsplit(marker, 1)[-1].split("?", 1)[0].strip())
-                    if not filename or "/" in filename or "\\" in filename or filename.startswith("."):
-                        return "Error: invalid ThreadBot image filename"
+            raw, content_type, source_label = await _resolve_image_bytes(image_url, image_base64, tool_args, config)
+        except Exception as exc:
+            return f"Error describing image: {exc}"
+        if isinstance(raw, str) and raw.startswith("Error"):
+            return raw
+        import base64
+        llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        completion = await _vision_chat_completion(
+            config,
+            [
+                {"type": "input_image", "image_url": llm_image_url, "detail": "auto"},
+                {"type": "input_text", "text": question},
+            ],
+            temperature=0.2,
+            max_tokens=int(config.get("vision_max_tokens") or 800),
+        )
+        content = (completion.get("message") or {}).get("content") or completion.get("content") or ""
+        return f"Image description for {source_label}:\n{content}" if content else "Image description completed without text output."
 
-                    from app.database import AsyncSessionLocal
-                    from app.models.models import GeneratedImage
+    if tool_name == "extract_image_recipe":
+        import base64
+        import json
 
-                    async with AsyncSessionLocal() as db:
-                        image = await db.get(GeneratedImage, filename)
-                    if image:
-                        raw = image.content
-                        content_type = image.content_type or content_type
-                    else:
-                        image_dir = config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
-                        path_on_disk = os.path.join(image_dir, filename)
-                        if not os.path.isfile(path_on_disk):
-                            return f"Error: local uploaded image {filename!r} was not found"
-                        with open(path_on_disk, "rb") as f:
-                            raw = f.read(12 * 1024 * 1024 + 1)
-                        ext = os.path.splitext(filename)[1].lower()
-                        content_type = {
-                            ".jpg": "image/jpeg",
-                            ".jpeg": "image/jpeg",
-                            ".png": "image/png",
-                            ".gif": "image/gif",
-                            ".webp": "image/webp",
-                        }.get(ext, content_type)
-                elif image_url.startswith(("http://", "https://")):
-                    timeout = aiohttp.ClientTimeout(total=45)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        async with session.get(image_url, allow_redirects=True) as resp:
-                            if resp.status != 200:
-                                return f"Error describing image: HTTP {resp.status}"
-                            content_type = resp.headers.get("Content-Type", content_type).split(";", 1)[0]
-                            if not content_type.startswith("image/"):
-                                return f"Error describing image: URL returned {content_type}, not an image"
-                            raw = await resp.content.read(12 * 1024 * 1024 + 1)
-                else:
-                    return "Error: provide url, data:image URL, or image_base64"
+        if not config.get("vision_recipe_enabled"):
+            return "Error: extract_image_recipe is disabled. Enable Computer Vision > extract_image_recipe in Settings."
 
-            if len(raw) > 12 * 1024 * 1024:
-                return "Error describing image: image exceeds 12MB"
-            if not content_type.startswith("image/"):
-                return f"Error describing image: content_type must be image/*, got {content_type}"
+        image_url = str(tool_args.get("url") or "").strip()
+        image_base64 = str(tool_args.get("image_base64") or "").strip()
+        if not image_url and not image_base64:
+            return "Error: provide url or image_base64"
 
+        try:
+            raw, content_type, _source = await _resolve_image_bytes(image_url, image_base64, tool_args, config)
+        except Exception as exc:
+            return f"Error resolving image: {exc}"
+        if isinstance(raw, str) and raw.startswith("Error"):
+            return raw
+
+        try:
             llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
-            completion = await _agents_chat_completion(
-                [{
-                    "role": "user",
-                    "content": [
-                        {"type": "input_image", "image_url": llm_image_url, "detail": "auto"},
-                        {"type": "input_text", "text": question},
-                    ],
-                }],
+            completion = await _vision_chat_completion(
                 config,
-                temperature=0.2,
-                max_tokens=800,
+                [
+                    {
+                        "type": "input_image",
+                        "image_url": llm_image_url,
+                        "detail": "auto",
+                    },
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Analyze the image and return ONLY a JSON object (no prose, no markdown fences) "
+                            "with this exact shape: {\"positive_prompt\": str, \"negative_prompt\": str, "
+                            "\"style_preset\": str, \"regions\": [{\"label\": str, \"description\": str, "
+                            "\"position\": \"top|middle|bottom|left|right|top-left|top-right|bottom-left|bottom-right|center\"}], "
+                            "\"palette\": [str], \"notes\": str}. Use precise visual detail in positive_prompt. "
+                            "Keep negative_prompt focused on artifacts to avoid. Style preset must be one of: "
+                            "photorealistic, cinematic, illustration, digital_art, anime, pixel_art, logo, "
+                            "diagram, watercolor, oil_painting, sketch, comic_book, auto. Regions must describe "
+                            "discrete visible subjects and where they sit in the frame. Palette lists 3-6 dominant colors."
+                        ),
+                    },
+                ],
+                temperature=0.4,
+                max_tokens=int(config.get("vision_max_tokens") or 1200),
             )
             content = (completion.get("message") or {}).get("content") or completion.get("content") or ""
-            return f"Image description for {source_label}:\n{content}" if content else "Image description completed without text output."
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.strip("`")
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+            try:
+                recipe = json.loads(content)
+            except Exception:
+                recipe = {
+                    "positive_prompt": content,
+                    "negative_prompt": "",
+                    "style_preset": "auto",
+                    "regions": [],
+                    "palette": [],
+                    "notes": "Model did not return strict JSON; raw text used as positive_prompt.",
+                }
+            return json.dumps(recipe, indent=2)
         except Exception as exc:
-            return f"Error describing image with LLM: {exc}"
+            return f"Error extracting image recipe: {exc}"
 
     if tool_name == "current_datetime":
         from datetime import datetime, timezone
@@ -1690,6 +1838,24 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
     seed = int(config.get("comfyui_seed") or 42)
     negative_prompt = str(config.get("comfyui_negative_prompt") or "")
     style_preset = str(tool_args.get("style_preset") or "auto").strip().lower()
+
+    recipe = tool_args.get("recipe")
+    if recipe is not None:
+        if isinstance(recipe, str):
+            try:
+                recipe = json.loads(recipe)
+            except Exception:
+                recipe = None
+        if isinstance(recipe, dict):
+            recipe_prompt = str(recipe.get("positive_prompt") or "").strip()
+            if recipe_prompt:
+                prompt = recipe_prompt
+            recipe_negative = str(recipe.get("negative_prompt") or "").strip()
+            if recipe_negative:
+                negative_prompt = recipe_negative
+            recipe_style = str(recipe.get("style_preset") or "").strip().lower()
+            if recipe_style and recipe_style != "auto":
+                style_preset = recipe_style
 
     style_presets = {
         "photorealistic": {

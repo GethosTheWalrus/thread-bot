@@ -35,6 +35,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _contextWindowController = TextEditingController();
   final _preserveRecentController = TextEditingController();
   final _toolResultMaxCharsController = TextEditingController();
+  final _visionApiUrlController = TextEditingController();
+  final _visionApiKeyController = TextEditingController();
+  final _visionModelController = TextEditingController();
+  final _visionMaxTokensController = TextEditingController();
   final _discordTokenController = TextEditingController();
   final _discordGuildController = TextEditingController();
   final _discordChannelController = TextEditingController();
@@ -42,6 +46,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   double _compactionThreshold = 0.75;
   bool _imageGenerationEnabled = false;
   String _imageProvider = 'auto';
+  bool _visionEnabled = false;
+  bool _visionRecipeEnabled = true;
+  String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
   List<Map<String, dynamic>> _comfyuiWorkflowPresets = [];
@@ -112,6 +119,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .toString();
       _toolResultMaxCharsController.text =
           (settings['llm_tool_result_max_chars'] ?? 0).toString();
+      _visionEnabled = settings['llm_vision_enabled'] as bool? ?? false;
+      _visionRecipeEnabled =
+          settings['llm_vision_recipe_enabled'] as bool? ?? true;
+      _visionProvider = settings['llm_vision_provider'] as String? ?? 'auto';
+      _visionApiUrlController.text =
+          settings['llm_vision_api_url'] as String? ?? '';
+      _visionModelController.text =
+          settings['llm_vision_model'] as String? ?? '';
+      _visionMaxTokensController.text =
+          (settings['llm_vision_max_tokens'] ?? 1200).toString();
+      _visionApiKeyController.text = '';
       _compactionThreshold =
           (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
       final discord = settings['discord'] as Map<String, dynamic>? ?? {};
@@ -148,6 +166,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _maxIterationsController.text = '25';
       _preserveRecentController.text = '10';
       _toolResultMaxCharsController.text = '0';
+      _visionEnabled = false;
+      _visionRecipeEnabled = true;
+      _visionProvider = 'auto';
+      _visionApiUrlController.text = '';
+      _visionModelController.text = '';
+      _visionMaxTokensController.text = '1200';
+      _visionApiKeyController.text = '';
       _discordTokenController.text = '';
       _discordGuildController.text = '';
       _discordChannelController.text = '';
@@ -343,9 +368,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_compaction_threshold': _compactionThreshold,
         'llm_preserve_recent': preserveRecent,
         'llm_tool_result_max_chars': toolResultMaxChars,
+        'llm_vision_enabled': _visionEnabled,
+        'llm_vision_api_url': _visionApiUrlController.text,
+        'llm_vision_model': _visionModelController.text,
+        'llm_vision_provider': _visionProvider,
+        'llm_vision_max_tokens':
+            int.tryParse(_visionMaxTokensController.text) ?? 1200,
+        'llm_vision_recipe_enabled': _visionRecipeEnabled,
         'discord_enabled': _discordEnabled,
         'discord_poll_interval_seconds': discordPoll,
       };
+      if (_visionApiKeyController.text.isNotEmpty) {
+        payload['llm_vision_api_key'] = _visionApiKeyController.text;
+      }
       if (_discordGuildController.text.isNotEmpty) {
         payload['discord_guild_id'] = _discordGuildController.text;
       }
@@ -415,6 +450,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _contextWindowController.dispose();
     _preserveRecentController.dispose();
     _toolResultMaxCharsController.dispose();
+    _visionApiUrlController.dispose();
+    _visionApiKeyController.dispose();
+    _visionModelController.dispose();
+    _visionMaxTokensController.dispose();
     _discordTokenController.dispose();
     _discordGuildController.dispose();
     _discordChannelController.dispose();
@@ -779,6 +818,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 12),
             _buildInfoBox(
               'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations.',
+            ),
+          ],
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
+        'Computer Vision',
+        'Use a dedicated multimodal LLM for image analysis and recipe extraction',
+        Icons.visibility_outlined,
+        [
+          SwitchListTile(
+            value: _visionEnabled,
+            onChanged: (v) => setState(() => _visionEnabled = v),
+            title: const Text('Enable dedicated vision LLM'),
+            subtitle: const Text(
+                'Use a separate OpenAI-compatible vision endpoint for describe_image and extract_image_recipe.'),
+            contentPadding: EdgeInsets.zero,
+          ),
+          if (_visionEnabled) ...[
+            const SizedBox(height: 8),
+            _buildField(
+              controller: _visionApiUrlController,
+              label: 'Vision API URL',
+              hint: 'http://strix.home:8080/v1',
+              icon: Icons.link_rounded,
+            ),
+            const SizedBox(height: 12),
+            _buildField(
+              controller: _visionApiKeyController,
+              label: 'Vision API Key (optional)',
+              hint: 'leave blank if not required',
+              icon: Icons.vpn_key_outlined,
+              obscure: true,
+            ),
+            const SizedBox(height: 12),
+            _buildField(
+              controller: _visionModelController,
+              label: 'Vision Model',
+              hint: 'qwen3.6:35b',
+              icon: Icons.psychology_outlined,
+            ),
+            const SizedBox(height: 12),
+            _buildField(
+              controller: _visionMaxTokensController,
+              label: 'Vision Max Tokens',
+              hint: '1200',
+              icon: Icons.text_fields_rounded,
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _visionProvider,
+              decoration: const InputDecoration(
+                labelText: 'Provider',
+                prefixIcon: Icon(Icons.dns_outlined),
+              ),
+              items: const [
+                DropdownMenuItem(value: 'auto', child: Text('Auto (OpenAI-compatible)')),
+                DropdownMenuItem(value: 'openai_compatible', child: Text('OpenAI-compatible')),
+                DropdownMenuItem(value: 'ollama', child: Text('Ollama')),
+              ],
+              onChanged: (v) {
+                if (v != null) setState(() => _visionProvider = v);
+              },
+            ),
+            const SizedBox(height: 12),
+            SwitchListTile(
+              value: _visionRecipeEnabled,
+              onChanged: (v) => setState(() => _visionRecipeEnabled = v),
+              title: const Text('Enable extract_image_recipe tool'),
+              subtitle: const Text(
+                  'Lets the model extract a structured ComfyUI recipe (positive/negative prompt, regions, palette) for re-rendering.'),
+              contentPadding: EdgeInsets.zero,
+            ),
+            const SizedBox(height: 12),
+            _buildInfoBox(
+              'Strix.home example: API URL http://strix.home:8080/v1 with model qwen3.6:35b (started via ~/start-llama.sh qwen3.6-35b). The vision endpoint uses the OpenAI /v1/chat/completions schema.',
             ),
           ],
         ],

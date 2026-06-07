@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     LLM_IMAGE_API_URL: str = ""
     LLM_IMAGE_MODEL: str = ""
     LLM_IMAGE_PROVIDER: str = "auto"  # auto, ollama, openai_compatible, comfyui
+    LLM_VISION_ENABLED: bool = False
+    LLM_VISION_API_URL: str = ""
+    LLM_VISION_API_KEY: str = ""
+    LLM_VISION_MODEL: str = ""
+    LLM_VISION_PROVIDER: str = "auto"
+    LLM_VISION_MAX_TOKENS: int = 1200
+    LLM_VISION_RECIPE_ENABLED: bool = True
     LLM_PROVIDER: str = "auto"  # auto, ollama, llama_cpp, openai
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
@@ -126,6 +133,9 @@ async def load_settings_from_db() -> None:
         "llm_preserve_recent": int,
         "llm_tool_result_max_chars": int,
         "llm_image_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_vision_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_vision_recipe_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_vision_max_tokens": int,
         "llm_comfyui_workflow_presets": json.loads,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
@@ -202,6 +212,7 @@ def get_comfyui_workflow_json() -> str:
 
 def get_llm_config() -> dict:
     """Get current LLM config with overrides applied."""
+    vision_enabled = bool(get_setting("LLM_VISION_ENABLED"))
     return {
         "api_url": get_setting("LLM_API_URL"),
         "api_key": get_setting("LLM_API_KEY"),
@@ -222,6 +233,25 @@ def get_llm_config() -> dict:
         "comfyui_sampler": get_setting("LLM_COMFYUI_SAMPLER") or "euler",
         "comfyui_scheduler": get_setting("LLM_COMFYUI_SCHEDULER") or "simple",
         "comfyui_seed": int(get_setting("LLM_COMFYUI_SEED") or 42),
+        "vision_enabled": vision_enabled,
+        "vision_api_url": (
+            get_setting("LLM_VISION_API_URL")
+            or get_setting("LLM_IMAGE_API_URL")
+            if vision_enabled else ""
+        ),
+        "vision_api_key": (
+            get_setting("LLM_VISION_API_KEY")
+            or get_setting("LLM_IMAGE_API_KEY")
+            if vision_enabled else ""
+        ),
+        "vision_model": (
+            get_setting("LLM_VISION_MODEL")
+            or get_setting("LLM_IMAGE_MODEL")
+            or get_setting("LLM_MODEL")
+        ),
+        "vision_provider": get_setting("LLM_VISION_PROVIDER") or "auto",
+        "vision_max_tokens": int(get_setting("LLM_VISION_MAX_TOKENS") or 1200),
+        "vision_recipe_enabled": bool(get_setting("LLM_VISION_RECIPE_ENABLED")),
         "provider": get_setting("LLM_PROVIDER"),
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),
