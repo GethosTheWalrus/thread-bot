@@ -731,7 +731,7 @@ async def _execute_agent_tool(
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
         "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
-        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
+        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
@@ -1202,10 +1202,11 @@ async def run_agent_response(args: dict) -> dict:
             "answer before providing a final response. When user messages include images, "
             "inspect the images directly and incorporate relevant visual details in your answer. "
             "When the user asks to create an image, call generate_image and include the generated "
-            "image link or markdown in your final response. Choose the generate_image style_preset "
-            "that best matches the user's requested medium or intent; use auto only when the user's "
-            "prompt already clearly specifies the visual style. Never say you called generate_image "
-            "or list tool names as a substitute for making the structured tool call."
+            "image link or markdown in your final response. Use iterate_image_generation instead "
+            "when the user wants refinement, precision, iteration, or the best possible match. Choose "
+            "the image tool style_preset that best matches the user's requested medium or intent; use "
+            "auto only when the user's prompt already clearly specifies the visual style. Never say you "
+            "called an image tool or list tool names as a substitute for making the structured tool call."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -1747,6 +1748,9 @@ async def _execute_builtin(
     if tool_name == "generate_image":
         return await _generate_image(tool_args, config)
 
+    if tool_name == "iterate_image_generation":
+        return await _iterate_image_generation(tool_args, config)
+
     if tool_name == "context_overview":
         return await _context_overview(thread_id, tool_args)
 
@@ -1912,6 +1916,237 @@ async def _generate_image(tool_args: dict, config: dict) -> str:
     return f"Generated image:\n\n![Generated image]({image_url})\n\nPrompt: {prompt}"
 
 
+def _extract_generated_image_url(result_text: str) -> str:
+    import re
+
+    match = re.search(r"!\[[^\]]*\]\(([^)]+)\)", result_text or "")
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"(/api/generated-images/[^\s)]+|https?://[^\s)]+/api/generated-images/[^\s)]+)", result_text or "")
+    return match.group(1).strip() if match else ""
+
+
+def _extract_json_object(text: str) -> dict:
+    import json
+
+    content = (text or "").strip()
+    if content.startswith("```"):
+        content = content.strip("`").strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+    try:
+        value = json.loads(content)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        pass
+
+    start = content.find("{")
+    end = content.rfind("}")
+    if start != -1 and end > start:
+        try:
+            value = json.loads(content[start:end + 1])
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+async def _critique_generated_image(
+    config: dict,
+    image_url: str,
+    goal: str,
+    prompt: str,
+    negative_prompt: str,
+    critique_focus: str,
+) -> tuple[str, dict]:
+    import base64
+
+    resolved = await _resolve_image_bytes(image_url, "", {}, config)
+    if isinstance(resolved, str):
+        return resolved, {"satisfied": False, "score": 0}
+    raw, content_type, _source_label = resolved
+    llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+    question = (
+        "Evaluate this generated image against the target goal. Identify concrete matches, misses, artifacts, "
+        "composition problems, and prompt-relevant improvements. "
+        f"Target goal: {goal}\nCurrent prompt: {prompt}\nCurrent negative prompt: {negative_prompt or '(none)'}"
+    )
+    if critique_focus:
+        question += f"\nCritique focus: {critique_focus}"
+
+    if config.get("vision_pipeline_enabled"):
+        visual_analysis = await _multi_stage_image_description(config, llm_image_url, question)
+    else:
+        completion = await _vision_chat_completion(
+            config,
+            [
+                {"type": "input_image", "image_url": llm_image_url, "detail": "auto"},
+                {"type": "input_text", "text": question},
+            ],
+            temperature=0.2,
+            max_tokens=int(config.get("vision_max_tokens") or 1200),
+        )
+        visual_analysis = (completion.get("message") or {}).get("content") or completion.get("content") or ""
+
+    decision_prompt = (
+        "You are controlling an iterative local image-generation loop. Return ONLY a JSON object with this exact shape: "
+        "{\"satisfied\": bool, \"score\": int, \"critique\": str, \"next_prompt\": str, "
+        "\"next_negative_prompt\": str, \"style_preset\": str, \"changes\": [str]}. "
+        "score is 0-100. Set satisfied=true only if another generation attempt is unlikely to materially improve the "
+        "result for the user's goal. next_prompt must be a complete improved prompt for the next attempt; if satisfied, "
+        "it can repeat the current prompt. style_preset must be one of auto, photorealistic, cinematic, illustration, "
+        "digital_art, anime, pixel_art, logo, diagram, watercolor, oil_painting, sketch, comic_book. Be conservative "
+        "about satisfaction when hard requirements are missing.\n\n"
+        f"Target goal:\n{goal}\n\nCurrent prompt:\n{prompt}\n\nCurrent negative prompt:\n{negative_prompt or '(none)'}\n\n"
+        f"Vision critique:\n{visual_analysis}"
+    )
+    completion = await _vision_chat_completion(
+        config,
+        [{"type": "input_text", "text": decision_prompt}],
+        temperature=0.2,
+        max_tokens=int(config.get("vision_max_tokens") or 1200),
+    )
+    decision_text = (completion.get("message") or {}).get("content") or completion.get("content") or ""
+    decision = _extract_json_object(decision_text)
+    if not decision:
+        decision = {
+            "satisfied": False,
+            "score": 0,
+            "critique": decision_text.strip() or visual_analysis[:1200],
+            "next_prompt": prompt,
+            "next_negative_prompt": negative_prompt,
+            "style_preset": "auto",
+            "changes": ["Evaluator did not return strict JSON; keeping the current prompt."],
+        }
+    return visual_analysis, decision
+
+
+async def _iterate_image_generation(tool_args: dict, config: dict) -> str:
+    """Generate, critique, revise, and return the best attempt from a bounded loop."""
+    import json
+
+    goal = str(tool_args.get("goal") or "").strip()
+    if not goal:
+        return "Error: goal is required"
+    try:
+        max_iterations = int(tool_args.get("max_iterations") or 5)
+    except Exception:
+        max_iterations = 5
+    max_iterations = max(1, min(max_iterations, 5))
+    stop_when_satisfied = bool(tool_args.get("stop_when_satisfied", True))
+    critique_focus = str(tool_args.get("critique_focus") or "").strip()
+    size = str(tool_args.get("size") or "").strip()
+    style_preset = str(tool_args.get("style_preset") or "auto").strip().lower() or "auto"
+    prompt = str(tool_args.get("initial_prompt") or goal).strip()
+    negative_prompt = str(tool_args.get("negative_prompt") or "").strip()
+    try:
+        base_seed = int(tool_args.get("seed") or config.get("comfyui_seed") or 42)
+    except Exception:
+        base_seed = 42
+
+    attempts: list[dict] = []
+    best_attempt: dict | None = None
+    valid_styles = {
+        "auto", "photorealistic", "cinematic", "illustration", "digital_art", "anime", "pixel_art",
+        "logo", "diagram", "watercolor", "oil_painting", "sketch", "comic_book",
+    }
+
+    for attempt_number in range(1, max_iterations + 1):
+        generation_args = {
+            "prompt": prompt,
+            "style_preset": style_preset if style_preset in valid_styles else "auto",
+            "seed": base_seed + attempt_number - 1,
+            "recipe": {
+                "positive_prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "style_preset": style_preset if style_preset in valid_styles else "auto",
+            },
+        }
+        if size:
+            generation_args["size"] = size
+        result_text = await _generate_image(generation_args, config)
+        image_url = _extract_generated_image_url(result_text)
+        if not image_url:
+            attempts.append({
+                "iteration": attempt_number,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "error": result_text,
+            })
+            break
+
+        visual_analysis, decision = await _critique_generated_image(
+            config,
+            image_url,
+            goal,
+            prompt,
+            negative_prompt,
+            critique_focus,
+        )
+        try:
+            score = int(decision.get("score") or 0)
+        except Exception:
+            score = 0
+        score = max(0, min(score, 100))
+        satisfied = bool(decision.get("satisfied"))
+        attempt = {
+            "iteration": attempt_number,
+            "image_url": image_url,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "style_preset": style_preset,
+            "seed": generation_args["seed"],
+            "score": score,
+            "satisfied": satisfied,
+            "critique": str(decision.get("critique") or "").strip(),
+            "changes": decision.get("changes") if isinstance(decision.get("changes"), list) else [],
+            "vision_analysis": visual_analysis,
+        }
+        attempts.append(attempt)
+        if best_attempt is None or score > int(best_attempt.get("score") or 0):
+            best_attempt = attempt
+        if stop_when_satisfied and satisfied:
+            break
+
+        next_prompt = str(decision.get("next_prompt") or "").strip()
+        if next_prompt:
+            prompt = next_prompt
+        next_negative = str(decision.get("next_negative_prompt") or "").strip()
+        if next_negative:
+            negative_prompt = next_negative
+        next_style = str(decision.get("style_preset") or "").strip().lower()
+        if next_style in valid_styles:
+            style_preset = next_style
+
+    if not best_attempt:
+        return "Iterative image generation failed before producing an image.\n\n" + json.dumps(attempts, indent=2)
+
+    summary_lines = [
+        "Iterative image generation complete.",
+        f"Best attempt: {best_attempt['iteration']} of {len(attempts)} (score {best_attempt.get('score', 0)}/100).",
+        f"Stopped early: {'yes' if best_attempt.get('satisfied') and len(attempts) < max_iterations else 'no'}.",
+        "",
+        f"![Generated image]({best_attempt['image_url']})",
+        "",
+        f"Best prompt: {best_attempt['prompt']}",
+    ]
+    if best_attempt.get("negative_prompt"):
+        summary_lines.append(f"Best negative prompt: {best_attempt['negative_prompt']}")
+    summary_lines.extend(["", "Iteration log:"])
+    for attempt in attempts:
+        if attempt.get("error"):
+            summary_lines.append(f"- Attempt {attempt['iteration']}: failed: {attempt['error'][:500]}")
+            continue
+        critique = str(attempt.get("critique") or "").replace("\n", " ").strip()
+        if len(critique) > 500:
+            critique = critique[:500] + "..."
+        summary_lines.append(
+            f"- Attempt {attempt['iteration']}: score {attempt.get('score', 0)}/100, "
+            f"satisfied={str(bool(attempt.get('satisfied'))).lower()}, image={attempt.get('image_url')}, critique={critique}"
+        )
+    return "\n".join(summary_lines)
+
+
 async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) -> str:
     """Submit a workflow to a ComfyUI server, poll history, fetch the image."""
     import asyncio
@@ -1945,8 +2180,24 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
     sampler = str(config.get("comfyui_sampler") or "euler")
     scheduler = str(config.get("comfyui_scheduler") or "normal")
     seed = int(config.get("comfyui_seed") or 42)
-    negative_prompt = str(config.get("comfyui_negative_prompt") or "")
+    negative_prompt = str(tool_args.get("negative_prompt") or config.get("comfyui_negative_prompt") or "")
     style_preset = str(tool_args.get("style_preset") or "auto").strip().lower()
+
+    try:
+        if tool_args.get("steps") is not None:
+            steps = max(1, min(int(tool_args.get("steps")), 150))
+    except Exception:
+        pass
+    try:
+        if tool_args.get("cfg") is not None:
+            cfg = max(0.0, min(float(tool_args.get("cfg")), 30.0))
+    except Exception:
+        pass
+    try:
+        if tool_args.get("seed") is not None:
+            seed = int(tool_args.get("seed"))
+    except Exception:
+        pass
 
     recipe = tool_args.get("recipe")
     if recipe is not None:
@@ -2414,7 +2665,7 @@ async def execute_tools(args: dict) -> dict:
     # Names of built-in tools that don't require MCP containers
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
-        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image",
+        "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "context_overview", "compact_context_topic",
     }
 

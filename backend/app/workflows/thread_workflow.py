@@ -545,6 +545,75 @@ class RunThreadWorkflow:
                 {
                     "type": "function",
                     "function": {
+                        "name": "iterate_image_generation",
+                        "description": (
+                            "Generate an image, inspect it with the local vision pipeline, critique it against the user's goal, "
+                            "revise the prompt/settings, and repeat until satisfied or the bounded attempt limit is reached. "
+                            "Use this instead of generate_image when the user wants refinement, precision, iteration, or the best possible result. "
+                            "The tool is capped at 5 iterations and can stop early once the result satisfies the goal."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "goal": {
+                                    "type": "string",
+                                    "description": "The user's desired final image, including all hard requirements and success criteria.",
+                                },
+                                "initial_prompt": {
+                                    "type": "string",
+                                    "description": "Optional first generation prompt. If omitted, the goal is used as the starting prompt.",
+                                },
+                                "negative_prompt": {
+                                    "type": "string",
+                                    "description": "Optional artifacts or traits to avoid. The iteration loop may refine this.",
+                                },
+                                "size": {
+                                    "type": "string",
+                                    "description": "Requested image size, e.g. 1024x1024, 1024x768, or 768x1024. Defaults to configured ComfyUI size.",
+                                },
+                                "style_preset": {
+                                    "type": "string",
+                                    "enum": [
+                                        "auto",
+                                        "photorealistic",
+                                        "cinematic",
+                                        "illustration",
+                                        "digital_art",
+                                        "anime",
+                                        "pixel_art",
+                                        "logo",
+                                        "diagram",
+                                        "watercolor",
+                                        "oil_painting",
+                                        "sketch",
+                                        "comic_book",
+                                    ],
+                                    "description": "Visual style preset. Defaults to auto.",
+                                },
+                                "max_iterations": {
+                                    "type": "integer",
+                                    "description": "Maximum attempts to run. Values above 5 are clamped to 5. Defaults to 5.",
+                                },
+                                "stop_when_satisfied": {
+                                    "type": "boolean",
+                                    "description": "Whether to stop early when critique says the result satisfies the goal. Defaults to true.",
+                                },
+                                "critique_focus": {
+                                    "type": "string",
+                                    "description": "Optional extra emphasis for critique, e.g. text legibility, composition, character likeness, or exact object counts.",
+                                },
+                                "seed": {
+                                    "type": "integer",
+                                    "description": "Optional starting seed. Each retry increments this seed by 1. Defaults to the configured ComfyUI seed.",
+                                },
+                            },
+                            "required": ["goal"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "context_overview",
                         "description": (
                             "Inspect the saved conversation context and list compactable message IDs with previews. "
@@ -680,10 +749,11 @@ class RunThreadWorkflow:
                     "When webpage visual content matters, call web_fetch with include_images=true, then call "
                     "describe_image for the relevant image URLs before answering. "
                     "When the user asks to create an image, call generate_image and include the generated "
-                    "image link or markdown in your final response. Choose the generate_image style_preset "
-                    "that best matches the user's requested medium or intent; use auto only when the user's "
-                    "prompt already clearly specifies the visual style. Never say you called generate_image "
-                    "or list tool names as a substitute for making the structured tool call."
+                    "image link or markdown in your final response. Use iterate_image_generation instead "
+                    "when the user wants refinement, precision, iteration, or the best possible match. Choose "
+                    "the image tool style_preset that best matches the user's requested medium or intent; use "
+                    "auto only when the user's prompt already clearly specifies the visual style. Never say you "
+                    "called an image tool or list tool names as a substitute for making the structured tool call."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),
