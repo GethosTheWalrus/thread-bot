@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     LLM_VISION_PROVIDER: str = "auto"
     LLM_VISION_MAX_TOKENS: int = 1200
     LLM_VISION_RECIPE_ENABLED: bool = True
+    LLM_VISION_PIPELINE_ENABLED: bool = False
+    LLM_VISION_OCR_API_URL: str = ""
+    LLM_VISION_OCR_MODEL: str = ""
+    LLM_VISION_DETAIL_API_URL: str = ""
+    LLM_VISION_DETAIL_MODEL: str = ""
+    LLM_VISION_STYLE_API_URL: str = ""
+    LLM_VISION_STYLE_MODEL: str = ""
     LLM_PROVIDER: str = "auto"  # auto, ollama, llama_cpp, openai
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2048
@@ -135,6 +142,7 @@ async def load_settings_from_db() -> None:
         "llm_image_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "llm_vision_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "llm_vision_recipe_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_vision_pipeline_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "llm_vision_max_tokens": int,
         "llm_comfyui_workflow_presets": json.loads,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
@@ -252,6 +260,13 @@ def get_llm_config() -> dict:
         "vision_provider": get_setting("LLM_VISION_PROVIDER") or "auto",
         "vision_max_tokens": int(get_setting("LLM_VISION_MAX_TOKENS") or 1200),
         "vision_recipe_enabled": bool(get_setting("LLM_VISION_RECIPE_ENABLED")),
+        "vision_pipeline_enabled": bool(get_setting("LLM_VISION_PIPELINE_ENABLED")),
+        "vision_ocr_api_url": get_setting("LLM_VISION_OCR_API_URL") or "",
+        "vision_ocr_model": get_setting("LLM_VISION_OCR_MODEL") or "",
+        "vision_detail_api_url": get_setting("LLM_VISION_DETAIL_API_URL") or "",
+        "vision_detail_model": get_setting("LLM_VISION_DETAIL_MODEL") or "",
+        "vision_style_api_url": get_setting("LLM_VISION_STYLE_API_URL") or "",
+        "vision_style_model": get_setting("LLM_VISION_STYLE_MODEL") or "",
         "provider": get_setting("LLM_PROVIDER"),
         "temperature": get_setting("LLM_TEMPERATURE"),
         "max_tokens": get_setting("LLM_MAX_TOKENS"),

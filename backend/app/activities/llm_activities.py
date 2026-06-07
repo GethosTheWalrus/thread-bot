@@ -511,6 +511,9 @@ async def _vision_chat_completion(
     *,
     temperature: float = 0.2,
     max_tokens: int | None = None,
+    api_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
 ) -> dict:
     """Send an image+text prompt to the configured vision LLM endpoint.
 
@@ -518,9 +521,9 @@ async def _vision_chat_completion(
     """
     import aiohttp
 
-    api_url = (config.get("vision_api_url") or "").rstrip("/")
-    api_key = config.get("vision_api_key") or ""
-    model = config.get("vision_model") or config.get("model")
+    api_url = (api_url if api_url is not None else config.get("vision_api_url") or "").rstrip("/")
+    api_key = api_key if api_key is not None else config.get("vision_api_key") or ""
+    model = model or config.get("vision_model") or config.get("model")
     if not api_url:
         return await _agents_chat_completion(
             [{"role": "user", "content": content_parts}],
@@ -578,6 +581,105 @@ async def _vision_chat_completion(
     message = choice.get("message") or {}
     content = message.get("content") or ""
     return {"message": {"content": content}, "content": content}
+
+
+def _vision_stage_config(config: dict, stage: str) -> tuple[str, str]:
+    api_url = str(config.get(f"vision_{stage}_api_url") or "").strip()
+    model = str(config.get(f"vision_{stage}_model") or "").strip()
+    return api_url, model
+
+
+async def _run_vision_stage(
+    config: dict,
+    llm_image_url: str,
+    stage: str,
+    prompt: str,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> str:
+    api_url, model = _vision_stage_config(config, stage)
+    completion = await _vision_chat_completion(
+        config,
+        [
+            {"type": "input_image", "image_url": llm_image_url, "detail": "auto"},
+            {"type": "input_text", "text": prompt},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens or int(config.get("vision_max_tokens") or 1200),
+        api_url=api_url or None,
+        model=model or None,
+    )
+    return ((completion.get("message") or {}).get("content") or completion.get("content") or "").strip()
+
+
+async def _multi_stage_image_description(config: dict, llm_image_url: str, question: str) -> str:
+    max_tokens = int(config.get("vision_max_tokens") or 1200)
+    primary = await _run_vision_stage(
+        config,
+        llm_image_url,
+        "primary",
+        f"Answer this image question with concrete visual evidence: {question}",
+        temperature=0.2,
+        max_tokens=max_tokens,
+    )
+    stage_results = {"Primary visual analysis": primary}
+
+    stage_prompts = [
+        (
+            "ocr",
+            "OCR and text pass",
+            "Extract all visible text, labels, UI text, signs, handwriting, watermarks, and numbers. "
+            "Preserve spelling, line breaks where useful, and uncertainty. If no text is visible, say so.",
+        ),
+        (
+            "detail",
+            "Object and detail pass",
+            "List important objects, people, spatial relationships, counts, small details, and any ambiguous visual evidence. "
+            "Focus on facts that a general caption might miss.",
+        ),
+        (
+            "style",
+            "Style and composition pass",
+            "Describe style, medium, composition, lighting, camera/viewpoint, color palette, mood, and rendering artifacts. "
+            "This should help both visual understanding and ComfyUI prompt construction.",
+        ),
+    ]
+
+    for stage, label, prompt in stage_prompts:
+        api_url, model = _vision_stage_config(config, stage)
+        if not api_url and not model:
+            continue
+        try:
+            result = await _run_vision_stage(
+                config,
+                llm_image_url,
+                stage,
+                prompt,
+                temperature=0.1 if stage == "ocr" else 0.25,
+                max_tokens=max_tokens,
+            )
+            if result:
+                stage_results[label] = result
+        except Exception as exc:
+            stage_results[label] = f"Stage failed: {exc}"
+
+    combined = "\n\n".join(f"## {label}\n{text}" for label, text in stage_results.items() if text)
+    synthesis_prompt = (
+        "You are synthesizing multiple local vision analysis passes for one image. "
+        "Use only the evidence below. Resolve contradictions conservatively. "
+        f"Answer the user's request: {question}\n\n{combined}"
+    )
+    completion = await _vision_chat_completion(
+        config,
+        [{"type": "input_text", "text": synthesis_prompt}],
+        temperature=0.2,
+        max_tokens=max_tokens,
+    )
+    synthesis = ((completion.get("message") or {}).get("content") or completion.get("content") or "").strip()
+    if not synthesis:
+        return combined
+    return f"{synthesis}\n\n---\nLocal vision pipeline details:\n\n{combined}"
 
 
 async def _agents_chat_completion(
@@ -1472,6 +1574,10 @@ async def _execute_builtin(
             return raw
         import base64
         llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        if config.get("vision_pipeline_enabled"):
+            content = await _multi_stage_image_description(config, llm_image_url, question)
+            return f"Image description for {source_label}:\n{content}" if content else "Image description completed without text output."
+
         completion = await _vision_chat_completion(
             config,
             [
@@ -1505,6 +1611,7 @@ async def _execute_builtin(
 
         try:
             llm_image_url = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+            recipe_api_url, recipe_model = _vision_stage_config(config, "style")
             completion = await _vision_chat_completion(
                 config,
                 [
@@ -1530,6 +1637,8 @@ async def _execute_builtin(
                 ],
                 temperature=0.4,
                 max_tokens=int(config.get("vision_max_tokens") or 1200),
+                api_url=recipe_api_url or None,
+                model=recipe_model or None,
             )
             content = (completion.get("message") or {}).get("content") or completion.get("content") or ""
             content = content.strip()

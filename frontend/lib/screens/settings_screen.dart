@@ -39,6 +39,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _visionApiKeyController = TextEditingController();
   final _visionModelController = TextEditingController();
   final _visionMaxTokensController = TextEditingController();
+  final _visionOcrApiUrlController = TextEditingController();
+  final _visionOcrModelController = TextEditingController();
+  final _visionDetailApiUrlController = TextEditingController();
+  final _visionDetailModelController = TextEditingController();
+  final _visionStyleApiUrlController = TextEditingController();
+  final _visionStyleModelController = TextEditingController();
   final _discordTokenController = TextEditingController();
   final _discordGuildController = TextEditingController();
   final _discordChannelController = TextEditingController();
@@ -48,6 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _imageProvider = 'auto';
   bool _visionEnabled = false;
   bool _visionRecipeEnabled = true;
+  bool _visionPipelineEnabled = false;
   String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
@@ -122,6 +129,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _visionEnabled = settings['llm_vision_enabled'] as bool? ?? false;
       _visionRecipeEnabled =
           settings['llm_vision_recipe_enabled'] as bool? ?? true;
+      _visionPipelineEnabled =
+          settings['llm_vision_pipeline_enabled'] as bool? ?? false;
       _visionProvider = settings['llm_vision_provider'] as String? ?? 'auto';
       _visionApiUrlController.text =
           settings['llm_vision_api_url'] as String? ?? '';
@@ -130,6 +139,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _visionMaxTokensController.text =
           (settings['llm_vision_max_tokens'] ?? 1200).toString();
       _visionApiKeyController.text = '';
+      _visionOcrApiUrlController.text =
+          settings['llm_vision_ocr_api_url'] as String? ?? '';
+      _visionOcrModelController.text =
+          settings['llm_vision_ocr_model'] as String? ?? '';
+      _visionDetailApiUrlController.text =
+          settings['llm_vision_detail_api_url'] as String? ?? '';
+      _visionDetailModelController.text =
+          settings['llm_vision_detail_model'] as String? ?? '';
+      _visionStyleApiUrlController.text =
+          settings['llm_vision_style_api_url'] as String? ?? '';
+      _visionStyleModelController.text =
+          settings['llm_vision_style_model'] as String? ?? '';
       _compactionThreshold =
           (settings['llm_compaction_threshold'] as num?)?.toDouble() ?? 0.75;
       final discord = settings['discord'] as Map<String, dynamic>? ?? {};
@@ -168,11 +189,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _toolResultMaxCharsController.text = '0';
       _visionEnabled = false;
       _visionRecipeEnabled = true;
+      _visionPipelineEnabled = false;
       _visionProvider = 'auto';
       _visionApiUrlController.text = '';
       _visionModelController.text = '';
       _visionMaxTokensController.text = '1200';
       _visionApiKeyController.text = '';
+      _visionOcrApiUrlController.text = '';
+      _visionOcrModelController.text = '';
+      _visionDetailApiUrlController.text = '';
+      _visionDetailModelController.text = '';
+      _visionStyleApiUrlController.text = '';
+      _visionStyleModelController.text = '';
       _discordTokenController.text = '';
       _discordGuildController.text = '';
       _discordChannelController.text = '';
@@ -375,6 +403,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_vision_max_tokens':
             int.tryParse(_visionMaxTokensController.text) ?? 1200,
         'llm_vision_recipe_enabled': _visionRecipeEnabled,
+        'llm_vision_pipeline_enabled': _visionPipelineEnabled,
+        'llm_vision_ocr_api_url': _visionOcrApiUrlController.text,
+        'llm_vision_ocr_model': _visionOcrModelController.text,
+        'llm_vision_detail_api_url': _visionDetailApiUrlController.text,
+        'llm_vision_detail_model': _visionDetailModelController.text,
+        'llm_vision_style_api_url': _visionStyleApiUrlController.text,
+        'llm_vision_style_model': _visionStyleModelController.text,
         'discord_enabled': _discordEnabled,
         'discord_poll_interval_seconds': discordPoll,
       };
@@ -454,6 +489,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _visionApiKeyController.dispose();
     _visionModelController.dispose();
     _visionMaxTokensController.dispose();
+    _visionOcrApiUrlController.dispose();
+    _visionOcrModelController.dispose();
+    _visionDetailApiUrlController.dispose();
+    _visionDetailModelController.dispose();
+    _visionStyleApiUrlController.dispose();
+    _visionStyleModelController.dispose();
     _discordTokenController.dispose();
     _discordGuildController.dispose();
     _discordChannelController.dispose();
@@ -508,7 +549,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             )
           : DefaultTabController(
-              length: 4,
+              length: 5,
               child: Column(
                 children: [
                   Container(
@@ -522,6 +563,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       tabs: [
                         Tab(text: 'About'),
                         Tab(text: 'LLM'),
+                        Tab(text: 'Media'),
                         Tab(text: 'Discord'),
                         Tab(text: 'Tools'),
                       ],
@@ -532,6 +574,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         _buildAboutSettingsTab(),
                         _buildLlmSettingsTab(),
+                        _buildMediaSettingsTab(),
                         _buildDiscordSettingsTab(),
                         _buildToolsSettingsTab(),
                       ],
@@ -636,8 +679,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildLlmSettingsTab() {
     return _buildSettingsTab([
       _buildSection(
-        'LLM Configuration',
-        'Configure the AI model backend',
+        'Chat Model',
+        'Configure the main text/reasoning model backend',
         Icons.psychology_outlined,
         [
           _buildField(
@@ -664,6 +707,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ],
       ),
       const SizedBox(height: 32),
+      _buildSection(
+        'Context Management',
+        'Control how long conversations are handled',
+        Icons.compress_rounded,
+        [
+          _buildField(
+            controller: _contextWindowController,
+            label: 'Context Window (tokens)',
+            hint: '8192',
+            icon: Icons.token_outlined,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 24),
+          _buildField(
+            controller: _maxIterationsController,
+            label: 'Max Conversational Turns',
+            hint: '25',
+            icon: Icons.repeat_rounded,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 24),
+          _buildThresholdSlider(),
+          const SizedBox(height: 24),
+          _buildField(
+            controller: _preserveRecentController,
+            label: 'Preserve Recent Messages',
+            hint: '10',
+            icon: Icons.history_rounded,
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'When estimated token usage exceeds ${(_compactionThreshold * 100).round()}% of the context window, older messages are summarized automatically.',
+          ),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _buildMediaSettingsTab() {
+    return _buildSettingsTab([
       _buildSection(
         'Image Generation',
         'Use a separate image model/backend for generated images',
@@ -893,50 +977,70 @@ class _SettingsScreenState extends State<SettingsScreen> {
               contentPadding: EdgeInsets.zero,
             ),
             const SizedBox(height: 12),
+            SwitchListTile(
+              value: _visionPipelineEnabled,
+              onChanged: (v) => setState(() => _visionPipelineEnabled = v),
+              title: const Text('Enable multi-stage local vision pipeline'),
+              subtitle: const Text(
+                  'Runs primary analysis, optional OCR/detail/style passes, then synthesizes the result. Stages run sequentially to limit VRAM usage.'),
+              contentPadding: EdgeInsets.zero,
+            ),
+            if (_visionPipelineEnabled) ...[
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionOcrApiUrlController,
+                label: 'OCR Stage API URL (optional)',
+                hint: 'http://ollama.home:11434/v1',
+                icon: Icons.text_snippet_outlined,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionOcrModelController,
+                label: 'OCR Stage Model (optional)',
+                hint: 'small local vision/OCR model',
+                icon: Icons.short_text_rounded,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionDetailApiUrlController,
+                label: 'Detail Stage API URL (optional)',
+                hint: 'http://ollama.home:11434/v1',
+                icon: Icons.search_rounded,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionDetailModelController,
+                label: 'Detail Stage Model (optional)',
+                hint: 'small local multimodal model',
+                icon: Icons.center_focus_strong_outlined,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionStyleApiUrlController,
+                label: 'Style Stage API URL (optional)',
+                hint: 'http://ollama.home:11434/v1',
+                icon: Icons.palette_outlined,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _visionStyleModelController,
+                label: 'Style Stage Model (optional)',
+                hint: 'small local multimodal model',
+                icon: Icons.auto_awesome_outlined,
+              ),
+              const SizedBox(height: 12),
+              _buildInfoBox(
+                'Leave a helper stage blank to skip it. If only a model is provided, the stage uses the primary vision API URL. The style stage is also used for extract_image_recipe when configured.',
+              ),
+            ],
+            const SizedBox(height: 12),
             _buildInfoBox(
               'Strix.home example: API URL http://strix.home:8080/v1 with model qwen3.6:35b (started via ~/start-llama.sh qwen3.6-35b). The vision endpoint uses the OpenAI /v1/chat/completions schema.',
             ),
           ],
         ],
       ),
-      const SizedBox(height: 32),
-      _buildSection(
-        'Context Management',
-        'Control how long conversations are handled',
-        Icons.compress_rounded,
-        [
-          _buildField(
-            controller: _contextWindowController,
-            label: 'Context Window (tokens)',
-            hint: '8192',
-            icon: Icons.token_outlined,
-            keyboardType: TextInputType.number,
-          ),
-          const SizedBox(height: 24),
-          _buildField(
-            controller: _maxIterationsController,
-            label: 'Max Conversational Turns',
-            hint: '25',
-            icon: Icons.repeat_rounded,
-            keyboardType: TextInputType.number,
-          ),
-          const SizedBox(height: 24),
-          _buildThresholdSlider(),
-          const SizedBox(height: 24),
-          _buildField(
-            controller: _preserveRecentController,
-            label: 'Preserve Recent Messages',
-            hint: '10',
-            icon: Icons.history_rounded,
-            keyboardType: TextInputType.number,
-          ),
-          const SizedBox(height: 12),
-          _buildInfoBox(
-            'When estimated token usage exceeds ${(_compactionThreshold * 100).round()}% of the context window, older messages are summarized automatically.',
-          ),
-        ],
-      ),
-    ]);
+    ], maxWidth: 760);
   }
 
   Widget _buildToolsSettingsTab() {
