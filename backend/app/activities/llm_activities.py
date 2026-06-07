@@ -2052,6 +2052,12 @@ async def _iterate_image_generation(tool_args: dict, config: dict) -> str:
     }
 
     for attempt_number in range(1, max_iterations + 1):
+        heartbeat({
+            "step": "iterate_image_generation",
+            "phase": "generate",
+            "iteration": attempt_number,
+            "max_iterations": max_iterations,
+        })
         generation_args = {
             "prompt": prompt,
             "style_preset": style_preset if style_preset in valid_styles else "auto",
@@ -2075,6 +2081,12 @@ async def _iterate_image_generation(tool_args: dict, config: dict) -> str:
             })
             break
 
+        heartbeat({
+            "step": "iterate_image_generation",
+            "phase": "critique",
+            "iteration": attempt_number,
+            "max_iterations": max_iterations,
+        })
         visual_analysis, decision = await _critique_generated_image(
             config,
             image_url,
@@ -2103,6 +2115,14 @@ async def _iterate_image_generation(tool_args: dict, config: dict) -> str:
             "vision_analysis": visual_analysis,
         }
         attempts.append(attempt)
+        heartbeat({
+            "step": "iterate_image_generation",
+            "phase": "iteration_done",
+            "iteration": attempt_number,
+            "max_iterations": max_iterations,
+            "score": score,
+            "satisfied": satisfied,
+        })
         if best_attempt is None or score > int(best_attempt.get("score") or 0):
             best_attempt = attempt
         if stop_when_satisfied and satisfied:
@@ -2398,11 +2418,18 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
         raise RuntimeError(f"Error contacting ComfyUI: {exc}") from exc
 
     # Poll /history/{prompt_id} until status.completed.
-    deadline = asyncio.get_event_loop().time() + timeout_total
+    started_at = asyncio.get_event_loop().time()
+    deadline = started_at + timeout_total
     history = None
     last_status = None
     async with aiohttp.ClientSession(timeout=poll_timeout) as session:
         while asyncio.get_event_loop().time() < deadline:
+            heartbeat({
+                "step": "comfyui_poll",
+                "prompt_id": prompt_id,
+                "elapsed_seconds": int(asyncio.get_event_loop().time() - started_at),
+                "last_status": last_status,
+            })
             await asyncio.sleep(2)
             try:
                 async with session.get(f"{comfyui_url}/history/{prompt_id}") as resp:
@@ -2422,6 +2449,11 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
             last_status = json.dumps({k: status.get(k) for k in ("status", "completed", "messages")})[:500]
             if completed:
                 history = entry
+                heartbeat({
+                    "step": "comfyui_poll_done",
+                    "prompt_id": prompt_id,
+                    "elapsed_seconds": int(asyncio.get_event_loop().time() - started_at),
+                })
                 break
 
     if history is None:

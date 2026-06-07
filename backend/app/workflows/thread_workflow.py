@@ -106,6 +106,20 @@ class RunThreadWorkflow:
             tool_name = fn.get("name", "")
 
             async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
+                effective_tool_timeout = tool_timeout
+                if name == "iterate_image_generation":
+                    import json
+
+                    try:
+                        parsed_args = json.loads(args or "{}")
+                    except Exception:
+                        parsed_args = {}
+                    try:
+                        max_iterations = int(parsed_args.get("max_iterations") or 5)
+                    except Exception:
+                        max_iterations = 5
+                    max_iterations = max(1, min(max_iterations, 5))
+                    effective_tool_timeout = max(tool_timeout, (tool_timeout * max_iterations) + 300)
                 return await execute_activity(
                     execute_tool_activity,
                     {
@@ -116,8 +130,8 @@ class RunThreadWorkflow:
                         "thread_id": thread_id,
                         "llm_config": llm_config,
                     },
-                    start_to_close_timeout=timedelta(seconds=tool_timeout),
-                    heartbeat_timeout=timedelta(seconds=min(tool_timeout, 120)),
+                    start_to_close_timeout=timedelta(seconds=effective_tool_timeout),
+                    heartbeat_timeout=timedelta(seconds=min(effective_tool_timeout, 120)),
                     retry_policy=RetryPolicy(
                         initial_interval=timedelta(seconds=2),
                         backoff_coefficient=2.0,
