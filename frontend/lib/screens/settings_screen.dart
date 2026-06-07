@@ -76,6 +76,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
+  bool _showVideoWorkflowJson = false;
+  bool _showImageToVideoWorkflowJson = false;
   List<Map<String, dynamic>> _comfyuiWorkflowPresets = [];
   bool _discordEnabled = false;
   List<Map<String, dynamic>> _discordServers = [];
@@ -1213,20 +1215,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          _buildField(
+          _buildVideoWorkflowCard(
+            title: 'Text-to-Video Workflow',
+            description:
+                'Official Wan2.2 5B text-to-video workflow. This is what generate_video uses.',
             controller: _videoWorkflowController,
-            label: 'Text-to-Video Workflow JSON',
-            hint: 'Paste the official Wan2.2 text-to-video workflow JSON. UI export or API format is accepted.',
-            icon: Icons.data_object_rounded,
-            maxLines: 10,
+            showJson: _showVideoWorkflowJson,
+            onShowJsonChanged: (value) =>
+                setState(() => _showVideoWorkflowJson = value),
+            jsonHint:
+                'Paste the official Wan2.2 text-to-video workflow JSON. UI export or API format is accepted.',
+            icon: Icons.movie_creation_outlined,
           ),
           const SizedBox(height: 16),
-          _buildField(
+          _buildVideoWorkflowCard(
+            title: 'Image-to-Video Workflow',
+            description:
+                'Official Wan2.2 5B image-to-video workflow. Used when animating uploaded, generated, or reference images.',
             controller: _imageToVideoWorkflowController,
-            label: 'Image-to-Video Workflow JSON',
-            hint: 'Paste the official Wan2.2 image-to-video workflow JSON. Leave blank to reuse text-to-video workflow.',
+            showJson: _showImageToVideoWorkflowJson,
+            onShowJsonChanged: (value) =>
+                setState(() => _showImageToVideoWorkflowJson = value),
+            jsonHint:
+                'Paste the official Wan2.2 image-to-video workflow JSON. Leave blank to reuse text-to-video workflow.',
             icon: Icons.video_camera_back_outlined,
-            maxLines: 10,
           ),
         ],
       ),
@@ -1639,17 +1651,107 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildVideoWorkflowCard({
+    required String title,
+    required String description,
+    required TextEditingController controller,
+    required bool showJson,
+    required ValueChanged<bool> onShowJsonChanged,
+    required String jsonHint,
+    required IconData icon,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        color: Colors.white.withValues(alpha: 0.03),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: const Color(0xFF8B5CF6), size: 20),
+              const SizedBox(width: 8),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            description,
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.white.withValues(alpha: 0.45),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              color: const Color(0xFF0D0D12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+            ),
+            child: _buildWorkflowReadableSummaryFor(controller.text),
+          ),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: showJson,
+            onChanged: onShowJsonChanged,
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('View JSON'),
+            subtitle: Text(
+              'Enable to inspect or replace this raw ComfyUI workflow.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          if (showJson) ...[
+            const SizedBox(height: 12),
+            _buildField(
+              controller: controller,
+              label: '$title JSON',
+              hint: jsonHint,
+              icon: Icons.data_object_rounded,
+              maxLines: 10,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildWorkflowReadableSummary() {
+    return _buildWorkflowReadableSummaryFor(_comfyuiWorkflowController.text);
+  }
+
+  Widget _buildWorkflowReadableSummaryFor(String workflowJson) {
     try {
-      final decoded = jsonDecode(_comfyuiWorkflowController.text);
+      if (workflowJson.trim().isEmpty) {
+        return const Text('No workflow JSON configured.');
+      }
+      final decoded = jsonDecode(workflowJson);
       if (decoded is! Map) {
         return const Text('Workflow JSON must be an object.');
       }
       final counts = <String, int>{};
       final models = <String>{};
-      for (final node in decoded.values) {
+      final nodes = _workflowNodes(decoded);
+      for (final node in nodes) {
         if (node is! Map) continue;
-        final type = (node['class_type'] ?? 'Unknown').toString();
+        final type = (node['class_type'] ?? node['type'] ?? 'Unknown').toString();
         counts[type] = (counts[type] ?? 0) + 1;
         final inputs = node['inputs'];
         if (inputs is Map) {
@@ -1665,6 +1767,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             if (value is String && value.isNotEmpty) models.add(value);
           }
         }
+        final widgets = node['widgets_values'];
+        if (widgets is List) {
+          for (final value in widgets) {
+            if (value is String && _looksLikeModelFile(value)) {
+              models.add(value);
+            }
+          }
+        }
       }
       final keyNodes = counts.entries
           .where(
@@ -1672,7 +1782,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 entry.key.contains('Loader') ||
                 entry.key.contains('Sampler') ||
                 entry.key.contains('Scheduler') ||
-                entry.key == 'SaveImage',
+                entry.key == 'SaveImage' ||
+                entry.key == 'SaveVideo' ||
+                entry.key == 'SaveWEBM' ||
+                entry.key.contains('Wan'),
           )
           .map((entry) => '${entry.key} x${entry.value}')
           .toList();
@@ -1680,7 +1793,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${decoded.length} workflow nodes',
+            '${nodes.length} workflow nodes',
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 10),
@@ -1695,6 +1808,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         style: TextStyle(fontSize: 12, color: Colors.red.shade300),
       );
     }
+  }
+
+  List<dynamic> _workflowNodes(Map<dynamic, dynamic> decoded) {
+    final uiNodes = decoded['nodes'];
+    if (uiNodes is List) return uiNodes;
+    return decoded.values.toList();
+  }
+
+  bool _looksLikeModelFile(String value) {
+    final lower = value.toLowerCase();
+    return lower.endsWith('.safetensors') ||
+        lower.endsWith('.ckpt') ||
+        lower.endsWith('.pt') ||
+        lower.endsWith('.pth') ||
+        lower.endsWith('.bin');
   }
 
   Widget _buildWorkflowChipGroup(String label, List<String> values) {
