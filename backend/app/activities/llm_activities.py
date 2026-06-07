@@ -2663,9 +2663,9 @@ async def _comfyui_ui_workflow_to_api(workflow: dict, comfyui_url: str) -> dict:
                 inputs[str(ui_input.get("name"))] = link_map[link_id]
 
         widgets = list(node.get("widgets_values") or [])
-        if class_type in {"KSampler", "KSamplerAdvanced"} and len(widgets) > 2:
-            if str(widgets[2]) in {"fixed", "randomize", "increment", "decrement"}:
-                widgets.pop(2)
+        if class_type in {"KSampler", "KSamplerAdvanced"} and len(widgets) > 1:
+            if str(widgets[1]) in {"fixed", "randomize", "increment", "decrement"}:
+                widgets.pop(1)
         widget_index = 0
         input_info = object_info.get(class_type, {}).get("input", {})
         ordered_names: list[str] = []
