@@ -94,6 +94,29 @@ class Settings(BaseSettings):
     LLM_TTS_FORMAT: str = "wav"
     LLM_TTS_TIMEOUT: int = 300
 
+    # ComfyUI lip-sync stage for dialog-driven video
+    LLM_LIPSYNC_ENABLED: bool = True
+    LLM_COMFYUI_LIPSYNC_WORKFLOW: str = ""
+    LLM_COMFYUI_LIPSYNC_OUTPUT_NODE: str = "47"
+    LLM_COMFYUI_LIPSYNC_INPUT_IMAGE_NODE: str = "12"
+    LLM_COMFYUI_LIPSYNC_INPUT_AUDIO_NODE: str = "8"
+    LLM_COMFYUI_LIPSYNC_PROMPT_NODE: str = "6"
+    LLM_COMFYUI_LIPSYNC_NEGATIVE_NODE: str = "7"
+    LLM_COMFYUI_LIPSYNC_MODEL: str = "wan2.2_s2v_14B_fp8_scaled.safetensors"
+    LLM_COMFYUI_LIPSYNC_PATCH: str = "InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"
+    LLM_COMFYUI_LIPSYNC_AUDIO_ENCODER: str = "wav2vec2_large_english_fp16.safetensors"
+    LLM_COMFYUI_LIPSYNC_VAE: str = "wan_2.1_vae.safetensors"
+    LLM_COMFYUI_LIPSYNC_CLIP: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    LLM_COMFYUI_LIPSYNC_WIDTH: int = 832
+    LLM_COMFYUI_LIPSYNC_HEIGHT: int = 480
+    LLM_COMFYUI_LIPSYNC_FRAMES: int = 81
+    LLM_COMFYUI_LIPSYNC_FPS: int = 16
+    LLM_COMFYUI_LIPSYNC_STEPS: int = 20
+    LLM_COMFYUI_LIPSYNC_CFG: float = 6.0
+    LLM_COMFYUI_LIPSYNC_AUDIO_SCALE: float = 1.0
+    LLM_COMFYUI_LIPSYNC_SEED: int = 42
+    LLM_COMFYUI_LIPSYNC_TIMEOUT: int = 2400
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -187,6 +210,16 @@ async def load_settings_from_db() -> None:
         "llm_comfyui_video_timeout": int,
         "llm_audio_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "llm_tts_timeout": int,
+        "llm_lipsync_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_comfyui_lipsync_width": int,
+        "llm_comfyui_lipsync_height": int,
+        "llm_comfyui_lipsync_frames": int,
+        "llm_comfyui_lipsync_fps": int,
+        "llm_comfyui_lipsync_steps": int,
+        "llm_comfyui_lipsync_cfg": float,
+        "llm_comfyui_lipsync_audio_scale": float,
+        "llm_comfyui_lipsync_seed": int,
+        "llm_comfyui_lipsync_timeout": int,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
     }
@@ -310,6 +343,27 @@ def get_llm_config() -> dict:
         "tts_voice": get_setting("LLM_TTS_VOICE") or "en_US-lessac-medium",
         "tts_format": get_setting("LLM_TTS_FORMAT") or "wav",
         "tts_timeout": int(get_setting("LLM_TTS_TIMEOUT") or 300),
+        "lipsync_enabled": bool(get_setting("LLM_LIPSYNC_ENABLED")),
+        "comfyui_lipsync_workflow": get_setting("LLM_COMFYUI_LIPSYNC_WORKFLOW") or "",
+        "comfyui_lipsync_output_node": str(get_setting("LLM_COMFYUI_LIPSYNC_OUTPUT_NODE") or "47"),
+        "comfyui_lipsync_input_image_node": str(get_setting("LLM_COMFYUI_LIPSYNC_INPUT_IMAGE_NODE") or "12"),
+        "comfyui_lipsync_input_audio_node": str(get_setting("LLM_COMFYUI_LIPSYNC_INPUT_AUDIO_NODE") or "8"),
+        "comfyui_lipsync_prompt_node": str(get_setting("LLM_COMFYUI_LIPSYNC_PROMPT_NODE") or "6"),
+        "comfyui_lipsync_negative_node": str(get_setting("LLM_COMFYUI_LIPSYNC_NEGATIVE_NODE") or "7"),
+        "comfyui_lipsync_model": get_setting("LLM_COMFYUI_LIPSYNC_MODEL") or "wan2.2_s2v_14B_fp8_scaled.safetensors",
+        "comfyui_lipsync_patch": get_setting("LLM_COMFYUI_LIPSYNC_PATCH") or "InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors",
+        "comfyui_lipsync_audio_encoder": get_setting("LLM_COMFYUI_LIPSYNC_AUDIO_ENCODER") or "wav2vec2_large_english_fp16.safetensors",
+        "comfyui_lipsync_vae": get_setting("LLM_COMFYUI_LIPSYNC_VAE") or "wan_2.1_vae.safetensors",
+        "comfyui_lipsync_clip": get_setting("LLM_COMFYUI_LIPSYNC_CLIP") or "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "comfyui_lipsync_width": int(get_setting("LLM_COMFYUI_LIPSYNC_WIDTH") or 832),
+        "comfyui_lipsync_height": int(get_setting("LLM_COMFYUI_LIPSYNC_HEIGHT") or 480),
+        "comfyui_lipsync_frames": int(get_setting("LLM_COMFYUI_LIPSYNC_FRAMES") or 81),
+        "comfyui_lipsync_fps": int(get_setting("LLM_COMFYUI_LIPSYNC_FPS") or 16),
+        "comfyui_lipsync_steps": int(get_setting("LLM_COMFYUI_LIPSYNC_STEPS") or 20),
+        "comfyui_lipsync_cfg": float(get_setting("LLM_COMFYUI_LIPSYNC_CFG") or 6.0),
+        "comfyui_lipsync_audio_scale": float(get_setting("LLM_COMFYUI_LIPSYNC_AUDIO_SCALE") or 1.0),
+        "comfyui_lipsync_seed": int(get_setting("LLM_COMFYUI_LIPSYNC_SEED") or 42),
+        "comfyui_lipsync_timeout": int(get_setting("LLM_COMFYUI_LIPSYNC_TIMEOUT") or 2400),
         "vision_enabled": vision_enabled,
         "vision_api_url": (
             get_setting("LLM_VISION_API_URL")

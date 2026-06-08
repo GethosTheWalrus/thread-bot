@@ -52,6 +52,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _ttsVoiceController = TextEditingController();
   final _ttsFormatController = TextEditingController();
   final _ttsTimeoutController = TextEditingController();
+  final _lipsyncWorkflowController = TextEditingController();
+  final _lipsyncOutputNodeController = TextEditingController();
+  final _lipsyncInputImageNodeController = TextEditingController();
+  final _lipsyncInputAudioNodeController = TextEditingController();
+  final _lipsyncPromptNodeController = TextEditingController();
+  final _lipsyncNegativeNodeController = TextEditingController();
+  final _lipsyncModelController = TextEditingController();
+  final _lipsyncPatchController = TextEditingController();
+  final _lipsyncAudioEncoderController = TextEditingController();
+  final _lipsyncVaeController = TextEditingController();
+  final _lipsyncClipController = TextEditingController();
+  final _lipsyncWidthController = TextEditingController();
+  final _lipsyncHeightController = TextEditingController();
+  final _lipsyncFramesController = TextEditingController();
+  final _lipsyncFpsController = TextEditingController();
+  final _lipsyncStepsController = TextEditingController();
+  final _lipsyncCfgController = TextEditingController();
+  final _lipsyncAudioScaleController = TextEditingController();
+  final _lipsyncSeedController = TextEditingController();
+  final _lipsyncTimeoutController = TextEditingController();
   final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
@@ -79,12 +99,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _visionPipelineEnabled = false;
   bool _videoGenerationEnabled = true;
   bool _audioGenerationEnabled = true;
+  bool _lipsyncEnabled = true;
   String _ttsProvider = 'openai_compatible';
   String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
   bool _showVideoWorkflowJson = false;
   bool _showImageToVideoWorkflowJson = false;
+  bool _showLipsyncWorkflowJson = false;
   List<Map<String, dynamic>> _comfyuiWorkflowPresets = [];
   bool _discordEnabled = false;
   List<Map<String, dynamic>> _discordServers = [];
@@ -111,7 +133,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _imageModelController.text = settings['llm_image_model'] as String? ?? '';
       _imageProvider = settings['llm_image_provider'] as String? ?? 'auto';
       _comfyuiApiUrlController.text =
-          settings['llm_comfyui_api_url'] as String? ?? 'http://ollama.home:8188';
+          settings['llm_comfyui_api_url'] as String? ??
+          'http://ollama.home:8188';
       _comfyuiOutputNodeController.text =
           (settings['llm_comfyui_output_node'] ?? '12').toString();
       _comfyuiNegativePromptController.text =
@@ -157,24 +180,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _videoNegativePromptController.text =
           settings['llm_comfyui_video_negative_prompt'] as String? ??
           'low quality, blurry, distorted, watermark, text artifacts';
-      _videoWidthController.text =
-          (settings['llm_comfyui_video_width'] ?? 832).toString();
+      _videoWidthController.text = (settings['llm_comfyui_video_width'] ?? 832)
+          .toString();
       _videoHeightController.text =
           (settings['llm_comfyui_video_height'] ?? 480).toString();
-      _videoFramesController.text =
-          (settings['llm_comfyui_video_frames'] ?? 81).toString();
-      _videoFpsController.text =
-          (settings['llm_comfyui_video_fps'] ?? 16).toString();
-      _videoStepsController.text =
-          (settings['llm_comfyui_video_steps'] ?? 24).toString();
-      _videoCfgController.text =
-          (settings['llm_comfyui_video_cfg'] ?? 4.0).toString();
+      _videoFramesController.text = (settings['llm_comfyui_video_frames'] ?? 81)
+          .toString();
+      _videoFpsController.text = (settings['llm_comfyui_video_fps'] ?? 16)
+          .toString();
+      _videoStepsController.text = (settings['llm_comfyui_video_steps'] ?? 24)
+          .toString();
+      _videoCfgController.text = (settings['llm_comfyui_video_cfg'] ?? 4.0)
+          .toString();
       _videoSamplerController.text =
           settings['llm_comfyui_video_sampler'] as String? ?? 'euler';
       _videoSchedulerController.text =
           settings['llm_comfyui_video_scheduler'] as String? ?? 'simple';
-      _videoSeedController.text =
-          (settings['llm_comfyui_video_seed'] ?? 42).toString();
+      _videoSeedController.text = (settings['llm_comfyui_video_seed'] ?? 42)
+          .toString();
       _videoTimeoutController.text =
           (settings['llm_comfyui_video_timeout'] ?? 1800).toString();
       _audioGenerationEnabled = settings['llm_audio_enabled'] as bool? ?? true;
@@ -183,12 +206,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ttsApiUrlController.text =
           settings['llm_tts_api_url'] as String? ??
           'http://ollama.home:5002/v1/audio/speech';
-      _ttsModelController.text = settings['llm_tts_model'] as String? ?? 'piper';
+      _ttsModelController.text =
+          settings['llm_tts_model'] as String? ?? 'piper';
       _ttsVoiceController.text =
           settings['llm_tts_voice'] as String? ?? 'en_US-lessac-medium';
-      _ttsFormatController.text = settings['llm_tts_format'] as String? ?? 'wav';
-      _ttsTimeoutController.text =
-          (settings['llm_tts_timeout'] ?? 300).toString();
+      _ttsFormatController.text =
+          settings['llm_tts_format'] as String? ?? 'wav';
+      _ttsTimeoutController.text = (settings['llm_tts_timeout'] ?? 300)
+          .toString();
+      _lipsyncEnabled = settings['llm_lipsync_enabled'] as bool? ?? true;
+      _lipsyncWorkflowController.text =
+          settings['llm_comfyui_lipsync_workflow'] as String? ?? '';
+      _lipsyncOutputNodeController.text =
+          settings['llm_comfyui_lipsync_output_node'] as String? ?? '47';
+      _lipsyncInputImageNodeController.text =
+          settings['llm_comfyui_lipsync_input_image_node'] as String? ?? '12';
+      _lipsyncInputAudioNodeController.text =
+          settings['llm_comfyui_lipsync_input_audio_node'] as String? ?? '8';
+      _lipsyncPromptNodeController.text =
+          settings['llm_comfyui_lipsync_prompt_node'] as String? ?? '6';
+      _lipsyncNegativeNodeController.text =
+          settings['llm_comfyui_lipsync_negative_node'] as String? ?? '7';
+      _lipsyncModelController.text =
+          settings['llm_comfyui_lipsync_model'] as String? ??
+          'wan2.2_s2v_14B_fp8_scaled.safetensors';
+      _lipsyncPatchController.text =
+          settings['llm_comfyui_lipsync_patch'] as String? ??
+          'InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors';
+      _lipsyncAudioEncoderController.text =
+          settings['llm_comfyui_lipsync_audio_encoder'] as String? ??
+          'wav2vec2_large_english_fp16.safetensors';
+      _lipsyncVaeController.text =
+          settings['llm_comfyui_lipsync_vae'] as String? ??
+          'wan_2.1_vae.safetensors';
+      _lipsyncClipController.text =
+          settings['llm_comfyui_lipsync_clip'] as String? ??
+          'umt5_xxl_fp8_e4m3fn_scaled.safetensors';
+      _lipsyncWidthController.text =
+          (settings['llm_comfyui_lipsync_width'] ?? 832).toString();
+      _lipsyncHeightController.text =
+          (settings['llm_comfyui_lipsync_height'] ?? 480).toString();
+      _lipsyncFramesController.text =
+          (settings['llm_comfyui_lipsync_frames'] ?? 81).toString();
+      _lipsyncFpsController.text = (settings['llm_comfyui_lipsync_fps'] ?? 16)
+          .toString();
+      _lipsyncStepsController.text =
+          (settings['llm_comfyui_lipsync_steps'] ?? 20).toString();
+      _lipsyncCfgController.text = (settings['llm_comfyui_lipsync_cfg'] ?? 6.0)
+          .toString();
+      _lipsyncAudioScaleController.text =
+          (settings['llm_comfyui_lipsync_audio_scale'] ?? 1.0).toString();
+      _lipsyncSeedController.text = (settings['llm_comfyui_lipsync_seed'] ?? 42)
+          .toString();
+      _lipsyncTimeoutController.text =
+          (settings['llm_comfyui_lipsync_timeout'] ?? 2400).toString();
       _publicBaseUrlController.text =
           settings['app_public_base_url'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
@@ -283,6 +354,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _ttsVoiceController.text = 'en_US-lessac-medium';
       _ttsFormatController.text = 'wav';
       _ttsTimeoutController.text = '300';
+      _lipsyncEnabled = true;
+      _lipsyncWorkflowController.text = '';
+      _lipsyncOutputNodeController.text = '47';
+      _lipsyncInputImageNodeController.text = '12';
+      _lipsyncInputAudioNodeController.text = '8';
+      _lipsyncPromptNodeController.text = '6';
+      _lipsyncNegativeNodeController.text = '7';
+      _lipsyncModelController.text = 'wan2.2_s2v_14B_fp8_scaled.safetensors';
+      _lipsyncPatchController.text =
+          'InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors';
+      _lipsyncAudioEncoderController.text =
+          'wav2vec2_large_english_fp16.safetensors';
+      _lipsyncVaeController.text = 'wan_2.1_vae.safetensors';
+      _lipsyncClipController.text = 'umt5_xxl_fp8_e4m3fn_scaled.safetensors';
+      _lipsyncWidthController.text = '832';
+      _lipsyncHeightController.text = '480';
+      _lipsyncFramesController.text = '81';
+      _lipsyncFpsController.text = '16';
+      _lipsyncStepsController.text = '20';
+      _lipsyncCfgController.text = '6.0';
+      _lipsyncAudioScaleController.text = '1.0';
+      _lipsyncSeedController.text = '42';
+      _lipsyncTimeoutController.text = '2400';
       _publicBaseUrlController.text = '';
       _contextWindowController.text = '8192';
       _maxIterationsController.text = '25';
@@ -525,6 +619,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_tts_voice': _ttsVoiceController.text,
         'llm_tts_format': _ttsFormatController.text,
         'llm_tts_timeout': int.tryParse(_ttsTimeoutController.text) ?? 300,
+        'llm_lipsync_enabled': _lipsyncEnabled,
+        'llm_comfyui_lipsync_workflow': _lipsyncWorkflowController.text,
+        'llm_comfyui_lipsync_output_node': _lipsyncOutputNodeController.text,
+        'llm_comfyui_lipsync_input_image_node':
+            _lipsyncInputImageNodeController.text,
+        'llm_comfyui_lipsync_input_audio_node':
+            _lipsyncInputAudioNodeController.text,
+        'llm_comfyui_lipsync_prompt_node': _lipsyncPromptNodeController.text,
+        'llm_comfyui_lipsync_negative_node':
+            _lipsyncNegativeNodeController.text,
+        'llm_comfyui_lipsync_model': _lipsyncModelController.text,
+        'llm_comfyui_lipsync_patch': _lipsyncPatchController.text,
+        'llm_comfyui_lipsync_audio_encoder':
+            _lipsyncAudioEncoderController.text,
+        'llm_comfyui_lipsync_vae': _lipsyncVaeController.text,
+        'llm_comfyui_lipsync_clip': _lipsyncClipController.text,
+        'llm_comfyui_lipsync_width':
+            int.tryParse(_lipsyncWidthController.text) ?? 832,
+        'llm_comfyui_lipsync_height':
+            int.tryParse(_lipsyncHeightController.text) ?? 480,
+        'llm_comfyui_lipsync_frames':
+            int.tryParse(_lipsyncFramesController.text) ?? 81,
+        'llm_comfyui_lipsync_fps':
+            int.tryParse(_lipsyncFpsController.text) ?? 16,
+        'llm_comfyui_lipsync_steps':
+            int.tryParse(_lipsyncStepsController.text) ?? 20,
+        'llm_comfyui_lipsync_cfg':
+            double.tryParse(_lipsyncCfgController.text) ?? 6.0,
+        'llm_comfyui_lipsync_audio_scale':
+            double.tryParse(_lipsyncAudioScaleController.text) ?? 1.0,
+        'llm_comfyui_lipsync_seed':
+            int.tryParse(_lipsyncSeedController.text) ?? 42,
+        'llm_comfyui_lipsync_timeout':
+            int.tryParse(_lipsyncTimeoutController.text) ?? 2400,
         'app_public_base_url': _publicBaseUrlController.text,
         'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
@@ -637,6 +765,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _ttsVoiceController.dispose();
     _ttsFormatController.dispose();
     _ttsTimeoutController.dispose();
+    _lipsyncWorkflowController.dispose();
+    _lipsyncOutputNodeController.dispose();
+    _lipsyncInputImageNodeController.dispose();
+    _lipsyncInputAudioNodeController.dispose();
+    _lipsyncPromptNodeController.dispose();
+    _lipsyncNegativeNodeController.dispose();
+    _lipsyncModelController.dispose();
+    _lipsyncPatchController.dispose();
+    _lipsyncAudioEncoderController.dispose();
+    _lipsyncVaeController.dispose();
+    _lipsyncClipController.dispose();
+    _lipsyncWidthController.dispose();
+    _lipsyncHeightController.dispose();
+    _lipsyncFramesController.dispose();
+    _lipsyncFpsController.dispose();
+    _lipsyncStepsController.dispose();
+    _lipsyncCfgController.dispose();
+    _lipsyncAudioScaleController.dispose();
+    _lipsyncSeedController.dispose();
+    _lipsyncTimeoutController.dispose();
     _publicBaseUrlController.dispose();
     _maxIterationsController.dispose();
     _contextWindowController.dispose();
@@ -1368,6 +1516,246 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       const SizedBox(height: 32),
       _buildSection(
+        'Lip Sync',
+        'Use Wan2.2 S2V and InfiniteTalk to align generated speech with mouth motion',
+        Icons.face_retouching_natural_outlined,
+        [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _lipsyncEnabled,
+            onChanged: (v) => setState(() => _lipsyncEnabled = v),
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('Enable ComfyUI lip sync stage'),
+            subtitle: Text(
+              'When generate_video_with_audio includes dialog or narration, ThreadBot runs a second ComfyUI pass using the generated speech to produce a lip-synced video before muxing ambience and voice.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'Defaults are populated for local Wan2.2 S2V on ollama.home:8188: S2V 14B FP8, InfiniteTalk single-speaker patch, wav2vec2 audio encoder, UMT5 text encoder, and Wan 2.1 VAE. Leave workflow JSON blank to use ThreadBot\'s built-in API workflow.',
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncOutputNodeController,
+                  label: 'Output Node ID',
+                  hint: '47',
+                  icon: Icons.output_rounded,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncInputImageNodeController,
+                  label: 'Input Image Node ID',
+                  hint: '12',
+                  icon: Icons.image_outlined,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncInputAudioNodeController,
+                  label: 'Input Audio Node ID',
+                  hint: '8',
+                  icon: Icons.audiotrack_outlined,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncPromptNodeController,
+                  label: 'Prompt Node ID',
+                  hint: '6',
+                  icon: Icons.short_text_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _lipsyncNegativeNodeController,
+            label: 'Negative Prompt Node ID',
+            hint: '7',
+            icon: Icons.block_outlined,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _lipsyncModelController,
+            label: 'S2V Diffusion Model',
+            hint: 'wan2.2_s2v_14B_fp8_scaled.safetensors',
+            icon: Icons.memory_outlined,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _lipsyncPatchController,
+            label: 'InfiniteTalk Patch',
+            hint:
+                'InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors',
+            icon: Icons.extension_outlined,
+          ),
+          const SizedBox(height: 16),
+          _buildField(
+            controller: _lipsyncAudioEncoderController,
+            label: 'Audio Encoder',
+            hint: 'wav2vec2_large_english_fp16.safetensors',
+            icon: Icons.graphic_eq_rounded,
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncVaeController,
+                  label: 'VAE',
+                  hint: 'wan_2.1_vae.safetensors',
+                  icon: Icons.view_in_ar_outlined,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncClipController,
+                  label: 'Text Encoder',
+                  hint: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+                  icon: Icons.text_fields_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncWidthController,
+                  label: 'Width',
+                  hint: '832',
+                  icon: Icons.width_normal_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncHeightController,
+                  label: 'Height',
+                  hint: '480',
+                  icon: Icons.height_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncFramesController,
+                  label: 'Frames',
+                  hint: '81',
+                  icon: Icons.photo_library_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncFpsController,
+                  label: 'FPS',
+                  hint: '16',
+                  icon: Icons.speed_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncStepsController,
+                  label: 'Steps',
+                  hint: '20',
+                  icon: Icons.timeline_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncCfgController,
+                  label: 'CFG',
+                  hint: '6.0',
+                  icon: Icons.tune_outlined,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncAudioScaleController,
+                  label: 'Audio Scale',
+                  hint: '1.0',
+                  icon: Icons.multitrack_audio_outlined,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncSeedController,
+                  label: 'Seed',
+                  hint: '42',
+                  icon: Icons.casino_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _lipsyncTimeoutController,
+                  label: 'Timeout Seconds',
+                  hint: '2400',
+                  icon: Icons.timer_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _buildVideoWorkflowCard(
+            title: 'Lip Sync Workflow Override',
+            description:
+                'Optional custom Wan S2V/InfiniteTalk workflow. Leave blank to use ThreadBot\'s built-in local lip-sync workflow.',
+            controller: _lipsyncWorkflowController,
+            showJson: _showLipsyncWorkflowJson,
+            onShowJsonChanged: (value) =>
+                setState(() => _showLipsyncWorkflowJson = value),
+            jsonHint:
+                'Optional custom ComfyUI workflow JSON. UI export or API format is accepted.',
+            icon: Icons.record_voice_over_outlined,
+          ),
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
         'Computer Vision',
         'Use a dedicated multimodal LLM for image analysis and recipe extraction',
         Icons.visibility_outlined,
@@ -1377,7 +1765,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onChanged: (v) => setState(() => _visionEnabled = v),
             title: const Text('Enable dedicated vision LLM'),
             subtitle: const Text(
-                'Use a separate OpenAI-compatible vision endpoint for describe_image and extract_image_recipe.'),
+              'Use a separate OpenAI-compatible vision endpoint for describe_image and extract_image_recipe.',
+            ),
             contentPadding: EdgeInsets.zero,
           ),
           if (_visionEnabled) ...[
@@ -1419,8 +1808,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 prefixIcon: Icon(Icons.dns_outlined),
               ),
               items: const [
-                DropdownMenuItem(value: 'auto', child: Text('Auto (OpenAI-compatible)')),
-                DropdownMenuItem(value: 'openai_compatible', child: Text('OpenAI-compatible')),
+                DropdownMenuItem(
+                  value: 'auto',
+                  child: Text('Auto (OpenAI-compatible)'),
+                ),
+                DropdownMenuItem(
+                  value: 'openai_compatible',
+                  child: Text('OpenAI-compatible'),
+                ),
                 DropdownMenuItem(value: 'ollama', child: Text('Ollama')),
               ],
               onChanged: (v) {
@@ -1433,7 +1828,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) => setState(() => _visionRecipeEnabled = v),
               title: const Text('Enable extract_image_recipe tool'),
               subtitle: const Text(
-                  'Lets the model extract a structured ComfyUI recipe (positive/negative prompt, regions, palette) for re-rendering.'),
+                'Lets the model extract a structured ComfyUI recipe (positive/negative prompt, regions, palette) for re-rendering.',
+              ),
               contentPadding: EdgeInsets.zero,
             ),
             const SizedBox(height: 12),
@@ -1442,7 +1838,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (v) => setState(() => _visionPipelineEnabled = v),
               title: const Text('Enable multi-stage local vision pipeline'),
               subtitle: const Text(
-                  'Runs primary analysis, optional OCR/detail/style passes, then synthesizes the result. Stages run sequentially to limit VRAM usage.'),
+                'Runs primary analysis, optional OCR/detail/style passes, then synthesizes the result. Stages run sequentially to limit VRAM usage.',
+              ),
               contentPadding: EdgeInsets.zero,
             ),
             if (_visionPipelineEnabled) ...[
@@ -1921,7 +2318,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final nodes = _workflowNodes(decoded);
       for (final node in nodes) {
         if (node is! Map) continue;
-        final type = (node['class_type'] ?? node['type'] ?? 'Unknown').toString();
+        final type = (node['class_type'] ?? node['type'] ?? 'Unknown')
+            .toString();
         counts[type] = (counts[type] ?? 0) + 1;
         final inputs = node['inputs'];
         if (inputs is Map) {

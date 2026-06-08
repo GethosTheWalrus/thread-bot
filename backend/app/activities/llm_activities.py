@@ -2909,6 +2909,30 @@ async def _upload_comfyui_input_image(comfyui_url: str, raw: bytes, content_type
     return str(data.get("name") or data.get("filename") or os.path.basename(filename))
 
 
+async def _upload_comfyui_input_file(comfyui_url: str, raw: bytes, filename: str, content_type: str) -> str:
+    import os
+    import uuid
+    import aiohttp
+
+    safe_ext = os.path.splitext(filename or "")[1].lower() or ".bin"
+    upload_name = f"threadbot-media-{uuid.uuid4().hex}{safe_ext}"
+    form = aiohttp.FormData()
+    # ComfyUI uses /upload/image for image/audio/video upload widgets.
+    form.add_field("image", raw, filename=upload_name, content_type=content_type or "application/octet-stream")
+    form.add_field("overwrite", "true")
+    timeout = aiohttp.ClientTimeout(total=180)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(f"{comfyui_url}/upload/image", data=form) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"ComfyUI media upload failed: HTTP {resp.status}: {text[:1000]}")
+            try:
+                data = await resp.json(content_type=None)
+            except Exception:
+                data = {}
+    return str(data.get("name") or data.get("filename") or os.path.basename(upload_name))
+
+
 async def _comfyui_ui_workflow_to_api(workflow: dict, comfyui_url: str) -> dict:
     """Convert a normal ComfyUI UI-export workflow to /prompt API format."""
     import aiohttp
@@ -3254,6 +3278,326 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
     )
 
 
+def _default_lipsync_workflow(config: dict) -> dict:
+    model = config.get("comfyui_lipsync_model") or "wan2.2_s2v_14B_fp8_scaled.safetensors"
+    patch = config.get("comfyui_lipsync_patch") or "InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors"
+    audio_encoder = config.get("comfyui_lipsync_audio_encoder") or "wav2vec2_large_english_fp16.safetensors"
+    vae = config.get("comfyui_lipsync_vae") or "wan_2.1_vae.safetensors"
+    clip = config.get("comfyui_lipsync_clip") or "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    negative = config.get("comfyui_video_negative_prompt") or "low quality, blurry, distorted, watermark, text artifacts"
+    return {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": model, "weight_dtype": "fp8_e4m3fn"}},
+        "2": {"class_type": "ModelPatchLoader", "inputs": {"name": patch}},
+        "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip, "type": "wan"}},
+        "5": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": "talking portrait, natural mouth movement"}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["4", 0], "text": negative}},
+        "8": {"class_type": "LoadAudio", "inputs": {"audio": "threadbot-speech.wav"}},
+        "9": {"class_type": "AudioEncoderLoader", "inputs": {"audio_encoder_name": audio_encoder}},
+        "10": {"class_type": "AudioEncoderEncode", "inputs": {"audio_encoder": ["9", 0], "audio": ["8", 0]}},
+        "12": {"class_type": "LoadImage", "inputs": {"image": "threadbot-reference.png"}},
+        "13": {
+            "class_type": "WanInfiniteTalkToVideo",
+            "inputs": {
+                "mode": "single_speaker",
+                "model": ["1", 0],
+                "model_patch": ["2", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "vae": ["5", 0],
+                "width": int(config.get("comfyui_lipsync_width") or 832),
+                "height": int(config.get("comfyui_lipsync_height") or 480),
+                "length": int(config.get("comfyui_lipsync_frames") or 81),
+                "audio_encoder_output_1": ["10", 0],
+                "motion_frame_count": 9,
+                "audio_scale": float(config.get("comfyui_lipsync_audio_scale") or 1.0),
+                "start_image": ["12", 0],
+            },
+        },
+        "3": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["13", 0],
+                "seed": int(config.get("comfyui_lipsync_seed") or 42),
+                "steps": int(config.get("comfyui_lipsync_steps") or 20),
+                "cfg": float(config.get("comfyui_lipsync_cfg") or 6.0),
+                "sampler_name": config.get("comfyui_video_sampler") or "euler",
+                "scheduler": config.get("comfyui_video_scheduler") or "simple",
+                "positive": ["13", 1],
+                "negative": ["13", 2],
+                "latent_image": ["13", 3],
+                "denoise": 1.0,
+            },
+        },
+        "14": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["5", 0]}},
+        "47": {"class_type": "SaveWEBM", "inputs": {"images": ["14", 0], "filename_prefix": "threadbot-lipsync", "codec": "vp9", "fps": int(config.get("comfyui_lipsync_fps") or 16), "crf": 32}},
+    }
+
+
+async def _extract_video_first_frame(video_raw: bytes, video_filename: str) -> tuple[bytes, str, str] | str:
+    import os
+    import tempfile
+    import asyncio
+
+    ext = os.path.splitext(video_filename or "video.webm")[1] or ".webm"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = os.path.join(tmpdir, f"input{ext}")
+        output_path = os.path.join(tmpdir, "first-frame.png")
+        with open(input_path, "wb") as f:
+            f.write(video_raw)
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", input_path, "-frames:v", "1", output_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        if proc.returncode != 0 or not os.path.isfile(output_path) or os.path.getsize(output_path) <= 0:
+            return f"Error extracting first frame for lip sync: {stderr.decode('utf-8', errors='replace')[:1000]}"
+        with open(output_path, "rb") as f:
+            return f.read(), "image/png", "first-frame.png"
+
+
+async def _generate_lipsynced_video(
+    tool_args: dict,
+    config: dict,
+    video_raw: bytes,
+    video_filename: str,
+    speech_raw: bytes,
+    speech_content_type: str,
+    speech_filename: str,
+    duration: float,
+) -> tuple[bytes, str, str, str] | str:
+    import asyncio
+    import json
+    import aiohttp
+
+    if not config.get("lipsync_enabled"):
+        return "Error: lip-sync is disabled. Enable it in Settings > Media > Audio Generation."
+    comfyui_url = (config.get("comfyui_api_url") or "").rstrip("/")
+    if not comfyui_url:
+        return "Error: ComfyUI API URL is not configured for lip sync."
+
+    image_url = str(tool_args.get("image_url") or tool_args.get("url") or "").strip()
+    image_base64 = str(tool_args.get("image_base64") or "").strip()
+    content_type = str(tool_args.get("content_type") or "image/png").strip() or "image/png"
+    if image_url or image_base64:
+        resolved = await _resolve_image_bytes(image_url, image_base64, {"content_type": content_type}, config)
+        if isinstance(resolved, str):
+            return resolved
+        ref_raw, ref_type, ref_name = resolved
+    else:
+        frame = await _extract_video_first_frame(video_raw, video_filename)
+        if isinstance(frame, str):
+            return frame
+        ref_raw, ref_type, ref_name = frame
+
+    try:
+        uploaded_image = await _upload_comfyui_input_image(comfyui_url, ref_raw, ref_type)
+        uploaded_audio = await _upload_comfyui_input_file(comfyui_url, speech_raw, speech_filename, speech_content_type)
+    except Exception as exc:
+        return f"Error uploading lip-sync inputs to ComfyUI: {str(exc)[:1000]}"
+
+    workflow_text = str(config.get("comfyui_lipsync_workflow") or "").strip()
+    if workflow_text:
+        try:
+            workflow = json.loads(workflow_text)
+        except Exception as exc:
+            return f"Error parsing ComfyUI lip-sync workflow JSON: {exc}"
+        if not isinstance(workflow, dict) or not workflow:
+            return "Error: ComfyUI lip-sync workflow JSON is empty or invalid."
+        workflow = await _comfyui_ui_workflow_to_api(workflow, comfyui_url)
+    else:
+        workflow = _default_lipsync_workflow(config)
+
+    def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(int(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
+        except Exception:
+            return default
+
+    def _float_arg(name: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return max(lo, min(float(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
+        except Exception:
+            return default
+
+    fps = _int_arg("fps", int(config.get("comfyui_lipsync_fps") or config.get("comfyui_video_fps") or 16), 1, 60)
+    target_frames = int(duration * fps) + 1
+    configured_frames = int(config.get("comfyui_lipsync_frames") or 81)
+    frames = max(configured_frames, target_frames, 41)
+    frames = min(frames, 241)
+    frames = ((frames - 1 + 3) // 4) * 4 + 1
+    width = _int_arg("width", int(config.get("comfyui_lipsync_width") or config.get("comfyui_video_width") or 832), 64, 2048)
+    height = _int_arg("height", int(config.get("comfyui_lipsync_height") or config.get("comfyui_video_height") or 480), 64, 2048)
+    steps = _int_arg("lipsync_steps", int(config.get("comfyui_lipsync_steps") or 20), 1, 150)
+    cfg = _float_arg("lipsync_cfg", float(config.get("comfyui_lipsync_cfg") or 6.0), 0.0, 30.0)
+    audio_scale = _float_arg("audio_scale", float(config.get("comfyui_lipsync_audio_scale") or 1.0), -10.0, 10.0)
+    try:
+        seed = int(tool_args.get("seed") if tool_args.get("seed") is not None else config.get("comfyui_lipsync_seed") or 42)
+    except Exception:
+        seed = 42
+    prompt = str(tool_args.get("prompt") or tool_args.get("video_prompt") or "talking portrait, natural speech").strip()
+    dialogue = str(tool_args.get("dialogue") or tool_args.get("narration") or tool_args.get("audio_text") or "").strip()
+    if dialogue:
+        prompt = f"{prompt}\n\nThe subject speaks this line with natural lip movement and facial expression: {dialogue}"
+    negative_prompt = str(tool_args.get("negative_prompt") or config.get("comfyui_video_negative_prompt") or "").strip()
+
+    prompt_node = str(config.get("comfyui_lipsync_prompt_node") or "6").strip()
+    negative_node = str(config.get("comfyui_lipsync_negative_node") or "7").strip()
+    image_node = str(config.get("comfyui_lipsync_input_image_node") or "12").strip()
+    audio_node = str(config.get("comfyui_lipsync_input_audio_node") or "8").strip()
+    output_node = str(config.get("comfyui_lipsync_output_node") or "47").strip()
+
+    def _inputs(node):
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        return inputs if isinstance(inputs, dict) else {}
+
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        cls = str(node.get("class_type") or "")
+        inputs = _inputs(node)
+        if not inputs:
+            continue
+        if str(node_id) == prompt_node and ("text" in inputs or "prompt" in inputs):
+            inputs["text" if "text" in inputs else "prompt"] = prompt
+        if str(node_id) == negative_node and negative_prompt and ("text" in inputs or "prompt" in inputs):
+            inputs["text" if "text" in inputs else "prompt"] = negative_prompt
+        if str(node_id) == image_node or cls == "LoadImage":
+            if "image" in inputs:
+                inputs["image"] = uploaded_image
+        if str(node_id) == audio_node or cls == "LoadAudio":
+            if "audio" in inputs:
+                inputs["audio"] = uploaded_audio
+        for key in ("width", "height"):
+            if key in inputs:
+                inputs[key] = width if key == "width" else height
+        for key in ("frames", "num_frames", "length", "video_frames"):
+            if key in inputs:
+                inputs[key] = frames
+        if "fps" in inputs:
+            inputs["fps"] = fps
+        if "steps" in inputs:
+            inputs["steps"] = steps
+        if "cfg" in inputs:
+            inputs["cfg"] = cfg
+        if "audio_scale" in inputs:
+            inputs["audio_scale"] = audio_scale
+        for key in ("seed", "noise_seed"):
+            if key in inputs:
+                inputs[key] = seed
+
+    client_id = f"threadbot-lipsync-{seed}"
+    timeout_total = int(config.get("comfyui_lipsync_timeout") or config.get("comfyui_video_timeout") or 2400)
+    submit_timeout = aiohttp.ClientTimeout(total=60)
+    poll_timeout = aiohttp.ClientTimeout(total=timeout_total)
+    fetch_timeout = aiohttp.ClientTimeout(total=300)
+    try:
+        async with aiohttp.ClientSession(timeout=submit_timeout) as session:
+            async with session.post(f"{comfyui_url}/prompt", json={"prompt": workflow, "client_id": client_id}) as resp:
+                submit_text = await resp.text()
+                if resp.status >= 500:
+                    raise RuntimeError(f"ComfyUI /prompt transient HTTP {resp.status}: {submit_text[:1500]}")
+                if resp.status >= 400:
+                    return f"Error submitting ComfyUI lip-sync prompt: HTTP {resp.status}: {submit_text[:1500]}"
+                try:
+                    submit_data = json.loads(submit_text)
+                except Exception:
+                    return f"Error parsing ComfyUI lip-sync /prompt response: {submit_text[:1500]}"
+                prompt_id = submit_data.get("prompt_id")
+                node_errors = submit_data.get("node_errors")
+                if not prompt_id:
+                    return f"ComfyUI lip-sync /prompt did not return prompt_id: {submit_data}"
+                if node_errors:
+                    return f"ComfyUI reported lip-sync node errors: {json.dumps(node_errors)[:1500]}"
+    except Exception as exc:
+        return f"Error contacting ComfyUI for lip sync at {comfyui_url}: {str(exc)[:500]}"
+
+    started_at = asyncio.get_event_loop().time()
+    deadline = started_at + timeout_total
+    history = None
+    last_status = None
+    async with aiohttp.ClientSession(timeout=poll_timeout) as session:
+        while asyncio.get_event_loop().time() < deadline:
+            heartbeat({
+                "step": "comfyui_lipsync_poll",
+                "prompt_id": prompt_id,
+                "elapsed_seconds": int(asyncio.get_event_loop().time() - started_at),
+                "last_status": last_status,
+            })
+            await asyncio.sleep(3)
+            try:
+                async with session.get(f"{comfyui_url}/history/{prompt_id}") as resp:
+                    if resp.status != 200:
+                        last_status = f"history http {resp.status}"
+                        continue
+                    payload = await resp.json(content_type=None)
+            except Exception as exc:
+                last_status = f"history exception {exc}"
+                continue
+            entry = payload.get(prompt_id)
+            if not entry:
+                last_status = "no entry yet"
+                continue
+            status = entry.get("status") or {}
+            last_status = json.dumps({k: status.get(k) for k in ("status", "completed", "messages")})[:500]
+            if status.get("completed"):
+                history = entry
+                break
+    if history is None:
+        return f"ComfyUI lip-sync prompt {prompt_id} did not complete within {timeout_total}s (last status: {last_status})."
+
+    outputs = history.get("outputs") or {}
+    node_output = outputs.get(output_node) or outputs.get(str(output_node)) if output_node else None
+    if not node_output:
+        for nout in outputs.values():
+            if isinstance(nout, dict) and (nout.get("videos") or nout.get("gifs") or nout.get("images") or nout.get("files")):
+                node_output = nout
+                break
+    if not node_output:
+        return f"ComfyUI lip-sync prompt {prompt_id} produced no media outputs."
+
+    media_items = []
+    for key in ("videos", "video", "gifs", "gif", "images", "files", "animated", "animations"):
+        values = node_output.get(key) if isinstance(node_output, dict) else None
+        if isinstance(values, list) and values:
+            candidate_items = [value for value in values if isinstance(value, (dict, str))]
+            if candidate_items:
+                media_items = candidate_items
+                break
+        if isinstance(values, (dict, str)):
+            media_items = [values]
+            break
+    if not media_items:
+        return f"ComfyUI lip-sync prompt {prompt_id} output node has no videos/gifs/images."
+
+    async with aiohttp.ClientSession(timeout=fetch_timeout) as session:
+        item = media_items[0]
+        if isinstance(item, str):
+            filename = item
+            subfolder = ""
+            folder_type = "output"
+        else:
+            filename = item.get("filename") or item.get("name") or item.get("file")
+            subfolder = item.get("subfolder") or ""
+            folder_type = item.get("type") or "output"
+        if not filename:
+            return f"ComfyUI lip-sync prompt {prompt_id} did not yield a fetchable filename."
+        try:
+            params = {"filename": filename, "subfolder": subfolder, "type": folder_type}
+            async with session.get(f"{comfyui_url}/view", params=params) as resp:
+                if resp.status >= 500:
+                    raise RuntimeError(f"ComfyUI /view transient HTTP {resp.status} for {filename}")
+                if resp.status != 200:
+                    return f"ComfyUI returned HTTP {resp.status} when fetching lip-sync media {filename}."
+                raw = await resp.read()
+                response_content_type = resp.headers.get("content-type", "").split(";", 1)[0]
+        except Exception as exc:
+            return f"Error fetching ComfyUI lip-sync media {filename}: {str(exc)[:1000]}"
+    media_type = response_content_type or _content_type_for_filename(str(filename))
+    return raw, media_type, str(filename), prompt_id
+
+
 async def _generate_video_with_audio(tool_args: dict, config: dict) -> str:
     """Generate video, synthesize dialog plus ambience, and mux them into one final media file."""
     import json
@@ -3304,6 +3648,31 @@ async def _generate_video_with_audio(tool_args: dict, config: dict) -> str:
         speech_raw, speech_content_type, speech_filename = audio_result
         layers.append((speech_raw, speech_content_type, speech_filename, 1.0))
 
+        if config.get("lipsync_enabled") and not tool_args.get("skip_lipsync"):
+            lipsync_result = await _generate_lipsynced_video(
+                tool_args,
+                config,
+                video_raw,
+                video_filename,
+                speech_raw,
+                speech_content_type,
+                speech_filename,
+                duration,
+            )
+            if isinstance(lipsync_result, str):
+                return lipsync_result
+            video_raw, _video_content_type, video_filename, lipsync_prompt_id = lipsync_result
+            duration = await _probe_media_duration_seconds(video_raw, video_filename)
+            ambient_result = await _generate_ambient_audio(ambient_text, duration)
+            if isinstance(ambient_result, str):
+                return ambient_result
+            ambient_raw, ambient_content_type, ambient_filename = ambient_result
+            layers[0] = (ambient_raw, ambient_content_type, ambient_filename, 0.55)
+        else:
+            lipsync_prompt_id = ""
+    else:
+        lipsync_prompt_id = ""
+
     if not layers:
         return "Error: no audio layers were generated."
     mixed_audio = await _mix_audio_layers(layers, duration)
@@ -3336,6 +3705,8 @@ async def _generate_video_with_audio(tool_args: dict, config: dict) -> str:
         "loop_video_to_audio": loop_video,
         "tts_provider": tool_args.get("tts_provider") or config.get("tts_provider"),
         "voice": tool_args.get("voice") or config.get("tts_voice"),
+        "lipsync_enabled": bool(config.get("lipsync_enabled") and dialogue and not tool_args.get("skip_lipsync")),
+        "lipsync_prompt_id": lipsync_prompt_id,
     }
     return (
         "Generated video with audio:\n\n"

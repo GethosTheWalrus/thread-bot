@@ -736,6 +736,7 @@ class RunThreadWorkflow:
                                 "content_type": {"type": "string", "description": "MIME type for image_base64. Defaults to image/png."},
                                 "negative_prompt": {"type": "string", "description": "Optional visual traits/artifacts to avoid."},
                                 "voice": {"type": "string", "description": "Optional configured TTS voice override."},
+                                "skip_lipsync": {"type": "boolean", "description": "Set true only if the user wants voice/audio muxing without ComfyUI lip-sync. Defaults to false."},
                                 "loop_video_to_audio": {"type": "boolean", "description": "Loop the video until the mixed audio ends. Defaults to true."},
                                 "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
                                 "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
