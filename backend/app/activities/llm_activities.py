@@ -2913,10 +2913,13 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
         return f"ComfyUI video prompt {prompt_id} produced no media outputs."
 
     media_items = []
-    for key in ("videos", "gifs", "animated", "images"):
+    for key in ("videos", "video", "gifs", "gif", "animated", "animations", "images", "files"):
         values = node_output.get(key) if isinstance(node_output, dict) else None
         if isinstance(values, list) and values:
             media_items = values
+            break
+        if isinstance(values, (dict, str)):
+            media_items = [values]
             break
     if not media_items:
         return f"ComfyUI video prompt {prompt_id} output node has no videos/gifs/images."
@@ -2924,11 +2927,16 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
     saved_urls: list[str] = []
     async with aiohttp.ClientSession(timeout=fetch_timeout) as session:
         for item in media_items[:1]:
-            if not isinstance(item, dict):
+            if isinstance(item, str):
+                filename = item
+                subfolder = ""
+                folder_type = "output"
+            elif isinstance(item, dict):
+                filename = item.get("filename") or item.get("name") or item.get("file")
+                subfolder = item.get("subfolder") or ""
+                folder_type = item.get("type") or "output"
+            else:
                 continue
-            filename = item.get("filename")
-            subfolder = item.get("subfolder") or ""
-            folder_type = item.get("type") or "output"
             if not filename:
                 continue
             try:
