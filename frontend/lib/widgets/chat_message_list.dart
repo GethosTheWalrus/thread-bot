@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:ui_web' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web/web.dart' as web;
 
 class ChatMessageList extends StatelessWidget {
   final List<Message> messages;
@@ -55,16 +57,20 @@ class ChatMessageList extends StatelessWidget {
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isToolCall) {
             claimedToolCallIndices.add(j);
-            items.insert(0, _PreAssistantItem(
-              toolCallGroup: _ToolCallGroup(
-                message: messages[j],
-                results: toolCallResults[j] ?? [],
+            items.insert(
+              0,
+              _PreAssistantItem(
+                toolCallGroup: _ToolCallGroup(
+                  message: messages[j],
+                  results: toolCallResults[j] ?? [],
+                ),
               ),
-            ));
+            );
           } else if (messages[j].isThinking) {
             claimedThinkingIndices.add(j);
             items.insert(0, _PreAssistantItem(thinking: messages[j]));
-          } else if (messages[j].isToolResult && claimedResultIndices.contains(j)) {
+          } else if (messages[j].isToolResult &&
+              claimedResultIndices.contains(j)) {
             // Skip — already claimed by a tool_call
             continue;
           } else {
@@ -90,14 +96,25 @@ class ChatMessageList extends StatelessWidget {
         // Completed assistant message — derive from claimed preItems
         for (final item in pre) {
           if (item.isThinking) {
-            steps.add(_TimelineStep(_TimelineStepType.thinking, content: item.thinking!.content));
+            steps.add(
+              _TimelineStep(
+                _TimelineStepType.thinking,
+                content: item.thinking!.content,
+              ),
+            );
           } else if (item.isToolCall) {
             final group = item.toolCallGroup!;
             final content = group.message.content;
             var body = content;
-            if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
-            final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-            final toolCalls = group.message.metadata?['tool_calls'] as List<dynamic>?;
+            if (body.startsWith('Calling '))
+              body = body.substring('Calling '.length);
+            final tools = body
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
+            final toolCalls =
+                group.message.metadata?['tool_calls'] as List<dynamic>?;
 
             for (var j = 0; j < tools.length; j++) {
               final result = j < group.results.length ? group.results[j] : null;
@@ -111,15 +128,29 @@ class ChatMessageList extends StatelessWidget {
               String? formattedInput;
               if (toolInput != null && toolInput.isNotEmpty) {
                 try {
-                  formattedInput = const JsonEncoder.withIndent('  ').convert(jsonDecode(toolInput));
+                  formattedInput = const JsonEncoder.withIndent(
+                    '  ',
+                  ).convert(jsonDecode(toolInput));
                 } catch (_) {
                   formattedInput = toolInput;
                 }
               }
-              steps.add(_TimelineStep(_TimelineStepType.toolCall, label: 'Called ${tools[j]}', content: formattedInput));
-              
+              steps.add(
+                _TimelineStep(
+                  _TimelineStepType.toolCall,
+                  label: 'Called ${tools[j]}',
+                  content: formattedInput,
+                ),
+              );
+
               if (result != null) {
-                steps.add(_TimelineStep(_TimelineStepType.toolResult, label: 'Result from ${tools[j]}', content: result.content));
+                steps.add(
+                  _TimelineStep(
+                    _TimelineStepType.toolResult,
+                    label: 'Result from ${tools[j]}',
+                    content: result.content,
+                  ),
+                );
               }
             }
           }
@@ -130,13 +161,25 @@ class ChatMessageList extends StatelessWidget {
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isUser) break;
           if (messages[j].isThinking) {
-            steps.insert(0, _TimelineStep(_TimelineStepType.thinking, content: messages[j].content));
+            steps.insert(
+              0,
+              _TimelineStep(
+                _TimelineStepType.thinking,
+                content: messages[j].content,
+              ),
+            );
           } else if (messages[j].isToolCall) {
             final content = messages[j].content;
             var body = content;
-            if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
-            final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-            final toolCalls = messages[j].metadata?['tool_calls'] as List<dynamic>?;
+            if (body.startsWith('Calling '))
+              body = body.substring('Calling '.length);
+            final tools = body
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .toList();
+            final toolCalls =
+                messages[j].metadata?['tool_calls'] as List<dynamic>?;
             for (var k = tools.length - 1; k >= 0; k--) {
               String? toolInput;
               if (toolCalls != null && k < toolCalls.length) {
@@ -147,17 +190,40 @@ class ChatMessageList extends StatelessWidget {
               String? formattedInput;
               if (toolInput != null && toolInput.isNotEmpty) {
                 try {
-                  formattedInput = const JsonEncoder.withIndent('  ').convert(jsonDecode(toolInput));
+                  formattedInput = const JsonEncoder.withIndent(
+                    '  ',
+                  ).convert(jsonDecode(toolInput));
                 } catch (_) {
                   formattedInput = toolInput;
                 }
               }
-              steps.insert(0, _TimelineStep(_TimelineStepType.toolCall, label: 'Called ${tools[k]}', content: formattedInput));
+              steps.insert(
+                0,
+                _TimelineStep(
+                  _TimelineStepType.toolCall,
+                  label: 'Called ${tools[k]}',
+                  content: formattedInput,
+                ),
+              );
             }
           } else if (messages[j].isToolResult) {
-            steps.insert(0, _TimelineStep(_TimelineStepType.toolResult, label: 'Result', content: messages[j].content));
-          } else if (messages[j].isSystem && messages[j].metadata?['type'] == 'compaction_event') {
-            steps.insert(0, _TimelineStep(_TimelineStepType.compaction, content: messages[j].content));
+            steps.insert(
+              0,
+              _TimelineStep(
+                _TimelineStepType.toolResult,
+                label: 'Result',
+                content: messages[j].content,
+              ),
+            );
+          } else if (messages[j].isSystem &&
+              messages[j].metadata?['type'] == 'compaction_event') {
+            steps.insert(
+              0,
+              _TimelineStep(
+                _TimelineStepType.compaction,
+                content: messages[j].content,
+              ),
+            );
           } else if (messages[j].isSystem) {
             continue;
           } else {
@@ -167,11 +233,13 @@ class ChatMessageList extends StatelessWidget {
       }
 
       // Final step: text generation (always present for assistant messages)
-      steps.add(_TimelineStep(
-        messages[i].content.isEmpty
-            ? _TimelineStepType.textActive
-            : _TimelineStepType.text,
-      ));
+      steps.add(
+        _TimelineStep(
+          messages[i].content.isEmpty
+              ? _TimelineStepType.textActive
+              : _TimelineStepType.text,
+        ),
+      );
       assistantTimelines[i] = steps;
     }
 
@@ -196,9 +264,9 @@ class ChatMessageList extends StatelessWidget {
         }
         // Unclaimed tool_call (no assistant message follows at all — rare edge case)
         if (msg.isToolCall) {
-          final hasAssistantAfter = messages.skip(index + 1).any(
-            (m) => m.isAssistant,
-          );
+          final hasAssistantAfter = messages
+              .skip(index + 1)
+              .any((m) => m.isAssistant);
           return _ToolCallBubble(
             message: msg,
             isLoading: isSending && !hasAssistantAfter,
@@ -231,7 +299,9 @@ class _CompactionDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final count = message.metadata?['compacted_count'] ?? message.metadata?['original_message_count'];
+    final count =
+        message.metadata?['compacted_count'] ??
+        message.metadata?['original_message_count'];
     final label = count != null
         ? '📋 $count earlier messages summarized'
         : '📋 Conversation summarized';
@@ -241,7 +311,10 @@ class _CompactionDivider extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Divider(color: Colors.white.withValues(alpha: 0.08), thickness: 1),
+            child: Divider(
+              color: Colors.white.withValues(alpha: 0.08),
+              thickness: 1,
+            ),
           ),
           const SizedBox(width: 12),
           Container(
@@ -249,7 +322,9 @@ class _CompactionDivider extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(20),
               color: const Color(0xFF8B5CF6).withValues(alpha: 0.08),
-              border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.2)),
+              border: Border.all(
+                color: const Color(0xFF8B5CF6).withValues(alpha: 0.2),
+              ),
             ),
             child: Text(
               label,
@@ -262,7 +337,10 @@ class _CompactionDivider extends StatelessWidget {
           ),
           const SizedBox(width: 12),
           Expanded(
-            child: Divider(color: Colors.white.withValues(alpha: 0.08), thickness: 1),
+            child: Divider(
+              color: Colors.white.withValues(alpha: 0.08),
+              thickness: 1,
+            ),
           ),
         ],
       ),
@@ -326,10 +404,10 @@ class _ToolCallBubbleState extends State<_ToolCallBubble> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(width: 60), // align with assistant messages (44 avatar + 16 gap)
-              Flexible(
-                child: _buildToolList(tools),
-              ),
+              const SizedBox(
+                width: 60,
+              ), // align with assistant messages (44 avatar + 16 gap)
+              Flexible(child: _buildToolList(tools)),
             ],
           ),
         ),
@@ -432,7 +510,8 @@ class _ToolCallChipState extends State<_ToolCallChip>
 
   @override
   Widget build(BuildContext context) {
-    final hasExpandableContent = widget.toolInput != null || widget.result != null;
+    final hasExpandableContent =
+        widget.toolInput != null || widget.result != null;
 
     Widget chip = Padding(
       padding: const EdgeInsets.only(bottom: 4),
@@ -456,7 +535,11 @@ class _ToolCallChipState extends State<_ToolCallChip>
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.build_outlined, size: 12, color: Color(0xFF8B5CF6)),
+                  const Icon(
+                    Icons.build_outlined,
+                    size: 12,
+                    color: Color(0xFF8B5CF6),
+                  ),
                   const SizedBox(width: 6),
                   Flexible(
                     child: Text(
@@ -469,7 +552,9 @@ class _ToolCallChipState extends State<_ToolCallChip>
                     ),
                   ),
                   // Status icon
-                  if (widget.isLoading && !widget.succeeded && !widget.failed) ...[
+                  if (widget.isLoading &&
+                      !widget.succeeded &&
+                      !widget.failed) ...[
                     const SizedBox(width: 6),
                     SizedBox(
                       width: 13,
@@ -482,7 +567,9 @@ class _ToolCallChipState extends State<_ToolCallChip>
                   ] else if (widget.succeeded || widget.failed) ...[
                     const SizedBox(width: 6),
                     Icon(
-                      widget.succeeded ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                      widget.succeeded
+                          ? Icons.check_circle_rounded
+                          : Icons.cancel_rounded,
                       size: 13,
                       color: widget.succeeded
                           ? const Color(0xFF22C55E)
@@ -533,10 +620,8 @@ class _ToolCallChipState extends State<_ToolCallChip>
     if (widget.isLoading) {
       return AnimatedBuilder(
         animation: _pulseAnimation,
-        builder: (_, child) => Opacity(
-          opacity: _pulseAnimation.value,
-          child: child,
-        ),
+        builder: (_, child) =>
+            Opacity(opacity: _pulseAnimation.value, child: child),
         child: chip,
       );
     }
@@ -587,7 +672,9 @@ class _CollapsibleResultBlock extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(6),
+              ),
               color: Colors.white.withValues(alpha: 0.03),
               border: Border(
                 bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
@@ -664,20 +751,32 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                     GestureDetector(
                       onTap: () => setState(() => _expanded = !_expanded),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(6),
                           color: Colors.white.withValues(alpha: 0.03),
-                          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.08),
+                          ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.terminal_rounded, size: 12, color: Color(0xFF71717A)),
+                            const Icon(
+                              Icons.terminal_rounded,
+                              size: 12,
+                              color: Color(0xFF71717A),
+                            ),
                             const SizedBox(width: 6),
                             Text(
                               toolName,
-                              style: const TextStyle(fontSize: 11, color: Color(0xFF71717A)),
+                              style: const TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF71717A),
+                              ),
                             ),
                             const SizedBox(width: 4),
                             Icon(
@@ -692,7 +791,9 @@ class _ToolResultBubbleState extends State<_ToolResultBubble> {
                     if (_expanded)
                       Padding(
                         padding: const EdgeInsets.only(top: 2),
-                        child: _CollapsibleResultBlock(content: widget.message.content),
+                        child: _CollapsibleResultBlock(
+                          content: widget.message.content,
+                        ),
                       ),
                   ],
                 ),
@@ -747,7 +848,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(width: 60), // align with assistant messages (44 avatar + 16 gap)
+              const SizedBox(
+                width: 60,
+              ), // align with assistant messages (44 avatar + 16 gap)
               Flexible(
                 child: GestureDetector(
                   onTap: () => setState(() => _expanded = !_expanded),
@@ -755,18 +858,29 @@ class _ThinkingBubbleState extends State<_ThinkingBubble> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 5,
+                        ),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(6),
-                          color: const Color(0xFFF59E0B).withValues(alpha: 0.06),
+                          color: const Color(
+                            0xFFF59E0B,
+                          ).withValues(alpha: 0.06),
                           border: Border.all(
-                            color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                            color: const Color(
+                              0xFFF59E0B,
+                            ).withValues(alpha: 0.12),
                           ),
                         ),
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(Icons.psychology_outlined, size: 12, color: Color(0xFFF59E0B)),
+                            const Icon(
+                              Icons.psychology_outlined,
+                              size: 12,
+                              color: Color(0xFFF59E0B),
+                            ),
                             const SizedBox(width: 6),
                             const Text(
                               'Thinking',
@@ -780,7 +894,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble> {
                             Icon(
                               _expanded ? Icons.expand_less : Icons.expand_more,
                               size: 14,
-                              color: const Color(0xFFF59E0B).withValues(alpha: 0.6),
+                              color: const Color(
+                                0xFFF59E0B,
+                              ).withValues(alpha: 0.6),
                             ),
                           ],
                         ),
@@ -794,7 +910,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble> {
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(6),
                               color: const Color(0xFF111118),
-                              border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.06),
+                              ),
                             ),
                             child: SelectableText(
                               widget.message.content,
@@ -851,7 +969,11 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.psychology_outlined, size: 12, color: Color(0xFFF59E0B)),
+                  const Icon(
+                    Icons.psychology_outlined,
+                    size: 12,
+                    color: Color(0xFFF59E0B),
+                  ),
                   const SizedBox(width: 6),
                   const Text(
                     'Thinking',
@@ -879,7 +1001,9 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(6),
                     color: const Color(0xFF111118),
-                    border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.06),
+                    ),
                   ),
                   child: SelectableText(
                     widget.message.content,
@@ -900,7 +1024,14 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
 
 // ── Timeline Step Types ──────────────────────────────────────────────────────
 
-enum _TimelineStepType { thinking, toolCall, toolResult, compaction, text, textActive }
+enum _TimelineStepType {
+  thinking,
+  toolCall,
+  toolResult,
+  compaction,
+  text,
+  textActive,
+}
 
 class _TimelineStep {
   final _TimelineStepType type;
@@ -994,7 +1125,9 @@ class _ResponseTimeline extends StatelessWidget {
     );
   }
 
-  static ({IconData icon, Color color, String label}) _stepConfig(_TimelineStep step) {
+  static ({IconData icon, Color color, String label}) _stepConfig(
+    _TimelineStep step,
+  ) {
     return switch (step.type) {
       _TimelineStepType.thinking => (
         icon: Icons.psychology_rounded,
@@ -1030,7 +1163,11 @@ class _HoverTimelineNode extends StatefulWidget {
   final String configLabel;
   final Widget child;
 
-  const _HoverTimelineNode({required this.step, required this.configLabel, required this.child});
+  const _HoverTimelineNode({
+    required this.step,
+    required this.configLabel,
+    required this.child,
+  });
 
   @override
   State<_HoverTimelineNode> createState() => _HoverTimelineNodeState();
@@ -1041,7 +1178,7 @@ class _HoverTimelineNodeState extends State<_HoverTimelineNode> {
 
   void _showModal() {
     if (widget.step.content == null || widget.step.content!.isEmpty) return;
-    
+
     showDialog(
       context: context,
       builder: (context) {
@@ -1081,7 +1218,10 @@ class _HoverTimelineNodeState extends State<_HoverTimelineNode> {
                 const SizedBox(height: 16),
                 Expanded(
                   child: SingleChildScrollView(
-                    child: _CollapsibleResultBlock(content: widget.step.content!, label: 'details'),
+                    child: _CollapsibleResultBlock(
+                      content: widget.step.content!,
+                      label: 'details',
+                    ),
                   ),
                 ),
               ],
@@ -1095,7 +1235,8 @@ class _HoverTimelineNodeState extends State<_HoverTimelineNode> {
   @override
   Widget build(BuildContext context) {
     final title = widget.step.label ?? widget.configLabel;
-    final isClickable = widget.step.content != null && widget.step.content!.isNotEmpty;
+    final isClickable =
+        widget.step.content != null && widget.step.content!.isNotEmpty;
 
     return MouseRegion(
       cursor: isClickable ? SystemMouseCursors.click : SystemMouseCursors.basic,
@@ -1143,9 +1284,10 @@ class _PulsingWidgetState extends State<_PulsingWidget>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
-    _opacity = Tween<double>(begin: 0.5, end: 1.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
+    _opacity = Tween<double>(
+      begin: 0.5,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
   }
 
   @override
@@ -1184,7 +1326,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
 
   String _formatMessageTime(DateTime value) {
     final local = value.toLocal();
-    final hour = local.hour == 0 ? 12 : (local.hour > 12 ? local.hour - 12 : local.hour);
+    final hour = local.hour == 0
+        ? 12
+        : (local.hour > 12 ? local.hour - 12 : local.hour);
     final minute = local.minute.toString().padLeft(2, '0');
     final period = local.hour >= 12 ? 'PM' : 'AM';
     return '$hour:$minute $period';
@@ -1204,7 +1348,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
           constraints: BoxConstraints(maxWidth: maxContentWidth),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            mainAxisAlignment: isUser
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
             children: isUser
                 ? [
                     Expanded(child: _buildContent(context, isUser)),
@@ -1224,7 +1370,11 @@ class _ChatBubbleState extends State<_ChatBubble> {
 
   Widget _buildAvatar(bool isUser) {
     if (!isUser) {
-      return const ThreadbotAvatar(size: 44, showNeedle: false, showShadow: false);
+      return const ThreadbotAvatar(
+        size: 44,
+        showNeedle: false,
+        showShadow: false,
+      );
     }
 
     return Container(
@@ -1236,11 +1386,7 @@ class _ChatBubbleState extends State<_ChatBubble> {
           colors: [Color(0xFF3B82F6), Color(0xFF2563EB)],
         ),
       ),
-      child: const Icon(
-        Icons.person_rounded,
-        size: 20,
-        color: Colors.white,
-      ),
+      child: const Icon(Icons.person_rounded, size: 20, color: Colors.white),
     );
   }
 
@@ -1249,7 +1395,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
     final hasTimeline = !isUser && widget.timelineSteps.length > 1;
     final headerLabel = Row(
       mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+      mainAxisAlignment: isUser
+          ? MainAxisAlignment.end
+          : MainAxisAlignment.start,
       children: [
         Text(
           widget.message.senderLabel.toUpperCase(),
@@ -1268,7 +1416,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(4),
               color: const Color(0xFF5865F2).withValues(alpha: 0.14),
-              border: Border.all(color: const Color(0xFF5865F2).withValues(alpha: 0.25)),
+              border: Border.all(
+                color: const Color(0xFF5865F2).withValues(alpha: 0.25),
+              ),
             ),
             child: const Text(
               'DISCORD',
@@ -1295,7 +1445,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
     );
 
     return Column(
-      crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      crossAxisAlignment: isUser
+          ? CrossAxisAlignment.end
+          : CrossAxisAlignment.start,
       children: [
         // Header + timeline: inline on wide, stacked on narrow
         if (hasTimeline && isWide)
@@ -1337,7 +1489,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
             preItems: widget.preItems,
             isLoading: widget.isLoading,
             onExpandChanged: (expanded) {
-              setState(() { _stepsExpanded = expanded; });
+              setState(() {
+                _stepsExpanded = expanded;
+              });
             },
           ),
         ],
@@ -1356,15 +1510,26 @@ class _ChatBubbleState extends State<_ChatBubble> {
     }
 
     final style = MarkdownStyleSheet(
-      p: const TextStyle(
-        fontSize: 15,
-        height: 1.6,
-        color: Color(0xFFD4D4D8),
+      p: const TextStyle(fontSize: 15, height: 1.6, color: Color(0xFFD4D4D8)),
+      h1: const TextStyle(
+        fontSize: 24,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFFE4E4E7),
       ),
-      h1: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFFE4E4E7)),
-      h2: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Color(0xFFE4E4E7)),
-      h3: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Color(0xFFE4E4E7)),
-      strong: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFFE4E4E7)),
+      h2: const TextStyle(
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+        color: Color(0xFFE4E4E7),
+      ),
+      h3: const TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        color: Color(0xFFE4E4E7),
+      ),
+      strong: const TextStyle(
+        fontWeight: FontWeight.w600,
+        color: Color(0xFFE4E4E7),
+      ),
       em: const TextStyle(fontStyle: FontStyle.italic),
       code: TextStyle(
         backgroundColor: Colors.white.withValues(alpha: 0.06),
@@ -1392,7 +1557,9 @@ class _ChatBubbleState extends State<_ChatBubble> {
     );
 
     final body = widget.message.displayContent.trim();
-    final hasAttachments = widget.message.imageAttachments.isNotEmpty;
+    final generatedMedia = widget.message.generatedMediaAttachments;
+    final hasAttachments =
+        widget.message.imageAttachments.isNotEmpty || generatedMedia.isNotEmpty;
 
     if (!isUser && widget.message.id.startsWith('temp-ast-')) {
       return _AnimatedMarkdown(data: body, styleSheet: style);
@@ -1419,8 +1586,185 @@ class _ChatBubbleState extends State<_ChatBubble> {
       children: [
         bodyWidget,
         if (body.isNotEmpty) const SizedBox(height: 10),
-        _InlineImageAttachments(images: widget.message.imageAttachments),
+        if (widget.message.imageAttachments.isNotEmpty)
+          _InlineImageAttachments(images: widget.message.imageAttachments),
+        if (generatedMedia.isNotEmpty) ...[
+          if (widget.message.imageAttachments.isNotEmpty)
+            const SizedBox(height: 10),
+          _InlineGeneratedMedia(items: generatedMedia),
+        ],
       ],
+    );
+  }
+}
+
+class _InlineGeneratedMedia extends StatelessWidget {
+  final List<Map<String, dynamic>> items;
+
+  const _InlineGeneratedMedia({required this.items});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: items.map((item) {
+        final url = item['url'] as String?;
+        if (url == null || url.isEmpty) return const SizedBox.shrink();
+        final resolved = Uri.base.resolve(url).toString();
+        final filename =
+            (item['filename'] as String?) ??
+            Uri.parse(resolved).pathSegments.last;
+        final type = item['type'] as String? ?? 'image';
+        if (type == 'video') {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _InlineVideoPlayer(url: resolved, filename: filename),
+          );
+        }
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: GestureDetector(
+            onTap: () => launchUrl(Uri.parse(resolved)),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                constraints: const BoxConstraints(
+                  maxWidth: 520,
+                  maxHeight: 520,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF111118),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Image.network(
+                  resolved,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) =>
+                      _MediaFallback(filename: filename, url: resolved),
+                ),
+              ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _InlineVideoPlayer extends StatefulWidget {
+  final String url;
+  final String filename;
+
+  const _InlineVideoPlayer({required this.url, required this.filename});
+
+  @override
+  State<_InlineVideoPlayer> createState() => _InlineVideoPlayerState();
+}
+
+class _InlineVideoPlayerState extends State<_InlineVideoPlayer> {
+  static int _nextId = 0;
+  late final String _viewType;
+
+  @override
+  void initState() {
+    super.initState();
+    _viewType = 'threadbot-video-${_nextId++}';
+    final videoUrl = widget.url;
+    ui.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
+      final video = web.HTMLVideoElement()
+        ..src = videoUrl
+        ..controls = true
+        ..loop = true
+        ..preload = 'metadata';
+      video.style.width = '100%';
+      video.style.height = '100%';
+      video.style.borderRadius = '12px';
+      video.style.backgroundColor = '#000000';
+      return video;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 640),
+        decoration: BoxDecoration(
+          color: const Color(0xFF111118),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 640,
+              height: 360,
+              child: HtmlElementView(viewType: _viewType),
+            ),
+            InkWell(
+              onTap: () => launchUrl(Uri.parse(widget.url)),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.movie_outlined,
+                      size: 16,
+                      color: Color(0xFFA78BFA),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        widget.filename,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFD4D4D8),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MediaFallback extends StatelessWidget {
+  final String filename;
+  final String url;
+
+  const _MediaFallback({required this.filename, required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: () => launchUrl(Uri.parse(url)),
+      child: Container(
+        width: 280,
+        height: 160,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.all(16),
+        child: Text(
+          filename,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.white.withValues(alpha: 0.65),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1438,7 +1782,8 @@ class _InlineImageAttachments extends StatelessWidget {
       children: images.map((image) {
         final url = image['url'] as String?;
         if (url == null || url.isEmpty) return const SizedBox.shrink();
-        final filename = (image['filename'] as String?) ?? Uri.parse(url).pathSegments.last;
+        final filename =
+            (image['filename'] as String?) ?? Uri.parse(url).pathSegments.last;
         final resolved = Uri.base.resolve(url).toString();
         return GestureDetector(
           onTap: () => launchUrl(Uri.parse(resolved)),
@@ -1475,7 +1820,10 @@ class _InlineImageAttachments extends StatelessWidget {
                     right: 8,
                     bottom: 8,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.black.withValues(alpha: 0.55),
                         borderRadius: BorderRadius.circular(8),
@@ -1484,7 +1832,10 @@ class _InlineImageAttachments extends StatelessWidget {
                         filename,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 11, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -1502,10 +1853,7 @@ Widget _buildMarkdownImage(Uri uri) {
   final resolved = Uri.base.resolveUri(uri).toString();
   return ClipRRect(
     borderRadius: BorderRadius.circular(10),
-    child: Image.network(
-      resolved,
-      fit: BoxFit.contain,
-    ),
+    child: Image.network(resolved, fit: BoxFit.contain),
   );
 }
 
@@ -1516,7 +1864,11 @@ class _AgentStepsAccordion extends StatefulWidget {
   final bool isLoading;
   final ValueChanged<bool>? onExpandChanged;
 
-  const _AgentStepsAccordion({required this.preItems, this.isLoading = false, this.onExpandChanged});
+  const _AgentStepsAccordion({
+    required this.preItems,
+    this.isLoading = false,
+    this.onExpandChanged,
+  });
 
   @override
   State<_AgentStepsAccordion> createState() => _AgentStepsAccordionState();
@@ -1536,23 +1888,32 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
     final steps = <_StepEntry>[];
     for (final item in widget.preItems) {
       if (item.isThinking) {
-        steps.add(_StepEntry(
-          icon: Icons.psychology_rounded,
-          color: const Color(0xFFF59E0B),
-          label: 'Thought',
-          expandedContent: item.thinking!.content,
-        ));
+        steps.add(
+          _StepEntry(
+            icon: Icons.psychology_rounded,
+            color: const Color(0xFFF59E0B),
+            label: 'Thought',
+            expandedContent: item.thinking!.content,
+          ),
+        );
       } else if (item.isToolCall) {
         final group = item.toolCallGroup!;
         final content = group.message.content;
         var body = content;
-        if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
-        final tools = body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-        final toolCalls = group.message.metadata?['tool_calls'] as List<dynamic>?;
+        if (body.startsWith('Calling '))
+          body = body.substring('Calling '.length);
+        final tools = body
+            .split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        final toolCalls =
+            group.message.metadata?['tool_calls'] as List<dynamic>?;
 
         for (var i = 0; i < tools.length; i++) {
           final result = i < group.results.length ? group.results[i] : null;
-          final isError = result != null && _InlineToolCallGroup._isError(result.content);
+          final isError =
+              result != null && _InlineToolCallGroup._isError(result.content);
           final waiting = widget.isLoading && result == null;
 
           // Tool call input
@@ -1564,22 +1925,32 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
           }
 
           // Tool call step
-          steps.add(_StepEntry(
-            icon: Icons.build_rounded,
-            color: const Color(0xFF3B82F6),
-            label: 'Called ${tools[i]}',
-            isLoading: waiting,
-            expandedContent: _formatInput(toolInput),
-          ));
+          steps.add(
+            _StepEntry(
+              icon: Icons.build_rounded,
+              color: const Color(0xFF3B82F6),
+              label: 'Called ${tools[i]}',
+              isLoading: waiting,
+              expandedContent: _formatInput(toolInput),
+            ),
+          );
 
           // Tool result step (only if we have one)
           if (result != null) {
-            steps.add(_StepEntry(
-              icon: isError ? Icons.error_rounded : Icons.check_circle_rounded,
-              color: isError ? const Color(0xFFEF4444) : const Color(0xFF10B981),
-              label: isError ? 'Error from ${tools[i]}' : 'Result from ${tools[i]}',
-              expandedContent: _formatOutput(result.content),
-            ));
+            steps.add(
+              _StepEntry(
+                icon: isError
+                    ? Icons.error_rounded
+                    : Icons.check_circle_rounded,
+                color: isError
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF10B981),
+                label: isError
+                    ? 'Error from ${tools[i]}'
+                    : 'Result from ${tools[i]}',
+                expandedContent: _formatOutput(result.content),
+              ),
+            );
           }
         }
       }
@@ -1611,7 +1982,8 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
       (sum, item) {
         final content = item.toolCallGroup!.message.content;
         var body = content;
-        if (body.startsWith('Calling ')) body = body.substring('Calling '.length);
+        if (body.startsWith('Calling '))
+          body = body.substring('Calling '.length);
         return sum + body.split(',').where((s) => s.trim().isNotEmpty).length;
       },
     );
@@ -1690,10 +2062,7 @@ class _AgentStepsAccordionState extends State<_AgentStepsAccordion> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 ...List.generate(steps.length, (i) {
-                  return _ActivityRow(
-                    step: steps[i],
-                    isLast: false,
-                  );
+                  return _ActivityRow(step: steps[i], isLast: false);
                 }),
                 _ActivityRow(
                   step: const _StepEntry(
@@ -1751,7 +2120,8 @@ class _ActivityRowState extends State<_ActivityRow> {
   @override
   Widget build(BuildContext context) {
     final step = widget.step;
-    final hasContent = step.expandedContent != null && step.expandedContent!.isNotEmpty;
+    final hasContent =
+        step.expandedContent != null && step.expandedContent!.isNotEmpty;
 
     return IntrinsicHeight(
       child: Row(
@@ -1800,7 +2170,9 @@ class _ActivityRowState extends State<_ActivityRow> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   GestureDetector(
-                    onTap: hasContent ? () => setState(() => _expanded = !_expanded) : null,
+                    onTap: hasContent
+                        ? () => setState(() => _expanded = !_expanded)
+                        : null,
                     child: Row(
                       children: [
                         Flexible(
@@ -1833,7 +2205,9 @@ class _ActivityRowState extends State<_ActivityRow> {
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(6),
                           color: const Color(0xFF111118),
-                          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.06),
+                          ),
                         ),
                         child: SelectableText(
                           step.expandedContent!,
@@ -1859,15 +2233,18 @@ class _ActivityRowState extends State<_ActivityRow> {
 /// Renders a tool_call group inline within an assistant bubble.
 class _InlineToolCallGroup extends StatelessWidget {
   final _ToolCallGroup group;
-  final bool isLoading;
-  const _InlineToolCallGroup({required this.group, this.isLoading = false});
+  const _InlineToolCallGroup({required this.group});
 
   static List<String> _parseToolCalls(String content) {
     var body = content;
     if (body.startsWith('Calling ')) {
       body = body.substring('Calling '.length);
     }
-    return body.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+    return body
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
   }
 
   static bool _isError(String content) {
@@ -1896,7 +2273,7 @@ class _InlineToolCallGroup extends StatelessWidget {
           final result = i < group.results.length ? group.results[i] : null;
           final succeeded = result != null && !_isError(result.content);
           final failed = result != null && _isError(result.content);
-          final chipLoading = isLoading && result == null;
+          const chipLoading = false;
 
           String? toolInput;
           if (toolCalls != null && i < toolCalls.length) {
@@ -1923,16 +2300,14 @@ class _AnimatedMarkdown extends StatefulWidget {
   final String data;
   final MarkdownStyleSheet styleSheet;
 
-  const _AnimatedMarkdown({
-    required this.data,
-    required this.styleSheet,
-  });
+  const _AnimatedMarkdown({required this.data, required this.styleSheet});
 
   @override
   State<_AnimatedMarkdown> createState() => _AnimatedMarkdownState();
 }
 
-class _AnimatedMarkdownState extends State<_AnimatedMarkdown> with SingleTickerProviderStateMixin {
+class _AnimatedMarkdownState extends State<_AnimatedMarkdown>
+    with SingleTickerProviderStateMixin {
   late String _currentData;
 
   @override
@@ -1968,7 +2343,8 @@ class _TypingDots extends StatefulWidget {
   State<_TypingDots> createState() => _TypingDotsState();
 }
 
-class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderStateMixin {
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
   late final Animation<double> _shimmer;
 
@@ -1997,7 +2373,7 @@ class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderState
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Paragraph-like skeleton — varies widths to mimic real text
-            _buildBar(widthFraction: 1.0,  delay: 0.0),
+            _buildBar(widthFraction: 1.0, delay: 0.0),
             const SizedBox(height: 8),
             _buildBar(widthFraction: 0.92, delay: 0.06),
             const SizedBox(height: 8),
@@ -2030,11 +2406,7 @@ class _TypingDotsState extends State<_TypingDots> with SingleTickerProviderState
               const Color(0xFF6366F1).withValues(alpha: opacity),
               const Color(0xFF8B5CF6).withValues(alpha: opacity * 0.5),
             ],
-            stops: [
-              (t - 0.3).clamp(0.0, 1.0),
-              t,
-              (t + 0.3).clamp(0.0, 1.0),
-            ],
+            stops: [(t - 0.3).clamp(0.0, 1.0), t, (t + 0.3).clamp(0.0, 1.0)],
           ),
         ),
       ),

@@ -848,13 +848,13 @@ def _format_assistant_for_discord(content: str, discord_config: dict | None = No
     return f"{prefix}{content}" if prefix else content
 
 
-async def _discord_files_from_markdown_images(content: str, discord_config: dict | None = None) -> tuple[str, list[dict]]:
-    """Turn assistant Markdown image links into Discord file attachments.
+async def _discord_files_from_generated_media_links(content: str, discord_config: dict | None = None) -> tuple[str, list[dict]]:
+    """Turn assistant-generated media links into Discord file attachments.
 
     The saved ThreadBot message keeps Markdown for the web UI. Discord gets the
-    image bytes directly so generated images are not presented as hosted URLs.
+    bytes directly so generated images/videos are not presented as hosted URLs.
     """
-    if not content or "![" not in content:
+    if not content or ("/api/generated-images/" not in content and "/api/generated-media/" not in content):
         return content, []
 
     import os
@@ -864,42 +864,46 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
 
     llm_config = get_llm_config()
     image_dir = llm_config.get("generated_image_dir") or "/tmp/threadbot-generated-images"
+    media_dir = llm_config.get("generated_media_dir") or "/tmp/threadbot-generated-media"
     files = []
 
     async def _file_from_url(url: str, index: int) -> dict | None:
         parsed = urlparse(url)
-        local_match = re.search(r"/api/generated-images/([^/?#]+)", parsed.path or url)
+        parsed_path = parsed.path or url
+        local_match = re.search(r"/api/generated-(images|media)/([^/?#]+)", parsed_path)
         if local_match:
-            filename = local_match.group(1)
+            media_kind = local_match.group(1)
+            filename = local_match.group(2)
             if "/" in filename or "\\" in filename or filename.startswith("."):
                 return None
-            path = os.path.join(image_dir, filename)
+            path = os.path.join(image_dir if media_kind == "images" else media_dir, filename)
             if not os.path.isfile(path):
                 try:
                     from sqlalchemy import select
                     from app.database import AsyncSessionLocal
-                    from app.models.models import GeneratedImage
+                    from app.models.models import GeneratedImage, GeneratedMedia
 
                     async with AsyncSessionLocal() as db:
+                        model = GeneratedImage if media_kind == "images" else GeneratedMedia
                         result = await db.execute(
-                            select(GeneratedImage).where(GeneratedImage.filename == filename)
+                            select(model).where(model.filename == filename)
                         )
-                        image = result.scalar_one_or_none()
-                    if not image:
+                        media = result.scalar_one_or_none()
+                    if not media:
                         return None
                     return {
                         "filename": filename,
-                        "content": image.content,
-                        "content_type": image.content_type or "image/png",
+                        "content": media.content,
+                        "content_type": media.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
                     }
                 except Exception as exc:
-                    print(f"[discord] failed to load generated image {filename} from DB: {exc}", flush=True)
+                    print(f"[discord] failed to load generated media {filename} from DB: {exc}", flush=True)
                     return None
             with open(path, "rb") as f:
                 return {
                     "filename": filename,
                     "content": f.read(),
-                    "content_type": mimetypes.guess_type(filename)[0] or "image/png",
+                    "content_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
                 }
 
         if parsed.scheme not in {"http", "https"}:
@@ -910,8 +914,8 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
                 async with session.get(url, timeout=timeout, allow_redirects=True) as resp:
                     if resp.status != 200:
                         return None
-                    content_type = resp.headers.get("Content-Type", "image/png")
-                    if not content_type.startswith("image/"):
+                    content_type = resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
+                    if not (content_type.startswith("image/") or content_type.startswith("video/")):
                         return None
                     raw = await resp.read()
                     if len(raw) > 24 * 1024 * 1024:
@@ -920,27 +924,40 @@ async def _discord_files_from_markdown_images(content: str, discord_config: dict
                     if ext == "jpeg":
                         ext = "jpg"
                     return {
-                        "filename": f"generated-image-{index}.{ext}",
+                        "filename": f"generated-media-{index}.{ext}",
                         "content": raw,
                         "content_type": content_type,
                     }
         except Exception as exc:
-            print(f"[discord] failed to download generated image {url}: {exc}", flush=True)
+            print(f"[discord] failed to download generated media {url}: {exc}", flush=True)
             return None
 
-    matches = list(re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", content))
-    for idx, match in enumerate(matches[:10], start=1):
-        file_info = await _file_from_url(match.group(1).strip(), idx)
+    urls: list[str] = []
+    for pattern in (
+        r"!?\[[^\]]*\]\(((?:https?://[^\s)]+)?/api/generated-(?:images|media)/[^)]+)\)",
+        r"src=[\"']((?:https?://[^\"']+)?/api/generated-(?:images|media)/[^\"']+)[\"']",
+        r"(?<!\()((?:https?://\S+)?/api/generated-(?:images|media)/[^\s)<>\"']+)",
+    ):
+        for match in re.finditer(pattern, content, flags=re.IGNORECASE):
+            url = match.group(1).strip().rstrip(".,>")
+            if url not in urls:
+                urls.append(url)
+
+    for idx, url in enumerate(urls[:10], start=1):
+        file_info = await _file_from_url(url, idx)
         if file_info:
             files.append(file_info)
 
     if not files:
         return content, []
 
-    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", "", content)
+    cleaned = re.sub(r"(?is)<video\b[^>]*>.*?/video>", "", content)
+    cleaned = re.sub(r"!?\[[^\]]*\]\([^)]*/api/generated-(?:images|media)/[^)]+\)", "", cleaned)
+    cleaned = re.sub(r"(?im)^\s*(?:https?://\S+)?/api/generated-(?:images|media)/\S+\s*$", "", cleaned)
     cleaned = re.sub(r"(?im)^\s*Generated image:\s*$", "", cleaned)
+    cleaned = re.sub(r"(?im)^\s*Generated video:\s*$", "", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    return cleaned or "Generated image:", files
+    return cleaned or "Generated media:", files
 
 
 async def _discord_files_from_image_urls(urls: list[dict] | list[str], discord_config: dict | None = None) -> list[dict]:
@@ -1114,7 +1131,7 @@ async def sync_message_to_discord(
                 formatted,
                 discord_config=config,
             )
-            formatted, markdown_files = await _discord_files_from_markdown_images(formatted, discord_config=config)
+            formatted, markdown_files = await _discord_files_from_generated_media_links(formatted, discord_config=config)
             files.extend(markdown_files)
         if image_attachments:
             files.extend(await _discord_files_from_image_urls(image_attachments, discord_config=config))
