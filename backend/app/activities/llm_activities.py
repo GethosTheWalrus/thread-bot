@@ -2425,7 +2425,7 @@ async def _generate_image_comfyui(prompt: str, config: dict, tool_args: dict) ->
                 if node_errors:
                     return f"ComfyUI reported node errors: {json.dumps(node_errors)[:1500]}"
     except Exception as exc:
-        raise RuntimeError(f"Error contacting ComfyUI: {exc}") from exc
+        return f"Error contacting ComfyUI at {comfyui_url}: {str(exc)[:500]}"
 
     # Poll /history/{prompt_id} until status.completed.
     started_at = asyncio.get_event_loop().time()
@@ -2866,7 +2866,7 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
                 if node_errors:
                     return f"ComfyUI reported node errors: {json.dumps(node_errors)[:1500]}"
     except Exception as exc:
-        raise RuntimeError(f"Error contacting ComfyUI: {exc}") from exc
+        return f"Error contacting ComfyUI at {comfyui_url}: {str(exc)[:500]}"
 
     started_at = asyncio.get_event_loop().time()
     deadline = started_at + timeout_total
