@@ -2913,11 +2913,13 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
         return f"ComfyUI video prompt {prompt_id} produced no media outputs."
 
     media_items = []
-    for key in ("videos", "video", "gifs", "gif", "animated", "animations", "images", "files"):
+    for key in ("videos", "video", "gifs", "gif", "images", "files", "animated", "animations"):
         values = node_output.get(key) if isinstance(node_output, dict) else None
         if isinstance(values, list) and values:
-            media_items = values
-            break
+            candidate_items = [value for value in values if isinstance(value, (dict, str))]
+            if candidate_items:
+                media_items = candidate_items
+                break
         if isinstance(values, (dict, str)):
             media_items = [values]
             break
