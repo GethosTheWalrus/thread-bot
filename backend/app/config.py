@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     LLM_COMFYUI_VIDEO_SEED: int = 42
     LLM_COMFYUI_VIDEO_TIMEOUT: int = 1800
 
+    # Local audio generation for muxed video output
+    LLM_AUDIO_ENABLED: bool = True
+    LLM_TTS_PROVIDER: str = "openai_compatible"  # openai_compatible, piper_http
+    LLM_TTS_API_URL: str = "http://ollama.home:5002/v1/audio/speech"
+    LLM_TTS_API_KEY: str = ""
+    LLM_TTS_MODEL: str = "piper"
+    LLM_TTS_VOICE: str = "en_US-lessac-medium"
+    LLM_TTS_FORMAT: str = "wav"
+    LLM_TTS_TIMEOUT: int = 300
+
     # Server
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -175,6 +185,8 @@ async def load_settings_from_db() -> None:
         "llm_comfyui_video_cfg": float,
         "llm_comfyui_video_seed": int,
         "llm_comfyui_video_timeout": int,
+        "llm_audio_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "llm_tts_timeout": int,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
     }
@@ -290,6 +302,14 @@ def get_llm_config() -> dict:
         "comfyui_video_scheduler": get_setting("LLM_COMFYUI_VIDEO_SCHEDULER") or "simple",
         "comfyui_video_seed": int(get_setting("LLM_COMFYUI_VIDEO_SEED") or 42),
         "comfyui_video_timeout": int(get_setting("LLM_COMFYUI_VIDEO_TIMEOUT") or 1800),
+        "audio_enabled": bool(get_setting("LLM_AUDIO_ENABLED")),
+        "tts_provider": get_setting("LLM_TTS_PROVIDER") or "openai_compatible",
+        "tts_api_url": (get_setting("LLM_TTS_API_URL") or "").rstrip("/"),
+        "tts_api_key": get_setting("LLM_TTS_API_KEY") or "",
+        "tts_model": get_setting("LLM_TTS_MODEL") or "piper",
+        "tts_voice": get_setting("LLM_TTS_VOICE") or "en_US-lessac-medium",
+        "tts_format": get_setting("LLM_TTS_FORMAT") or "wav",
+        "tts_timeout": int(get_setting("LLM_TTS_TIMEOUT") or 300),
         "vision_enabled": vision_enabled,
         "vision_api_url": (
             get_setting("LLM_VISION_API_URL")

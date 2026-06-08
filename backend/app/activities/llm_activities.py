@@ -732,7 +732,7 @@ async def _execute_agent_tool(
     builtin_tools = {
         "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
-        "generate_video", "image_to_video",
+        "generate_video", "image_to_video", "generate_video_with_audio",
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
@@ -1210,7 +1210,7 @@ async def run_agent_response(args: dict) -> dict:
             "called an image tool or list tool names as a substitute for making the structured tool call. "
             "When the user asks to create a video from text, call generate_video. When the user asks to "
             "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
-            "image_to_video. Include the generated video link in your final response."
+            "image_to_video. When the user wants dialog, narration, ambient sound, sound effects, Foley, or a complete audio track, call generate_video_with_audio. Include the generated video link in your final response."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -1760,6 +1760,9 @@ async def _execute_builtin(
 
     if tool_name == "image_to_video":
         return await _generate_video(tool_args, config, image_required=True)
+
+    if tool_name == "generate_video_with_audio":
+        return await _generate_video_with_audio(tool_args, config)
 
     if tool_name == "context_overview":
         return await _context_overview(thread_id, tool_args)
@@ -2561,6 +2564,291 @@ def _content_type_for_filename(filename: str) -> str:
     return "application/octet-stream"
 
 
+def _extract_generated_media_url(result_text: str) -> str:
+    import re
+
+    match = re.search(r"(/api/generated-media/[^\s)]+|https?://[^\s)]+/api/generated-media/[^\s)]+)", result_text or "")
+    return match.group(1).rstrip(".,>") if match else ""
+
+
+async def _resolve_generated_media_bytes(url: str, config: dict) -> tuple[bytes, str, str] | str:
+    import os
+    from urllib.parse import urlparse
+    import aiohttp
+
+    parsed = urlparse(url)
+    local_match = None
+    import re
+    local_match = re.search(r"/api/generated-media/([^/?#]+)", parsed.path or url)
+    if local_match:
+        filename = local_match.group(1)
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            return "Error: invalid generated media filename."
+        media_dir = config.get("generated_media_dir") or "/tmp/threadbot-generated-media"
+        path = os.path.join(media_dir, filename)
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                return f.read(), _content_type_for_filename(filename), filename
+        try:
+            from sqlalchemy import select
+            from app.database import AsyncSessionLocal
+            from app.models.models import GeneratedMedia
+
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(GeneratedMedia).where(GeneratedMedia.filename == filename))
+                media = result.scalar_one_or_none()
+            if media:
+                return media.content, media.content_type or _content_type_for_filename(filename), filename
+        except Exception as exc:
+            return f"Error loading generated media {filename}: {exc}"
+        return f"Error: generated media {filename} was not found."
+
+    if parsed.scheme not in {"http", "https"}:
+        return "Error: generated media URL must be a ThreadBot /api/generated-media URL or http(s) URL."
+    try:
+        timeout = aiohttp.ClientTimeout(total=300)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    return f"Error fetching generated media: HTTP {resp.status}"
+                raw = await resp.read()
+                content_type = resp.headers.get("content-type", "").split(";", 1)[0] or _content_type_for_filename(parsed.path)
+                filename = os.path.basename(parsed.path) or "video.webm"
+                return raw, content_type, filename
+    except Exception as exc:
+        return f"Error fetching generated media: {exc}"
+
+
+async def _synthesize_speech_audio(text: str, config: dict, tool_args: dict) -> tuple[bytes, str, str] | str:
+    import aiohttp
+    import base64
+
+    if not config.get("audio_enabled"):
+        return "Error: audio generation is disabled. Enable it in Settings > Media > Audio Generation."
+    tts_url = str(tool_args.get("tts_api_url") or config.get("tts_api_url") or "").rstrip("/")
+    if not tts_url:
+        return "Error: TTS API URL is not configured."
+    provider = str(tool_args.get("tts_provider") or config.get("tts_provider") or "openai_compatible").strip()
+    voice = str(tool_args.get("voice") or config.get("tts_voice") or "en_US-lessac-medium").strip()
+    model = str(tool_args.get("tts_model") or config.get("tts_model") or "piper").strip()
+    audio_format = str(tool_args.get("audio_format") or config.get("tts_format") or "wav").strip().lstrip(".") or "wav"
+    timeout_seconds = int(config.get("tts_timeout") or 300)
+    api_key = str(config.get("tts_api_key") or "")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    if provider == "piper_http":
+        payload = {"text": text, "voice": voice, "format": audio_format}
+    else:
+        payload = {
+            "model": model,
+            "voice": voice,
+            "input": text,
+            "response_format": audio_format,
+        }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.post(tts_url, json=payload) as resp:
+                raw = await resp.read()
+                if resp.status >= 400:
+                    return f"Error generating speech audio: HTTP {resp.status}: {raw[:1000].decode('utf-8', errors='replace')}"
+                content_type = resp.headers.get("content-type", "").split(";", 1)[0]
+                if content_type.startswith("application/json"):
+                    try:
+                        data = await resp.json(content_type=None)
+                    except Exception:
+                        data = {}
+                    audio_b64 = data.get("audio") or data.get("audio_base64") or data.get("data")
+                    if isinstance(audio_b64, str):
+                        raw = base64.b64decode(audio_b64)
+                        content_type = data.get("content_type") or f"audio/{audio_format}"
+                    else:
+                        return "Error: TTS endpoint returned JSON without audio/audio_base64 data."
+                if not raw:
+                    return "Error: TTS endpoint returned empty audio."
+                if not content_type:
+                    content_type = f"audio/{audio_format}"
+                extension = ".mp3" if "mpeg" in content_type or audio_format == "mp3" else f".{audio_format}"
+                return raw, content_type, f"speech{extension}"
+    except Exception as exc:
+        return f"Error contacting TTS endpoint at {tts_url}: {str(exc)[:500]}"
+
+
+async def _probe_media_duration_seconds(raw: bytes, filename: str) -> float:
+    import asyncio
+    import os
+    import tempfile
+
+    ext = os.path.splitext(filename or "")[1] or ".webm"
+    with tempfile.TemporaryDirectory(prefix="threadbot-probe-") as tmp:
+        path = os.path.join(tmp, f"input{ext}")
+        with open(path, "wb") as f:
+            f.write(raw)
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _stderr = await proc.communicate()
+        if proc.returncode == 0:
+            try:
+                return max(1.0, float(stdout.decode().strip()))
+            except Exception:
+                pass
+    return 5.0
+
+
+def _ambient_filter_for_prompt(prompt: str, duration: float) -> list[str]:
+    text = (prompt or "").lower()
+    duration_arg = f"duration={max(1.0, min(duration, 600.0)):.2f}"
+    if any(word in text for word in ("wind", "snow", "ice", "frozen", "storm", "blizzard")):
+        return [
+            "-f", "lavfi", "-i", f"anoisesrc=color=brown:amplitude=0.22:{duration_arg}",
+            "-f", "lavfi", "-i", f"sine=frequency=55:{duration_arg}",
+            "-filter_complex", "[0:a]lowpass=f=900,highpass=f=80,volume=0.45[a0];[1:a]volume=0.05[a1];[a0][a1]amix=inputs=2:duration=longest,afade=t=in:st=0:d=1[out]",
+            "-map", "[out]",
+        ]
+    if any(word in text for word in ("forest", "jungle", "birds", "nature", "rain")):
+        return [
+            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.16:{duration_arg}",
+            "-f", "lavfi", "-i", f"sine=frequency=1800:{duration_arg}",
+            "-filter_complex", "[0:a]lowpass=f=2500,volume=0.35[a0];[1:a]volume=0.015[a1];[a0][a1]amix=inputs=2:duration=longest[out]",
+            "-map", "[out]",
+        ]
+    if any(word in text for word in ("battle", "dungeon", "monster", "boss", "metal", "footstep", "weapon")):
+        return [
+            "-f", "lavfi", "-i", f"anoisesrc=color=brown:amplitude=0.13:{duration_arg}",
+            "-f", "lavfi", "-i", f"sine=frequency=48:{duration_arg}",
+            "-filter_complex", "[0:a]lowpass=f=650,volume=0.38[a0];[1:a]volume=0.08[a1];[a0][a1]amix=inputs=2:duration=longest[out]",
+            "-map", "[out]",
+        ]
+    if any(word in text for word in ("city", "street", "crowd", "traffic", "room", "indoor")):
+        return [
+            "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.10:{duration_arg}",
+            "-filter:a", "lowpass=f=1800,highpass=f=120,volume=0.45",
+        ]
+    return [
+        "-f", "lavfi", "-i", f"anoisesrc=color=pink:amplitude=0.08:{duration_arg}",
+        "-filter:a", "lowpass=f=1200,highpass=f=60,volume=0.35",
+    ]
+
+
+async def _generate_ambient_audio(prompt: str, duration: float) -> str | tuple[bytes, str, str]:
+    import asyncio
+    import os
+    import tempfile
+
+    if not prompt.strip():
+        return "Error: ambient audio prompt is empty."
+    with tempfile.TemporaryDirectory(prefix="threadbot-ambient-") as tmp:
+        output_path = os.path.join(tmp, "ambient.wav")
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        cmd.extend(_ambient_filter_for_prompt(prompt, duration))
+        cmd.extend(["-t", f"{max(1.0, min(duration, 600.0)):.2f}", "-c:a", "pcm_s16le", output_path])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        if proc.returncode != 0 or not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+            return f"Error generating ambient audio with ffmpeg: {stderr.decode('utf-8', errors='replace')[:1000]}"
+        with open(output_path, "rb") as f:
+            return f.read(), "audio/wav", "ambient.wav"
+
+
+async def _mix_audio_layers(layers: list[tuple[bytes, str, str, float]], duration: float) -> str | tuple[bytes, str, str]:
+    import asyncio
+    import os
+    import tempfile
+
+    if not layers:
+        return "Error: no audio layers to mix."
+    if len(layers) == 1:
+        raw, content_type, filename, _volume = layers[0]
+        return raw, content_type, filename
+    with tempfile.TemporaryDirectory(prefix="threadbot-audio-mix-") as tmp:
+        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        filter_parts = []
+        mix_inputs = []
+        for index, (raw, _content_type, filename, volume) in enumerate(layers):
+            ext = os.path.splitext(filename or "")[1] or ".wav"
+            path = os.path.join(tmp, f"layer-{index}{ext}")
+            with open(path, "wb") as f:
+                f.write(raw)
+            cmd.extend(["-i", path])
+            filter_parts.append(f"[{index}:a]volume={max(0.0, min(volume, 2.0)):.2f}[a{index}]")
+            mix_inputs.append(f"[a{index}]")
+        output_path = os.path.join(tmp, "mixed.wav")
+        filter_complex = ";".join(filter_parts) + ";" + "".join(mix_inputs) + f"amix=inputs={len(layers)}:duration=longest:normalize=0,alimiter=limit=0.95,atrim=duration={max(1.0, min(duration, 600.0)):.2f}[out]"
+        cmd.extend(["-filter_complex", filter_complex, "-map", "[out]", "-c:a", "pcm_s16le", output_path])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _stdout, stderr = await proc.communicate()
+        if proc.returncode != 0 or not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+            return f"Error mixing audio layers with ffmpeg: {stderr.decode('utf-8', errors='replace')[:1000]}"
+        with open(output_path, "rb") as f:
+            return f.read(), "audio/wav", "mixed-audio.wav"
+
+
+async def _mux_video_with_audio(video_raw: bytes, video_filename: str, audio_raw: bytes, audio_filename: str, config: dict, *, loop_video: bool) -> str | tuple[bytes, str, str]:
+    import asyncio
+    import os
+    import tempfile
+
+    video_ext = os.path.splitext(video_filename or "")[1] or ".webm"
+    audio_ext = os.path.splitext(audio_filename or "")[1] or ".wav"
+    output_ext = ".webm" if video_ext.lower() == ".webm" else ".mp4"
+    output_type = "video/webm" if output_ext == ".webm" else "video/mp4"
+    with tempfile.TemporaryDirectory(prefix="threadbot-mux-") as tmp:
+        video_path = os.path.join(tmp, f"input{video_ext}")
+        audio_path = os.path.join(tmp, f"audio{audio_ext}")
+        output_path = os.path.join(tmp, f"muxed{output_ext}")
+        with open(video_path, "wb") as f:
+            f.write(video_raw)
+        with open(audio_path, "wb") as f:
+            f.write(audio_raw)
+
+        base_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        if loop_video:
+            base_cmd.extend(["-stream_loop", "-1"])
+        base_cmd.extend(["-i", video_path, "-i", audio_path, "-map", "0:v:0", "-map", "1:a:0"])
+        if output_ext == ".webm":
+            cmd = base_cmd + ["-c:v", "copy", "-c:a", "libopus", "-shortest", output_path]
+            fallback_cmd = base_cmd + ["-c:v", "libvpx-vp9", "-b:v", "2M", "-c:a", "libopus", "-shortest", output_path]
+        else:
+            cmd = base_cmd + ["-c:v", "copy", "-c:a", "aac", "-shortest", output_path]
+            fallback_cmd = base_cmd + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-shortest", output_path]
+
+        for attempt, command in enumerate((cmd, fallback_cmd), start=1):
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _stdout, stderr = await proc.communicate()
+            if proc.returncode == 0 and os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                with open(output_path, "rb") as f:
+                    return f.read(), output_type, f"video-with-audio{output_ext}"
+            if attempt == 2:
+                return f"Error muxing audio/video with ffmpeg: {stderr.decode('utf-8', errors='replace')[:1000]}"
+
+    return "Error muxing audio/video with ffmpeg: no output file was produced."
+
+
 async def _store_generated_media(raw: bytes, source_filename: str, content_type: str, config: dict) -> str:
     import os
     import uuid
@@ -2966,6 +3254,97 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
     )
 
 
+async def _generate_video_with_audio(tool_args: dict, config: dict) -> str:
+    """Generate video, synthesize dialog plus ambience, and mux them into one final media file."""
+    import json
+
+    prompt = str(tool_args.get("prompt") or tool_args.get("video_prompt") or "").strip()
+    if not prompt:
+        return "Error: prompt is required"
+    dialogue = str(tool_args.get("dialogue") or tool_args.get("narration") or tool_args.get("audio_text") or "").strip()
+    ambient_prompt = str(tool_args.get("ambient_prompt") or tool_args.get("soundscape") or "").strip()
+    sound_effects = str(tool_args.get("sound_effects") or tool_args.get("foley") or "").strip()
+    if not dialogue and not ambient_prompt and not sound_effects:
+        return "Error: provide dialogue/narration/audio_text, ambient_prompt, or sound_effects for generate_video_with_audio."
+
+    image_url = str(tool_args.get("image_url") or tool_args.get("url") or "").strip()
+    image_base64 = str(tool_args.get("image_base64") or "").strip()
+    video_args = dict(tool_args)
+    video_prompt = prompt
+    if dialogue:
+        video_prompt = (
+            f"{prompt}\n\nThe subject should visibly speak or react in sync with this dialog/narration: {dialogue}"
+        )
+    video_args["prompt"] = video_prompt
+    video_result = await _generate_video(video_args, config, image_required=bool(image_url or image_base64))
+    video_url = _extract_generated_media_url(video_result)
+    if not video_url:
+        return f"Video generation did not produce a generated media URL.\n\n{video_result}"
+
+    video_resolved = await _resolve_generated_media_bytes(video_url, config)
+    if isinstance(video_resolved, str):
+        return video_resolved
+    video_raw, _video_content_type, video_filename = video_resolved
+
+    duration = await _probe_media_duration_seconds(video_raw, video_filename)
+    layers: list[tuple[bytes, str, str, float]] = []
+    ambient_text = "; ".join(part for part in (ambient_prompt, sound_effects) if part).strip()
+    if not ambient_text:
+        ambient_text = prompt
+    ambient_result = await _generate_ambient_audio(ambient_text, duration)
+    if isinstance(ambient_result, str):
+        return ambient_result
+    ambient_raw, ambient_content_type, ambient_filename = ambient_result
+    layers.append((ambient_raw, ambient_content_type, ambient_filename, 0.55))
+
+    if dialogue:
+        audio_result = await _synthesize_speech_audio(dialogue, config, tool_args)
+        if isinstance(audio_result, str):
+            return audio_result
+        speech_raw, speech_content_type, speech_filename = audio_result
+        layers.append((speech_raw, speech_content_type, speech_filename, 1.0))
+
+    if not layers:
+        return "Error: no audio layers were generated."
+    mixed_audio = await _mix_audio_layers(layers, duration)
+    if isinstance(mixed_audio, str):
+        return mixed_audio
+    audio_raw, _audio_content_type, audio_filename = mixed_audio
+
+    loop_video = bool(tool_args.get("loop_video_to_audio", True))
+    muxed = await _mux_video_with_audio(
+        video_raw,
+        video_filename,
+        audio_raw,
+        audio_filename,
+        config,
+        loop_video=loop_video,
+    )
+    if isinstance(muxed, str):
+        return muxed
+    muxed_raw, muxed_content_type, muxed_filename = muxed
+    muxed_url = await _store_generated_media(muxed_raw, muxed_filename, muxed_content_type, config)
+
+    summary = {
+        "video_prompt": prompt,
+        "effective_video_prompt": video_prompt,
+        "dialogue": dialogue,
+        "ambient_prompt": ambient_prompt,
+        "sound_effects": sound_effects,
+        "source_video": video_url,
+        "estimated_duration_seconds": round(duration, 2),
+        "loop_video_to_audio": loop_video,
+        "tts_provider": tool_args.get("tts_provider") or config.get("tts_provider"),
+        "voice": tool_args.get("voice") or config.get("tts_voice"),
+    }
+    return (
+        "Generated video with audio:\n\n"
+        f"[Open generated video with audio]({muxed_url})\n\n"
+        "Pipeline details:\n"
+        f"```json\n{json.dumps(summary, indent=2)}\n```"
+    )
+
+
 async def _context_overview(thread_id: str, tool_args: dict) -> str:
     """Return compactable message IDs and previews for the model only."""
     from uuid import UUID
@@ -3133,7 +3512,7 @@ async def execute_tools(args: dict) -> dict:
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
-        "generate_video", "image_to_video",
+        "generate_video", "image_to_video", "generate_video_with_audio",
         "context_overview", "compact_context_topic",
     }
 

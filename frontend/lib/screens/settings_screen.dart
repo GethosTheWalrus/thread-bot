@@ -47,6 +47,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _videoSeedController = TextEditingController();
   final _videoTimeoutController = TextEditingController();
   final _imageToVideoWorkflowController = TextEditingController();
+  final _ttsApiUrlController = TextEditingController();
+  final _ttsModelController = TextEditingController();
+  final _ttsVoiceController = TextEditingController();
+  final _ttsFormatController = TextEditingController();
+  final _ttsTimeoutController = TextEditingController();
   final _publicBaseUrlController = TextEditingController();
   final _maxIterationsController = TextEditingController();
   final _contextWindowController = TextEditingController();
@@ -73,6 +78,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _visionRecipeEnabled = true;
   bool _visionPipelineEnabled = false;
   bool _videoGenerationEnabled = true;
+  bool _audioGenerationEnabled = true;
+  String _ttsProvider = 'openai_compatible';
   String _visionProvider = 'auto';
   String _selectedComfyuiWorkflow = 'Flux.2 Klein 9B';
   bool _showComfyuiWorkflowJson = false;
@@ -170,6 +177,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
           (settings['llm_comfyui_video_seed'] ?? 42).toString();
       _videoTimeoutController.text =
           (settings['llm_comfyui_video_timeout'] ?? 1800).toString();
+      _audioGenerationEnabled = settings['llm_audio_enabled'] as bool? ?? true;
+      _ttsProvider =
+          settings['llm_tts_provider'] as String? ?? 'openai_compatible';
+      _ttsApiUrlController.text =
+          settings['llm_tts_api_url'] as String? ??
+          'http://ollama.home:5002/v1/audio/speech';
+      _ttsModelController.text = settings['llm_tts_model'] as String? ?? 'piper';
+      _ttsVoiceController.text =
+          settings['llm_tts_voice'] as String? ?? 'en_US-lessac-medium';
+      _ttsFormatController.text = settings['llm_tts_format'] as String? ?? 'wav';
+      _ttsTimeoutController.text =
+          (settings['llm_tts_timeout'] ?? 300).toString();
       _publicBaseUrlController.text =
           settings['app_public_base_url'] as String? ?? '';
       // API key is not returned for security; leave blank unless user types a new one
@@ -257,6 +276,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _videoSchedulerController.text = 'simple';
       _videoSeedController.text = '42';
       _videoTimeoutController.text = '1800';
+      _audioGenerationEnabled = true;
+      _ttsProvider = 'openai_compatible';
+      _ttsApiUrlController.text = 'http://ollama.home:5002/v1/audio/speech';
+      _ttsModelController.text = 'piper';
+      _ttsVoiceController.text = 'en_US-lessac-medium';
+      _ttsFormatController.text = 'wav';
+      _ttsTimeoutController.text = '300';
       _publicBaseUrlController.text = '';
       _contextWindowController.text = '8192';
       _maxIterationsController.text = '25';
@@ -492,6 +518,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'llm_comfyui_video_seed': int.tryParse(_videoSeedController.text) ?? 42,
         'llm_comfyui_video_timeout':
             int.tryParse(_videoTimeoutController.text) ?? 1800,
+        'llm_audio_enabled': _audioGenerationEnabled,
+        'llm_tts_provider': _ttsProvider,
+        'llm_tts_api_url': _ttsApiUrlController.text,
+        'llm_tts_model': _ttsModelController.text,
+        'llm_tts_voice': _ttsVoiceController.text,
+        'llm_tts_format': _ttsFormatController.text,
+        'llm_tts_timeout': int.tryParse(_ttsTimeoutController.text) ?? 300,
         'app_public_base_url': _publicBaseUrlController.text,
         'llm_max_iterations': maxIterations,
         'llm_context_window': contextWindow,
@@ -599,6 +632,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _videoSchedulerController.dispose();
     _videoSeedController.dispose();
     _videoTimeoutController.dispose();
+    _ttsApiUrlController.dispose();
+    _ttsModelController.dispose();
+    _ttsVoiceController.dispose();
+    _ttsFormatController.dispose();
+    _ttsTimeoutController.dispose();
     _publicBaseUrlController.dispose();
     _maxIterationsController.dispose();
     _contextWindowController.dispose();
@@ -1244,6 +1282,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       const SizedBox(height: 32),
       _buildSection(
+        'Audio Generation',
+        'Generate dialog, narration, ambient beds, and sound effects for video',
+        Icons.graphic_eq_rounded,
+        [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _audioGenerationEnabled,
+            onChanged: (v) => setState(() => _audioGenerationEnabled = v),
+            activeThumbColor: const Color(0xFF8B5CF6),
+            title: const Text('Enable audio generation'),
+            subtitle: Text(
+              'Enables generate_video_with_audio. Dialog/narration is produced by the configured TTS endpoint; ambient/Foley beds are mixed locally with ffmpeg.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildInfoBox(
+            'Default endpoint is an OpenAI-compatible local TTS service on ollama.home:5002. The worker uses ffmpeg to mix voice, ambient soundscape layers, and final video into one generated-media file.',
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(child: _buildTtsProviderDropdown()),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _ttsApiUrlController,
+                  label: 'TTS API URL',
+                  hint: 'http://ollama.home:5002/v1/audio/speech',
+                  icon: Icons.link_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _ttsModelController,
+                  label: 'TTS Model',
+                  hint: 'piper',
+                  icon: Icons.record_voice_over_outlined,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _ttsVoiceController,
+                  label: 'Voice',
+                  hint: 'en_US-lessac-medium',
+                  icon: Icons.person_outline_rounded,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _buildField(
+                  controller: _ttsFormatController,
+                  label: 'Audio Format',
+                  hint: 'wav',
+                  icon: Icons.audio_file_outlined,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildField(
+                  controller: _ttsTimeoutController,
+                  label: 'TTS Timeout Seconds',
+                  hint: '300',
+                  icon: Icons.timer_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      const SizedBox(height: 32),
+      _buildSection(
         'Computer Vision',
         'Use a dedicated multimodal LLM for image analysis and recipe extraction',
         Icons.visibility_outlined,
@@ -1533,6 +1657,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
             onChanged: (value) {
               if (value != null) setState(() => _imageProvider = value);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTtsProviderDropdown() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'TTS Provider',
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.white.withValues(alpha: 0.03),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: DropdownButtonFormField<String>(
+            initialValue: _ttsProvider,
+            decoration: const InputDecoration(
+              prefixIcon: Icon(
+                Icons.record_voice_over_outlined,
+                color: Color(0xFF71717A),
+              ),
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
+              ),
+            ),
+            dropdownColor: const Color(0xFF16161E),
+            style: const TextStyle(color: Color(0xFFE4E4E7), fontSize: 14),
+            items: const [
+              DropdownMenuItem(
+                value: 'openai_compatible',
+                child: Text('OpenAI-compatible'),
+              ),
+              DropdownMenuItem(value: 'piper_http', child: Text('Piper HTTP')),
+            ],
+            onChanged: (value) {
+              if (value != null) setState(() => _ttsProvider = value);
             },
           ),
         ),

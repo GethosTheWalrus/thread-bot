@@ -699,6 +699,59 @@ class RunThreadWorkflow:
                 {
                     "type": "function",
                     "function": {
+                        "name": "generate_video_with_audio",
+                        "description": (
+                            "Generate a complete video with an audio track. This runs the configured ComfyUI video workflow, "
+                            "synthesizes dialog or narration, generates an ambient/Foley-style sound bed, mixes the audio layers, "
+                            "and muxes the result with ffmpeg. Use this instead of generate_video/image_to_video whenever the user asks "
+                            "for dialog, narration, ambient sound, sound effects, Foley, music-like ambience, or a full scene soundtrack."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {
+                                    "type": "string",
+                                    "description": "Detailed video prompt describing subject, motion, camera movement, composition, lighting, style, constraints, and any visible speaking or reactions.",
+                                },
+                                "dialogue": {
+                                    "type": "string",
+                                    "description": "Spoken dialog or narration text. Omit only when the user wants ambient/sound-effects-only video.",
+                                },
+                                "ambient_prompt": {
+                                    "type": "string",
+                                    "description": "Ambient soundscape description, e.g. frozen wind, dungeon rumble, crowd murmur, forest rain, machinery hum.",
+                                },
+                                "sound_effects": {
+                                    "type": "string",
+                                    "description": "Specific sound effects or Foley cues to include, e.g. armor clinks, footsteps, weapon scrape, monster breathing.",
+                                },
+                                "image_url": {
+                                    "type": "string",
+                                    "description": "Optional source image URL for image-to-video with audio. Supports ThreadBot /api/generated-images/ URLs, http/https URLs, and data:image URLs.",
+                                },
+                                "image_base64": {
+                                    "type": "string",
+                                    "description": "Optional raw base64 source image bytes when no URL is available. Do not include a data: prefix.",
+                                },
+                                "content_type": {"type": "string", "description": "MIME type for image_base64. Defaults to image/png."},
+                                "negative_prompt": {"type": "string", "description": "Optional visual traits/artifacts to avoid."},
+                                "voice": {"type": "string", "description": "Optional configured TTS voice override."},
+                                "loop_video_to_audio": {"type": "boolean", "description": "Loop the video until the mixed audio ends. Defaults to true."},
+                                "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
+                                "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
+                                "frames": {"type": "integer", "description": "Optional frame count override. Defaults to configured frame count."},
+                                "fps": {"type": "integer", "description": "Optional output frames per second. Defaults to configured fps."},
+                                "steps": {"type": "integer", "description": "Optional sampling steps override."},
+                                "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
+                                "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
+                            },
+                            "required": ["prompt"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
                         "name": "context_overview",
                         "description": (
                             "Inspect the saved conversation context and list compactable message IDs with previews. "
@@ -841,7 +894,8 @@ class RunThreadWorkflow:
                     "called an image tool or list tool names as a substitute for making the structured tool call. "
                     "When the user asks to create a video from text, call generate_video. When the user asks to "
                     "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
-                    "image_to_video. Include the generated video link in your final response."
+                    "image_to_video. When the user asks for dialog, narration, ambient sound, sound effects, Foley, or a complete soundtrack, call "
+                    "generate_video_with_audio instead. Include the generated video link in your final response."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),
