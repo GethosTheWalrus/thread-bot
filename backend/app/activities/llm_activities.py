@@ -2999,6 +2999,119 @@ async def _comfyui_ui_workflow_to_api(workflow: dict, comfyui_url: str) -> dict:
     return api_workflow or workflow
 
 
+_DURATION_RE = __import__("re").compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|s\b|minutes?|mins?|m\b)",
+    __import__("re").IGNORECASE,
+)
+
+
+def _parse_requested_duration_seconds(tool_args: dict) -> float:
+    """Best-effort duration in seconds derived from explicit arg or prompt/dialogue."""
+    for key in ("duration_seconds", "duration", "length_seconds", "length"):
+        value = tool_args.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0.5, float(value))
+        except (TypeError, ValueError):
+            pass
+    for key in ("prompt", "dialogue", "narration", "audio_text", "description"):
+        text = str(tool_args.get(key) or "")
+        if not text:
+            continue
+        match = _DURATION_RE.search(text)
+        if not match:
+            continue
+        value = float(match.group("value"))
+        unit = match.group("unit").lower()
+        if unit.startswith("m"):
+            value *= 60.0
+        return max(0.5, value)
+    return 0.0
+
+
+def _derive_video_overrides(
+    tool_args: dict,
+    config: dict,
+    defaults: dict,
+    *,
+    min_frames: int = 5,
+) -> dict:
+    """Resolve width/height/frames/fps/steps/cfg from tool_args, prompt, and config.
+
+    Configured values are treated as caps. If the user requests a duration via
+    `duration_seconds`/prompt/dialogue, frames are derived from that duration and
+    the resolved fps, then clamped to the configured maximum frame count.
+    """
+    cfg_fps = max(1, int(config.get(defaults.get("fps", "comfyui_video_fps")) or 16))
+    cfg_frames_cap = max(1, int(config.get(defaults.get("frames", "comfyui_video_frames")) or 320))
+    cfg_width = int(config.get(defaults.get("width", "comfyui_video_width")) or 1280)
+    cfg_height = int(config.get(defaults.get("height", "comfyui_video_height")) or 720)
+    cfg_steps = int(config.get(defaults.get("steps", "comfyui_video_steps")) or 24)
+    cfg_cfg = float(config.get(defaults.get("cfg", "comfyui_video_cfg")) or 4.0)
+
+    duration = _parse_requested_duration_seconds(tool_args)
+
+    fps_raw = tool_args.get("fps")
+    try:
+        fps = int(fps_raw) if fps_raw is not None else cfg_fps
+    except (TypeError, ValueError):
+        fps = cfg_fps
+    fps = max(1, min(fps, cfg_fps))
+
+    frames_raw = tool_args.get("frames")
+    try:
+        explicit_frames = int(frames_raw) if frames_raw is not None else 0
+    except (TypeError, ValueError):
+        explicit_frames = 0
+
+    if duration > 0:
+        target = int(__import__("math").ceil(duration * fps)) + 1
+    elif explicit_frames > 0:
+        target = explicit_frames
+    else:
+        target = cfg_frames_cap
+
+    frames = max(min_frames, min(target, cfg_frames_cap))
+
+    width_raw = tool_args.get("width")
+    try:
+        width = int(width_raw) if width_raw is not None else cfg_width
+    except (TypeError, ValueError):
+        width = cfg_width
+    width = max(64, min(width, cfg_width))
+
+    height_raw = tool_args.get("height")
+    try:
+        height = int(height_raw) if height_raw is not None else cfg_height
+    except (TypeError, ValueError):
+        height = cfg_height
+    height = max(64, min(height, cfg_height))
+
+    steps_raw = tool_args.get("steps")
+    try:
+        steps = int(steps_raw) if steps_raw is not None else cfg_steps
+    except (TypeError, ValueError):
+        steps = cfg_steps
+    steps = max(1, min(steps, cfg_steps))
+
+    cfg_raw = tool_args.get("cfg")
+    try:
+        cfg_value = float(cfg_raw) if cfg_raw is not None else cfg_cfg
+    except (TypeError, ValueError):
+        cfg_value = cfg_cfg
+    cfg_value = max(0.0, min(cfg_value, max(cfg_cfg, 30.0)))
+
+    return {
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "fps": fps,
+        "steps": steps,
+        "cfg": cfg_value,
+    }
+
+
 async def _generate_video(tool_args: dict, config: dict, *, image_required: bool) -> str:
     """Generate text-to-video or image-to-video output through a ComfyUI workflow."""
     import asyncio
@@ -3036,24 +3149,24 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
         return "Error: ComfyUI video workflow JSON is empty or invalid."
     workflow = await _comfyui_ui_workflow_to_api(workflow, comfyui_url)
 
-    def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
-        try:
-            return max(lo, min(int(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
-        except Exception:
-            return default
-
-    def _float_arg(name: str, default: float, lo: float, hi: float) -> float:
-        try:
-            return max(lo, min(float(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
-        except Exception:
-            return default
-
-    width = _int_arg("width", int(config.get("comfyui_video_width") or 832), 64, 2048)
-    height = _int_arg("height", int(config.get("comfyui_video_height") or 480), 64, 2048)
-    frames = _int_arg("frames", int(config.get("comfyui_video_frames") or 81), 1, 241)
-    fps = _int_arg("fps", int(config.get("comfyui_video_fps") or 16), 1, 60)
-    steps = _int_arg("steps", int(config.get("comfyui_video_steps") or 24), 1, 150)
-    cfg = _float_arg("cfg", float(config.get("comfyui_video_cfg") or 4.0), 0.0, 30.0)
+    overrides = _derive_video_overrides(
+        tool_args,
+        config,
+        {
+            "width": "comfyui_video_width",
+            "height": "comfyui_video_height",
+            "frames": "comfyui_video_frames",
+            "fps": "comfyui_video_fps",
+            "steps": "comfyui_video_steps",
+            "cfg": "comfyui_video_cfg",
+        },
+    )
+    width = overrides["width"]
+    height = overrides["height"]
+    frames = overrides["frames"]
+    fps = overrides["fps"]
+    steps = overrides["steps"]
+    cfg = overrides["cfg"]
     try:
         seed = int(tool_args.get("seed") if tool_args.get("seed") is not None else config.get("comfyui_video_seed") or 42)
     except Exception:
@@ -3409,29 +3522,39 @@ async def _generate_lipsynced_video(
     else:
         workflow = _default_lipsync_workflow(config)
 
-    def _int_arg(name: str, default: int, lo: int, hi: int) -> int:
-        try:
-            return max(lo, min(int(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
-        except Exception:
-            return default
-
-    def _float_arg(name: str, default: float, lo: float, hi: float) -> float:
-        try:
-            return max(lo, min(float(tool_args.get(name) if tool_args.get(name) is not None else default), hi))
-        except Exception:
-            return default
-
-    fps = _int_arg("fps", int(config.get("comfyui_lipsync_fps") or config.get("comfyui_video_fps") or 16), 1, 60)
-    target_frames = int(duration * fps) + 1
-    configured_frames = int(config.get("comfyui_lipsync_frames") or 81)
-    frames = max(configured_frames, target_frames, 41)
-    frames = min(frames, 241)
+    overrides = _derive_video_overrides(
+        tool_args,
+        config,
+        {
+            "width": "comfyui_lipsync_width",
+            "height": "comfyui_lipsync_height",
+            "frames": "comfyui_lipsync_frames",
+            "fps": "comfyui_lipsync_fps",
+            "steps": "comfyui_lipsync_steps",
+            "cfg": "comfyui_lipsync_cfg",
+        },
+    )
+    fps = overrides["fps"]
+    width = overrides["width"]
+    height = overrides["height"]
+    steps = overrides["steps"]
+    cfg = overrides["cfg"]
+    frames = overrides["frames"]
+    if duration > 0:
+        target_frames = int(duration * fps) + 1
+        frames = max(min(target_frames, overrides["frames"]), overrides["frames"])
+    frames = max(frames, 9)
     frames = ((frames - 1 + 3) // 4) * 4 + 1
-    width = _int_arg("width", int(config.get("comfyui_lipsync_width") or config.get("comfyui_video_width") or 832), 64, 2048)
-    height = _int_arg("height", int(config.get("comfyui_lipsync_height") or config.get("comfyui_video_height") or 480), 64, 2048)
-    steps = _int_arg("lipsync_steps", int(config.get("comfyui_lipsync_steps") or 20), 1, 150)
-    cfg = _float_arg("lipsync_cfg", float(config.get("comfyui_lipsync_cfg") or 6.0), 0.0, 30.0)
-    audio_scale = _float_arg("audio_scale", float(config.get("comfyui_lipsync_audio_scale") or 1.0), -10.0, 10.0)
+    try:
+        audio_scale = float(
+            tool_args.get("audio_scale")
+            if tool_args.get("audio_scale") is not None
+            else config.get("comfyui_lipsync_audio_scale")
+            or 1.0
+        )
+    except (TypeError, ValueError):
+        audio_scale = 1.0
+    audio_scale = max(-10.0, min(audio_scale, 10.0))
     try:
         seed = int(tool_args.get("seed") if tool_args.get("seed") is not None else config.get("comfyui_lipsync_seed") or 42)
     except Exception:

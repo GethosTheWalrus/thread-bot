@@ -73,9 +73,12 @@ class Settings(BaseSettings):
     LLM_COMFYUI_VIDEO_PROMPT_NODE: str = ""
     LLM_COMFYUI_VIDEO_NEGATIVE_NODE: str = ""
     LLM_COMFYUI_VIDEO_NEGATIVE_PROMPT: str = "low quality, blurry, distorted, watermark, text artifacts"
-    LLM_COMFYUI_VIDEO_WIDTH: int = 832
-    LLM_COMFYUI_VIDEO_HEIGHT: int = 480
-    LLM_COMFYUI_VIDEO_FRAMES: int = 81
+    # Caps — the agent may request smaller values; the backend clamps
+    # duration-derived overrides to these limits. Defaults allow up to
+    # 20 seconds at 16 fps with up to 1280x720.
+    LLM_COMFYUI_VIDEO_WIDTH: int = 1280
+    LLM_COMFYUI_VIDEO_HEIGHT: int = 720
+    LLM_COMFYUI_VIDEO_FRAMES: int = 320
     LLM_COMFYUI_VIDEO_FPS: int = 16
     LLM_COMFYUI_VIDEO_STEPS: int = 24
     LLM_COMFYUI_VIDEO_CFG: float = 4.0
@@ -107,9 +110,9 @@ class Settings(BaseSettings):
     LLM_COMFYUI_LIPSYNC_AUDIO_ENCODER: str = "wav2vec2_large_english_fp16.safetensors"
     LLM_COMFYUI_LIPSYNC_VAE: str = "wan_2.1_vae.safetensors"
     LLM_COMFYUI_LIPSYNC_CLIP: str = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
-    LLM_COMFYUI_LIPSYNC_WIDTH: int = 832
-    LLM_COMFYUI_LIPSYNC_HEIGHT: int = 480
-    LLM_COMFYUI_LIPSYNC_FRAMES: int = 81
+    LLM_COMFYUI_LIPSYNC_WIDTH: int = 1280
+    LLM_COMFYUI_LIPSYNC_HEIGHT: int = 720
+    LLM_COMFYUI_LIPSYNC_FRAMES: int = 320
     LLM_COMFYUI_LIPSYNC_FPS: int = 16
     LLM_COMFYUI_LIPSYNC_STEPS: int = 20
     LLM_COMFYUI_LIPSYNC_CFG: float = 6.0
