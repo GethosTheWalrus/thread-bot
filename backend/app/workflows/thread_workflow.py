@@ -120,7 +120,7 @@ class RunThreadWorkflow:
                         max_iterations = 5
                     max_iterations = max(1, min(max_iterations, 5))
                     effective_tool_timeout = max(tool_timeout, (tool_timeout * max_iterations) + 300)
-                elif name in ("generate_video", "image_to_video", "generate_video_with_audio"):
+                elif name == "generate_video":
                     video_timeout = int(
                         llm_config.get("video_tool_timeout")
                         or llm_config.get("comfyui_lipsync_timeout")
@@ -638,50 +638,26 @@ class RunThreadWorkflow:
                     "function": {
                         "name": "generate_video",
                         "description": (
-                            "Generate a video from a text prompt using the configured ComfyUI video workflow, such as Wan2.2. "
-                            "Use this when the user asks to create, render, or generate a video from text. Return the generated video link."
+                            "Generate a video from text and/or a source image using the configured local ComfyUI video workflows (Wan 2.2 5B / S2V). "
+                            "This is the ONLY video tool — use it for every video request regardless of whether the user wants a silent video, "
+                            "a scene with ambient sound, a character speaking, or a full audio track. "
+                            "If dialogue, ambient_prompt, or sound_effects are provided, ThreadBot will additionally run TTS, generate an ambient/Foley "
+                            "sound bed, mix the layers with ffmpeg, and mux the final video. If dialogue is provided, ThreadBot will also run the "
+                            "configured ComfyUI lip-sync stage so the character's mouth moves with the spoken line. "
+                            "If no audio fields are provided, the video is returned silent (no audio track). "
+                            "Pass image_url or image_base64 to animate a source image (image-to-video); otherwise the tool runs text-to-video. "
+                            "Return the generated video link in your final response."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "prompt": {
                                     "type": "string",
-                                    "description": "Detailed video prompt describing subject, motion, camera movement, composition, lighting, style, and constraints.",
-                                },
-                                "negative_prompt": {
-                                    "type": "string",
-                                    "description": "Optional traits/artifacts to avoid, such as flicker, blur, distortion, bad anatomy, watermark, or text artifacts.",
-                                },
-                                "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
-                                "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
-                                "frames": {"type": "integer", "description": "Optional frame count override. Defaults to configured frame count."},
-                                "fps": {"type": "integer", "description": "Optional output frames per second. Defaults to configured fps."},
-                                "steps": {"type": "integer", "description": "Optional sampling steps override."},
-                                "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
-                                "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
-                            },
-                            "required": ["prompt"],
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "image_to_video",
-                        "description": (
-                            "Generate a video from a source image plus an optional motion/style prompt using the configured ComfyUI image-to-video workflow. "
-                            "Use this when the user asks to animate an uploaded/generated/reference image, or asks for video from both image and text."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "Motion and style prompt describing how the source image should animate, camera movement, mood, and constraints.",
+                                    "description": "Detailed video prompt describing subject, motion, camera movement, composition, lighting, style, constraints, and any visible speaking or reactions.",
                                 },
                                 "image_url": {
                                     "type": "string",
-                                    "description": "Source image URL. Supports ThreadBot /api/generated-images/ URLs, normal http/https image URLs, and data:image URLs.",
+                                    "description": "Optional source image URL for image-to-video. Supports ThreadBot /api/generated-images/ URLs, normal http/https URLs, and data:image URLs. If omitted, the tool runs text-to-video.",
                                 },
                                 "image_base64": {
                                     "type": "string",
@@ -691,58 +667,19 @@ class RunThreadWorkflow:
                                     "type": "string",
                                     "description": "MIME type for image_base64. Defaults to image/png.",
                                 },
-                                "negative_prompt": {"type": "string", "description": "Optional traits/artifacts to avoid."},
-                                "width": {"type": "integer", "description": "Optional width override. Defaults to configured video width."},
-                                "height": {"type": "integer", "description": "Optional height override. Defaults to configured video height."},
-                                "frames": {"type": "integer", "description": "Optional frame count override. Defaults to configured frame count."},
-                                "fps": {"type": "integer", "description": "Optional output frames per second. Defaults to configured fps."},
-                                "steps": {"type": "integer", "description": "Optional sampling steps override."},
-                                "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
-                                "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
-                            },
-                            "required": ["prompt"],
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "generate_video_with_audio",
-                        "description": (
-                            "Generate a complete video with an audio track. This runs the configured ComfyUI video workflow, "
-                            "synthesizes dialog or narration, generates an ambient/Foley-style sound bed, mixes the audio layers, "
-                            "and muxes the result with ffmpeg. Use this instead of generate_video/image_to_video whenever the user asks "
-                            "for dialog, narration, ambient sound, sound effects, Foley, music-like ambience, or a full scene soundtrack."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "prompt": {
-                                    "type": "string",
-                                    "description": "Detailed video prompt describing subject, motion, camera movement, composition, lighting, style, constraints, and any visible speaking or reactions.",
-                                },
                                 "dialogue": {
                                     "type": "string",
-                                    "description": "Spoken dialog or narration text. Omit only when the user wants ambient/sound-effects-only video.",
+                                    "description": "Spoken dialog or narration text. When present, ThreadBot synthesizes speech with the configured TTS endpoint and runs the ComfyUI lip-sync stage so the character's mouth moves with the line.",
                                 },
                                 "ambient_prompt": {
                                     "type": "string",
-                                    "description": "Ambient soundscape description, e.g. frozen wind, dungeon rumble, crowd murmur, forest rain, machinery hum.",
+                                    "description": "Ambient soundscape description, e.g. frozen wind, dungeon rumble, crowd murmur, forest rain, machinery hum, cafe chatter. Muxed with the video as a low-volume bed.",
                                 },
                                 "sound_effects": {
                                     "type": "string",
                                     "description": "Specific sound effects or Foley cues to include, e.g. armor clinks, footsteps, weapon scrape, monster breathing.",
                                 },
-                                "image_url": {
-                                    "type": "string",
-                                    "description": "Optional source image URL for image-to-video with audio. Supports ThreadBot /api/generated-images/ URLs, http/https URLs, and data:image URLs.",
-                                },
-                                "image_base64": {
-                                    "type": "string",
-                                    "description": "Optional raw base64 source image bytes when no URL is available. Do not include a data: prefix.",
-                                },
-                                "content_type": {"type": "string", "description": "MIME type for image_base64. Defaults to image/png."},
-                                "negative_prompt": {"type": "string", "description": "Optional visual traits/artifacts to avoid."},
+                                "negative_prompt": {"type": "string", "description": "Optional traits/artifacts to avoid."},
                                 "voice": {"type": "string", "description": "Optional configured TTS voice override."},
                                 "skip_lipsync": {"type": "boolean", "description": "Set true only if the user wants voice/audio muxing without ComfyUI lip-sync. Defaults to false."},
                                 "loop_video_to_audio": {"type": "boolean", "description": "Loop the video until the mixed audio ends. Defaults to true."},
@@ -753,6 +690,7 @@ class RunThreadWorkflow:
                                 "steps": {"type": "integer", "description": "Optional sampling steps override."},
                                 "cfg": {"type": "number", "description": "Optional CFG/guidance scale override."},
                                 "seed": {"type": "integer", "description": "Optional seed override. Defaults to configured video seed."},
+                                "duration_seconds": {"type": "number", "description": "Optional target duration in seconds. The worker derives frames = ceil(duration*fps)+1, clamped to the configured max."},
                             },
                             "required": ["prompt"],
                         },
@@ -901,17 +839,18 @@ class RunThreadWorkflow:
                     "the image tool style_preset that best matches the user's requested medium or intent; use "
                     "auto only when the user's prompt already clearly specifies the visual style. Never say you "
                     "called an image tool or list tool names as a substitute for making the structured tool call. "
-                    "When the user asks to create a video from text, call generate_video. When the user asks to "
-                    "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
-                    "image_to_video. When the user asks for dialog, narration, voiceover, a character speaking, "
-                    "lip-sync, ambient sound, sound effects, Foley, or a complete soundtrack, call "
-                    "generate_video_with_audio. ThreadBot has a configured local ComfyUI + Wan lip-sync stage, "
-                    "local TTS, and ffmpeg muxing; do not claim this capability is unavailable and do not recommend "
-                    "external talking-head services instead of using the tool. To control video length, say 'a 10 "
-                    "second video' or 'for 8s' in the prompt or pass duration_seconds; the worker auto-derives "
-                    "frames = ceil(duration*fps)+1 and clamps to the configured max (default 20s at 16fps = 320 "
-                    "frames). Explicit per-call frames/fps/width/height/steps/cfg are still honored but clamped "
-                    "to the same caps. Include the generated video link in your final response."
+                    "When the user asks to create a video, call generate_video. This is the only video tool and handles every case: "
+                    "text-to-video, image-to-video (when image_url or image_base64 is provided), and full audio/video (when dialogue, "
+                    "ambient_prompt, or sound_effects are provided — in which case ThreadBot synthesizes TTS speech, optionally runs the "
+                    "ComfyUI lip-sync stage so the character's mouth moves with the spoken line, generates an ambient/Foley sound bed, "
+                    "and muxes the result with ffmpeg). When the scene implies sound (a character speaking, ambient environments, "
+                    "ordering coffee, walking outside, combat, etc.) pass the appropriate audio fields so the video is not silent. "
+                    "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not claim this "
+                    "capability is unavailable and do not recommend external talking-head services instead of using the tool. "
+                    "To control video length, say 'a 10 second video' or 'for 8s' in the prompt or pass duration_seconds; the worker "
+                    "auto-derives frames = ceil(duration*fps)+1 and clamps to the configured max (default 20s at 16fps = 320 frames). "
+                    "Explicit per-call frames/fps/width/height/steps/cfg are still honored but clamped to the same caps. "
+                    "Include the generated video link in your final response."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),

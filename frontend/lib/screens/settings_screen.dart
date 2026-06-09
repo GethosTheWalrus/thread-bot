@@ -1224,7 +1224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: const Color(0xFF8B5CF6),
             title: const Text('Enable video generation'),
             subtitle: Text(
-              'Enables generate_video and image_to_video. Uses the same ComfyUI API URL above, defaulting to your ollama.home:8188 instance.',
+              'Enables the unified generate_video tool. Uses the same ComfyUI API URL above, defaulting to your strix.home:8188 instance.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.white.withValues(alpha: 0.4),
@@ -1441,7 +1441,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: const Color(0xFF8B5CF6),
             title: const Text('Enable audio generation'),
             subtitle: Text(
-              'Enables generate_video_with_audio. Dialog/narration is produced by the configured TTS endpoint; ambient/Foley beds are mixed locally with ffmpeg.',
+              'When generate_video is called with dialogue, ambient_prompt, or sound_effects, ThreadBot synthesizes TTS speech, runs an optional ComfyUI lip-sync pass, generates an ambient/Foley sound bed, and muxes the final video with ffmpeg. Without audio fields the tool returns a silent video.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.white.withValues(alpha: 0.4),
@@ -1527,7 +1527,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: const Color(0xFF8B5CF6),
             title: const Text('Enable ComfyUI lip sync stage'),
             subtitle: Text(
-              'When generate_video_with_audio includes dialog or narration, ThreadBot runs a second ComfyUI pass using the generated speech to produce a lip-synced video before muxing ambience and voice.',
+              'When generate_video includes dialogue, ThreadBot runs a second ComfyUI pass using the synthesized speech to produce a lip-synced video before muxing ambience and voice.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.white.withValues(alpha: 0.4),

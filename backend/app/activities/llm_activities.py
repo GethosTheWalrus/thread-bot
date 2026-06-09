@@ -732,7 +732,7 @@ async def _execute_agent_tool(
     builtin_tools = {
         "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
-        "generate_video", "image_to_video", "generate_video_with_audio",
+        "generate_video",
         "context_overview", "compact_context_topic",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
@@ -1208,13 +1208,15 @@ async def run_agent_response(args: dict) -> dict:
             "the image tool style_preset that best matches the user's requested medium or intent; use "
             "auto only when the user's prompt already clearly specifies the visual style. Never say you "
             "called an image tool or list tool names as a substitute for making the structured tool call. "
-            "When the user asks to create a video from text, call generate_video. When the user asks to "
-            "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
-            "image_to_video. When the user wants dialog, narration, voiceover, a character speaking, lip-sync, "
-            "ambient sound, sound effects, Foley, or a complete audio track, call generate_video_with_audio. "
-            "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not "
-            "claim this capability is unavailable and do not recommend external talking-head services instead of "
-            "using the tool. Include the generated video link in your final response."
+            "When the user asks to create a video, call generate_video. This is the only video tool and handles every case: "
+            "text-to-video, image-to-video (when image_url or image_base64 is provided), and full audio/video (when dialogue, "
+            "ambient_prompt, or sound_effects are provided — in which case ThreadBot synthesizes TTS speech, optionally runs the "
+            "ComfyUI lip-sync stage so the character's mouth moves with the spoken line, generates an ambient/Foley sound bed, "
+            "and muxes the result with ffmpeg). When the scene implies sound (a character speaking, ambient environments, "
+            "ordering coffee, walking outside, etc.) pass the appropriate audio fields so the video is not silent. "
+            "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not claim this "
+            "capability is unavailable and do not recommend external talking-head services instead of using the tool. "
+            "Include the generated video link in your final response."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
@@ -1760,13 +1762,14 @@ async def _execute_builtin(
         return await _iterate_image_generation(tool_args, config)
 
     if tool_name == "generate_video":
-        return await _generate_video(tool_args, config, image_required=False)
-
-    if tool_name == "image_to_video":
-        return await _generate_video(tool_args, config, image_required=True)
-
-    if tool_name == "generate_video_with_audio":
-        return await _generate_video_with_audio(tool_args, config)
+        dialogue = str(tool_args.get("dialogue") or tool_args.get("narration") or tool_args.get("audio_text") or "").strip()
+        ambient_prompt = str(tool_args.get("ambient_prompt") or tool_args.get("soundscape") or "").strip()
+        sound_effects = str(tool_args.get("sound_effects") or tool_args.get("foley") or "").strip()
+        if dialogue or ambient_prompt or sound_effects:
+            return await _generate_video_with_audio(tool_args, config)
+        image_url = str(tool_args.get("image_url") or "").strip()
+        image_base64 = str(tool_args.get("image_base64") or "").strip()
+        return await _generate_video(tool_args, config, image_required=bool(image_url or image_base64))
 
     if tool_name == "context_overview":
         return await _context_overview(thread_id, tool_args)
@@ -3136,7 +3139,7 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
     image_base64 = str(tool_args.get("image_base64") or "").strip()
     content_type = str(tool_args.get("content_type") or "image/png").strip() or "image/png"
     if image_required and not image_url and not image_base64:
-        return "Error: image_to_video requires image_url or image_base64"
+        return "Error: generate_video with image_url/image_base64 set requires at least one source image"
 
     workflow_key = "comfyui_image_to_video_workflow" if image_required else "comfyui_video_workflow"
     workflow_text = str(config.get(workflow_key) or config.get("comfyui_video_workflow") or "").strip()
@@ -3736,7 +3739,7 @@ async def _generate_video_with_audio(tool_args: dict, config: dict) -> str:
     ambient_prompt = str(tool_args.get("ambient_prompt") or tool_args.get("soundscape") or "").strip()
     sound_effects = str(tool_args.get("sound_effects") or tool_args.get("foley") or "").strip()
     if not dialogue and not ambient_prompt and not sound_effects:
-        return "Error: provide dialogue/narration/audio_text, ambient_prompt, or sound_effects for generate_video_with_audio."
+        return "Error: provide dialogue, ambient_prompt, or sound_effects to add audio to the generated video."
 
     image_url = str(tool_args.get("image_url") or tool_args.get("url") or "").strip()
     image_base64 = str(tool_args.get("image_base64") or "").strip()
@@ -4010,7 +4013,7 @@ async def execute_tools(args: dict) -> dict:
     BUILTIN_TOOLS = {
         "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
-        "generate_video", "image_to_video", "generate_video_with_audio",
+        "generate_video",
         "context_overview", "compact_context_topic",
     }
 
