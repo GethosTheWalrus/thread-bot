@@ -120,6 +120,14 @@ class RunThreadWorkflow:
                         max_iterations = 5
                     max_iterations = max(1, min(max_iterations, 5))
                     effective_tool_timeout = max(tool_timeout, (tool_timeout * max_iterations) + 300)
+                elif name in ("generate_video", "image_to_video", "generate_video_with_audio"):
+                    video_timeout = int(
+                        llm_config.get("video_tool_timeout")
+                        or llm_config.get("comfyui_lipsync_timeout")
+                        or 2400
+                    )
+                    # Add 300s headroom for audio mux / TTS / ambient generation.
+                    effective_tool_timeout = max(tool_timeout, video_timeout + 300)
                 return await execute_activity(
                     execute_tool_activity,
                     {
