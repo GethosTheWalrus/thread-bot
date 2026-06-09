@@ -1210,7 +1210,11 @@ async def run_agent_response(args: dict) -> dict:
             "called an image tool or list tool names as a substitute for making the structured tool call. "
             "When the user asks to create a video from text, call generate_video. When the user asks to "
             "animate an uploaded/generated/reference image or combine an image with a video prompt, call "
-            "image_to_video. When the user wants dialog, narration, ambient sound, sound effects, Foley, or a complete audio track, call generate_video_with_audio. Include the generated video link in your final response."
+            "image_to_video. When the user wants dialog, narration, voiceover, a character speaking, lip-sync, "
+            "ambient sound, sound effects, Foley, or a complete audio track, call generate_video_with_audio. "
+            "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not "
+            "claim this capability is unavailable and do not recommend external talking-head services instead of "
+            "using the tool. Include the generated video link in your final response."
             f"{discord_instruction}"
             f"{tool_inventory_instruction}"
         ),
