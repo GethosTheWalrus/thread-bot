@@ -42,8 +42,26 @@ REACHY_MEDIA_BACKEND=default
 REACHY_CAMERA_MEDIA_BACKEND=local
 REACHY_SPEECH_MEDIA_BACKEND=default
 REACHY_TASK_QUEUE=reachy-local
+TEMPORAL_PAYLOAD_CODEC_ENABLED=true
 ```
 
 Override any of these in your shell or `.env` before running Compose.
+
+## Temporal Payload Codec Key
+
+The deployed ThreadBot cluster encrypts Temporal payloads. Local Reachy services must use the same codec key or they will fail with:
+
+```text
+Unknown payload encoding binary/encrypted
+```
+
+Load the key from Kubernetes before starting the local Reachy services:
+
+```bash
+export TEMPORAL_PAYLOAD_CODEC_ENABLED=true
+export TEMPORAL_PAYLOAD_CODEC_KEY="$(kubectl -n threadbot get secret codec-encryption-key -o jsonpath='{.data.key}' | base64 -d)"
+```
+
+Alternatively, put `TEMPORAL_PAYLOAD_CODEC_KEY=...` in a local `.env` file. Do not commit that file.
 
 The Reachy containers use host networking and privileged device access because the daemon needs direct local access to USB/media/audio hardware.
