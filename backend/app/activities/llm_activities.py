@@ -734,6 +734,7 @@ async def _execute_agent_tool(
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "generate_video",
         "context_overview", "compact_context_topic",
+        "reachy_move", "reachy_animation", "reachy_capture_image",
     }
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
     if not tool_call_id:
@@ -1700,6 +1701,55 @@ async def _execute_builtin(
             return str(result)
         except Exception as e:
             return f"Error evaluating expression: {str(e)}"
+
+    if tool_name == "reachy_move":
+        if not (config.get("reachy") or {}).get("enabled"):
+            return "Error: Reachy tools are disabled. Set REACHY_ENABLED=true for the worker/bridge."
+        try:
+            from app.reachy_client import ReachyPose, goto_pose
+
+            pose = ReachyPose(
+                roll=float(tool_args.get("roll") or 0.0),
+                pitch=float(tool_args.get("pitch") or 0.0),
+                yaw=float(tool_args.get("yaw") or 0.0),
+                z=float(tool_args.get("z") or 0.0),
+                body_yaw=float(tool_args.get("body_yaw") or 0.0),
+                right_antenna=float(tool_args.get("right_antenna") or 0.0),
+                left_antenna=float(tool_args.get("left_antenna") or 0.0),
+                duration=float(tool_args.get("duration") or 1.0),
+            )
+            return await asyncio.to_thread(goto_pose, config.get("reachy") or {}, pose)
+        except Exception as exc:
+            return f"Error moving Reachy: {exc}"
+
+    if tool_name == "reachy_animation":
+        if not (config.get("reachy") or {}).get("enabled"):
+            return "Error: Reachy tools are disabled. Set REACHY_ENABLED=true for the worker/bridge."
+        try:
+            from app.reachy_client import play_animation
+
+            name = str(tool_args.get("name") or "thinking")
+            duration = float(tool_args.get("duration") or 3.0)
+            return await asyncio.to_thread(play_animation, config.get("reachy") or {}, name, duration)
+        except Exception as exc:
+            return f"Error playing Reachy animation: {exc}"
+
+    if tool_name == "reachy_capture_image":
+        if not (config.get("reachy") or {}).get("enabled"):
+            return "Error: Reachy tools are disabled. Set REACHY_ENABLED=true for the worker/bridge."
+        question = str(tool_args.get("question") or "Describe what Reachy sees concisely.").strip()
+        try:
+            from app.reachy_client import capture_image_base64
+
+            image_base64, content_type = await asyncio.to_thread(capture_image_base64, config.get("reachy") or {})
+            nested_args = {
+                "image_base64": image_base64,
+                "content_type": content_type,
+                "question": question,
+            }
+            return await _execute_builtin("describe_image", nested_args, thread_id, redis_url, stream_channel, config)
+        except Exception as exc:
+            return f"Error capturing Reachy image: {exc}"
 
     if tool_name == "json_parse":
         import json as _json
@@ -3275,7 +3325,13 @@ async def _generate_video(tool_args: dict, config: dict, *, image_required: bool
                 inputs[key] = seed
 
     client_id = f"threadbot-video-{seed}"
-    timeout_total = int(config.get("comfyui_video_timeout") or config.get("stream_timeout") or 1800)
+    timeout_total = int(
+        config.get("comfyui_video_timeout")
+        or config.get("video_tool_timeout")
+        or config.get("comfyui_lipsync_timeout")
+        or config.get("stream_timeout")
+        or 3600
+    )
     submit_timeout = aiohttp.ClientTimeout(total=60)
     poll_timeout = aiohttp.ClientTimeout(total=timeout_total)
     fetch_timeout = aiohttp.ClientTimeout(total=300)
@@ -3618,7 +3674,12 @@ async def _generate_lipsynced_video(
                 inputs[key] = seed
 
     client_id = f"threadbot-lipsync-{seed}"
-    timeout_total = int(config.get("comfyui_lipsync_timeout") or config.get("comfyui_video_timeout") or 2400)
+    timeout_total = int(
+        config.get("comfyui_lipsync_timeout")
+        or config.get("video_tool_timeout")
+        or config.get("comfyui_video_timeout")
+        or 3600
+    )
     submit_timeout = aiohttp.ClientTimeout(total=60)
     poll_timeout = aiohttp.ClientTimeout(total=timeout_total)
     fetch_timeout = aiohttp.ClientTimeout(total=300)
@@ -4015,6 +4076,7 @@ async def execute_tools(args: dict) -> dict:
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "generate_video",
         "context_overview", "compact_context_topic",
+        "reachy_move", "reachy_animation", "reachy_capture_image",
     }
 
     # Build human-readable description and publish tool_call event

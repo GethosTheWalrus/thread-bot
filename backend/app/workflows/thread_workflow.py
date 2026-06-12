@@ -75,6 +75,98 @@ class RunThreadWorkflow:
                 {"type": "token", "content": content[start:start + chunk_size]},
             )
 
+    def _reachy_enabled_for_thread(self, llm_config: dict, thread_id: str) -> bool:
+        reachy_config = llm_config.get("reachy") or {}
+        if not reachy_config.get("enabled"):
+            return False
+        configured_thread = str(reachy_config.get("thread_id") or "").strip()
+        return not configured_thread or configured_thread == str(thread_id)
+
+    async def _execute_reachy_tool(
+        self,
+        *,
+        execute_reachy_tool_activity,
+        save_message_activity,
+        name: str,
+        arguments: str,
+        tool_call_id: str,
+        thread_id: str,
+        llm_config: dict,
+    ) -> str:
+        import json
+
+        reachy_config = llm_config.get("reachy") or {}
+        task_queue = reachy_config.get("task_queue") or "reachy-local"
+        tool_call = {
+            "id": tool_call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments or "{}"},
+        }
+        display_name = f"reachy:{name.removeprefix('reachy_')}"
+        call_content = f"Calling {display_name}"
+
+        await execute_activity(
+            save_message_activity,
+            {"thread_id": thread_id, "role": "tool_call", "content": call_content, "metadata": {"tool_calls": [tool_call]}},
+            start_to_close_timeout=timedelta(seconds=10),
+        )
+        await self._publish_event(llm_config, {
+            "type": "tool_call",
+            "content": call_content,
+            "tools": [display_name],
+            "tool_calls": [tool_call],
+        })
+
+        try:
+            tool_args = json.loads(arguments or "{}")
+        except Exception:
+            tool_args = {}
+
+        try:
+            result_text = await execute_activity(
+                execute_reachy_tool_activity,
+                {
+                    "tool_name": name,
+                    "arguments": tool_args,
+                    "thread_id": thread_id,
+                    "llm_config": llm_config,
+                    "reachy": reachy_config,
+                },
+                task_queue=task_queue,
+                start_to_close_timeout=timedelta(seconds=int(reachy_config.get("tool_timeout") or 300)),
+                heartbeat_timeout=timedelta(seconds=30),
+                retry_policy=RetryPolicy(
+                    initial_interval=timedelta(seconds=1),
+                    backoff_coefficient=2.0,
+                    maximum_interval=timedelta(seconds=10),
+                    maximum_attempts=2,
+                ),
+                summary=f"Execute Reachy tool {name}",
+            )
+            success = not str(result_text).startswith("Error:")
+        except Exception as exc:
+            result_text = f"Error executing Reachy tool: {exc}"
+            success = False
+
+        await execute_activity(
+            save_message_activity,
+            {
+                "thread_id": thread_id,
+                "role": "tool_result",
+                "content": result_text,
+                "metadata": {"tool_call_id": tool_call_id, "tool_name": name},
+            },
+            start_to_close_timeout=timedelta(seconds=10),
+        )
+        await self._publish_event(llm_config, {
+            "type": "tool_result",
+            "tool": display_name,
+            "tool_call_id": tool_call_id,
+            "content": result_text,
+            "success": success,
+        })
+        return result_text
+
     def _estimate_context_tokens(self, messages: list[dict]) -> int:
         total_chars = 0
         for message in messages:
@@ -98,14 +190,35 @@ class RunThreadWorkflow:
             include_usage=True,
         )
 
-    def _agent_tools(self, openai_tools: list[dict], mcp_tools_map: dict, thread_id: str, llm_config: dict, execute_tool_activity):
+    def _agent_tools(
+        self,
+        openai_tools: list[dict],
+        mcp_tools_map: dict,
+        thread_id: str,
+        llm_config: dict,
+        execute_tool_activity,
+        execute_reachy_tool_activity,
+        save_message_activity,
+    ):
         tools = []
         tool_timeout = int(llm_config.get("tool_timeout") or llm_config.get("stream_timeout") or 600)
+        reachy_tool_names = {"reachy_move", "reachy_animation", "reachy_capture_image"}
         for tool_def in openai_tools:
             fn = tool_def.get("function", {})
             tool_name = fn.get("name", "")
 
             async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
+                if name in reachy_tool_names:
+                    return await self._execute_reachy_tool(
+                        execute_reachy_tool_activity=execute_reachy_tool_activity,
+                        save_message_activity=save_message_activity,
+                        name=name,
+                        arguments=args or "{}",
+                        tool_call_id=getattr(ctx, "tool_call_id", "") or "",
+                        thread_id=thread_id,
+                        llm_config=llm_config,
+                    )
+
                 effective_tool_timeout = tool_timeout
                 if name == "iterate_image_generation":
                     import json
@@ -121,13 +234,26 @@ class RunThreadWorkflow:
                     max_iterations = max(1, min(max_iterations, 5))
                     effective_tool_timeout = max(tool_timeout, (tool_timeout * max_iterations) + 300)
                 elif name == "generate_video":
-                    video_timeout = int(
+                    import json
+
+                    try:
+                        parsed_args = json.loads(args or "{}")
+                    except Exception:
+                        parsed_args = {}
+                    wants_audio = any(
+                        parsed_args.get(key)
+                        for key in ("dialogue", "narration", "audio_text", "ambient_prompt", "soundscape", "sound_effects", "foley")
+                    )
+                    base_video_timeout = int(
                         llm_config.get("video_tool_timeout")
                         or llm_config.get("comfyui_lipsync_timeout")
                         or 2400
                     )
-                    # Add 300s headroom for audio mux / TTS / ambient generation.
-                    effective_tool_timeout = max(tool_timeout, video_timeout + 300)
+                    # Audio path stacks video + lipsync + TTS + ambient + mux.
+                    # Worst case on Strix Halo APU: video ~30m + lipsync 14B ~30m + 5m overhead.
+                    video_timeout = base_video_timeout * (2 if wants_audio else 1)
+                    # Add 600s headroom for audio mux / TTS / ambient generation.
+                    effective_tool_timeout = max(tool_timeout, video_timeout + 600)
                 return await execute_activity(
                     execute_tool_activity,
                     {
@@ -169,9 +295,12 @@ class RunThreadWorkflow:
                 execute_agent_tool_activity, generated_images_for_latest_turn,
                 send_continue_prompt,
             )
+            from app.activities.reachy_activities import execute_reachy_tool_activity
+            from app.workflows.reachy_speech_workflow import ReachySpeechWorkflow
         thread_id = input["thread_id"]
         message = input["message"]
         llm_config = input.get("llm_config", {})
+        reachy_speech_handle = None
 
         try:
             # ── Get chat history ─────────────────────────────────────────
@@ -424,6 +553,69 @@ class RunThreadWorkflow:
                                 },
                             },
                             "required": ["expression"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "reachy_move",
+                        "description": (
+                            "Move the connected Reachy Mini robot. Use this when the user asks Reachy to look, nod, "
+                            "turn, point attention, or physically react. Angles are degrees and are clamped to safe "
+                            "Reachy Mini ranges by the SDK. Keep movements smooth and modest unless the user asks "
+                            "for a large gesture."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "roll": {"type": "number", "description": "Head roll in degrees, usually -20 to 20."},
+                                "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25."},
+                                "yaw": {"type": "number", "description": "Head yaw in degrees. Positive turns one way, negative the other."},
+                                "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15."},
+                                "body_yaw": {"type": "number", "description": "Body yaw in degrees, usually -90 to 90."},
+                                "right_antenna": {"type": "number", "description": "Right antenna angle in degrees."},
+                                "left_antenna": {"type": "number", "description": "Left antenna angle in degrees."},
+                                "duration": {"type": "number", "description": "Smooth movement duration in seconds. Defaults to 1.0."},
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "reachy_animation",
+                        "description": (
+                            "Play a simple built-in Reachy Mini expression animation. Use thinking while planning or "
+                            "inspecting, talking while speaking, wake after the wake word, and sleep when ending interaction."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "enum": ["thinking", "talking", "wake", "sleep"]},
+                                "duration": {"type": "number", "description": "Animation duration in seconds. Defaults to 3."},
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "reachy_capture_image",
+                        "description": (
+                            "Capture a still image from Reachy Mini's camera and describe or answer a question about it. "
+                            "Use this when the user asks Reachy to look at something in the room, such as a computer screen. "
+                            "You may first call reachy_move to aim the robot, then call this tool."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "question": {
+                                    "type": "string",
+                                    "description": "What visual question to answer about the camera image. Defaults to a concise scene description.",
+                                },
+                            },
                         },
                     },
                 },
@@ -762,6 +954,12 @@ class RunThreadWorkflow:
                     tool for tool in builtin_tools
                     if tool.get("function", {}).get("name") != "extract_image_recipe"
                 ]
+            if not self._reachy_enabled_for_thread(llm_config, thread_id):
+                reachy_tools = {"reachy_move", "reachy_animation", "reachy_capture_image"}
+                builtin_tools = [
+                    tool for tool in builtin_tools
+                    if tool.get("function", {}).get("name") not in reachy_tools
+                ]
             openai_tools.extend(builtin_tools)
 
             # ── Build initial message list ───────────────────────────────
@@ -812,6 +1010,20 @@ class RunThreadWorkflow:
             # normal Temporal activity for per-tool history and retries.
             agent_llm_config = dict(llm_config)
             agent_llm_config["tool_inventory"] = tool_summary
+            reachy_config = agent_llm_config.get("reachy") or {}
+            if self._reachy_enabled_for_thread(agent_llm_config, thread_id) and reachy_config.get("speech_enabled", True):
+                reachy_task_queue = reachy_config.get("task_queue") or "reachy-local"
+                reachy_speech_handle = await workflow.start_child_workflow(
+                    ReachySpeechWorkflow.run,
+                    {
+                        "thread_id": thread_id,
+                        "parent_workflow_id": workflow.info().workflow_id,
+                        "llm_config": agent_llm_config,
+                        "reachy": reachy_config,
+                    },
+                    id=f"reachy-speech-{workflow.info().workflow_id}",
+                    task_queue=reachy_task_queue,
+                )
             discord_config = agent_llm_config.get("discord") or {}
             discord_instruction = ""
             if discord_config.get("enabled"):
@@ -862,6 +1074,8 @@ class RunThreadWorkflow:
                     thread_id,
                     agent_llm_config,
                     execute_agent_tool_activity,
+                    execute_reachy_tool_activity,
+                    save_message,
                 ),
             )
 
@@ -880,7 +1094,10 @@ class RunThreadWorkflow:
                             raw = event.data
                             raw_type = getattr(raw, "type", None)
                             if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
-                                full_response_content += getattr(raw, "delta", "") or ""
+                                delta = getattr(raw, "delta", "") or ""
+                                full_response_content += delta
+                                if delta and reachy_speech_handle:
+                                    await reachy_speech_handle.signal("add_text", delta)
                             elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
                                 reasoning_buffer += getattr(raw, "delta", "") or ""
                             elif raw_type == "response.completed":
@@ -969,6 +1186,8 @@ class RunThreadWorkflow:
                 await self._publish_event(agent_llm_config, {"type": "thinking", "content": reasoning_buffer.strip()})
             if result.final_output and not full_response_content:
                 await self._publish_event(agent_llm_config, {"type": "text", "content": str(result.final_output)})
+                if reachy_speech_handle:
+                    await reachy_speech_handle.signal("add_text", str(result.final_output))
 
             missing_image_markdown = await execute_activity(
                 generated_images_for_latest_turn,
@@ -979,6 +1198,9 @@ class RunThreadWorkflow:
                 image_block = "\n\n" + "\n".join(missing_image_markdown)
                 llm_response = f"{llm_response.rstrip()}{image_block}"
                 await self._publish_event(agent_llm_config, {"type": "token", "content": image_block})
+
+            if reachy_speech_handle:
+                await reachy_speech_handle.signal("finish")
 
             # ── Save final assistant response ────────────────────────────
             await execute_activity(
@@ -1002,6 +1224,8 @@ class RunThreadWorkflow:
                 "estimated_tokens": self._estimate_context_tokens(retained_messages),
                 "context_window": llm_config.get("context_window", 8192),
             })
+            if reachy_speech_handle:
+                await reachy_speech_handle.result()
             should_title = len(chat_history) <= 5 or len(chat_history) % 5 == 1
 
             return {
@@ -1015,5 +1239,10 @@ class RunThreadWorkflow:
             }
 
         except Exception as e:
+            if reachy_speech_handle:
+                try:
+                    await reachy_speech_handle.signal("finish")
+                except Exception:
+                    pass
             await self._publish_event(llm_config, {"type": "error", "content": str(e)})
             raise

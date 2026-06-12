@@ -139,6 +139,15 @@ class Settings(BaseSettings):
     DISCORD_CHANNEL_ID: str = ""
     DISCORD_POLL_INTERVAL_SECONDS: int = 10
 
+    # Reachy Mini integration (optional, local robot/daemon)
+    REACHY_ENABLED: bool = False
+    REACHY_THREAD_ID: str = ""
+    REACHY_WAKE_WORD: str = "Reachy"
+    REACHY_CONNECTION_MODE: str = ""  # auto when empty; localhost_only or network when set
+    REACHY_MEDIA_BACKEND: str = "no_media"  # no_media for motion tools; default/local/webrtc for camera/audio bridge
+    REACHY_TASK_QUEUE: str = "reachy-local"
+    REACHY_SPEECH_ENABLED: bool = True
+
     model_config = {"extra": "ignore"}
 
 
@@ -227,6 +236,8 @@ async def load_settings_from_db() -> None:
         "llm_comfyui_lipsync_timeout": int,
         "discord_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "discord_poll_interval_seconds": int,
+        "reachy_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "reachy_speech_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
     }
     for key, value in rows.items():
         coerce = _type_map.get(key)
@@ -405,6 +416,7 @@ def get_llm_config() -> dict:
         "compaction_threshold": get_setting("LLM_COMPACTION_THRESHOLD"),
         "preserve_recent": get_setting("LLM_PRESERVE_RECENT"),
         "tool_result_max_chars": get_setting("LLM_TOOL_RESULT_MAX_CHARS"),
+        "reachy": get_reachy_config(),
     }
 
 
@@ -416,6 +428,19 @@ def get_discord_config() -> dict:
         "guild_id": get_setting("DISCORD_GUILD_ID") or "",
         "channel_id": get_setting("DISCORD_CHANNEL_ID") or "",
         "poll_interval_seconds": int(get_setting("DISCORD_POLL_INTERVAL_SECONDS") or 10),
+    }
+
+
+def get_reachy_config() -> dict:
+    """Get current Reachy Mini integration config with overrides applied."""
+    return {
+        "enabled": bool(get_setting("REACHY_ENABLED")),
+        "thread_id": get_setting("REACHY_THREAD_ID") or "",
+        "wake_word": get_setting("REACHY_WAKE_WORD") or "Reachy",
+        "connection_mode": get_setting("REACHY_CONNECTION_MODE") or "",
+        "media_backend": get_setting("REACHY_MEDIA_BACKEND") or "no_media",
+        "task_queue": get_setting("REACHY_TASK_QUEUE") or "reachy-local",
+        "speech_enabled": bool(get_setting("REACHY_SPEECH_ENABLED")),
     }
 
 
