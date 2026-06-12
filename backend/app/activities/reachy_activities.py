@@ -9,7 +9,9 @@ dependencies.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import uuid
 
 from temporalio.activity import defn, heartbeat
 
@@ -31,8 +33,13 @@ def _reachy_config(args: dict) -> dict:
 
 
 @defn
-async def execute_reachy_tool_activity(args: dict) -> str:
-    """Execute one LLM-requested Reachy hardware tool on the local robot host."""
+async def execute_reachy_tool_activity(args: dict) -> dict:
+    """Execute one LLM-requested Reachy hardware tool on the local robot host.
+
+    Returns a dict ``{"text": str, "image_url": Optional[str]}`` so the parent
+    workflow can persist the image URL alongside the text description. Tools
+    that do not produce an image set ``image_url`` to ``None``.
+    """
     tool_name = str(args.get("tool_name") or "")
     tool_args = args.get("arguments") or {}
     if not isinstance(tool_args, dict):
@@ -42,16 +49,19 @@ async def execute_reachy_tool_activity(args: dict) -> str:
 
     heartbeat({"step": "reachy_tool", "tool": tool_name})
     try:
-        return await _run_reachy_tool(tool_name, tool_args, reachy_config, llm_config, args.get("thread_id"))
+        text, image_url = await _run_reachy_tool(
+            tool_name, tool_args, reachy_config, llm_config, args.get("thread_id")
+        )
     except asyncio.CancelledError:
         print(f"[reachy-tool] {tool_name} cancelled by worker/activity timeout", flush=True)
-        return f"Error: Reachy tool {tool_name!r} was cancelled (activity timeout or shutdown)."
+        return {"text": f"Error: Reachy tool {tool_name!r} was cancelled (activity timeout or shutdown).", "image_url": None}
     except BaseException as exc:
         print(f"[reachy-tool] {tool_name} crashed: {exc!r}", flush=True)
-        return f"Error: Reachy tool {tool_name!r} failed: {exc}"
+        return {"text": f"Error: Reachy tool {tool_name!r} failed: {exc}", "image_url": None}
+    return {"text": text, "image_url": image_url}
 
 
-async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict, llm_config: dict, thread_id) -> str:
+async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict, llm_config: dict, thread_id) -> tuple[str, str | None]:
     if tool_name == "reachy_move":
         from app.reachy_client import VALID_HEAD_MODES, ReachyPose, goto_pose
 
@@ -60,7 +70,8 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
             return (
                 "Error: reachy_move requires 'head_mode' set to one of "
                 f"{list(VALID_HEAD_MODES)}; got {head_mode!r}. Pick the mode "
-                "that matches the user's intent and call reachy_move again."
+                "that matches the user's intent and call reachy_move again.",
+                None,
             )
 
         try:
@@ -76,8 +87,8 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                 head_mode=head_mode,
             )
         except ValueError as exc:
-            return f"Error: {exc}"
-        return await asyncio.to_thread(goto_pose, reachy_config, pose)
+            return f"Error: {exc}", None
+        return await asyncio.to_thread(goto_pose, reachy_config, pose), None
 
     if tool_name == "reachy_animation":
         from app.reachy_client import MOOD_EMOTIONS, play_animation, play_mood_animation
@@ -85,8 +96,8 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
         name = str(tool_args.get("name") or "thinking")
         duration = float(tool_args.get("duration") or 3.0)
         if name.strip().lower().replace(" ", "_").replace("-", "_") in MOOD_EMOTIONS:
-            return await asyncio.to_thread(play_mood_animation, reachy_config, name)
-        return await asyncio.to_thread(play_animation, reachy_config, name, duration)
+            return await asyncio.to_thread(play_mood_animation, reachy_config, name), None
+        return await asyncio.to_thread(play_animation, reachy_config, name, duration), None
 
     if tool_name == "reachy_capture_image":
         from app.reachy_client import capture_image_base64
@@ -98,7 +109,19 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
         except Exception as exc:
             error = f"Reachy camera capture failed: {exc}"
             print(f"[reachy-camera] {error}", flush=True)
-            return error
+            return error, None
+
+        # Persist the captured frame so the chat thread can show it as an
+        # embedded image. We write to the same `generated_images` table the
+        # backend serves from, so the same GET /api/generated-images/{filename}
+        # endpoint will return the bytes. The DB-only path is shared with the
+        # K8s backend pod, so no extra volume mount is required.
+        image_url = None
+        try:
+            image_url = await _store_reachy_capture(image_base64, content_type, llm_config)
+        except Exception as exc:
+            print(f"[reachy-camera] failed to persist capture: {exc}", flush=True)
+
         heartbeat({"step": "reachy_capture_image_describing", "chars": len(image_base64)})
         # Periodic heartbeats so the vision HTTP call cannot trip the
         # heartbeat_timeout if the local vision model is slow to respond.
@@ -117,7 +140,7 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                     return
         hb_task = asyncio.create_task(_heartbeat_loop())
         try:
-            return await _execute_builtin(
+            description = await _execute_builtin(
                 "describe_image",
                 {
                     "image_base64": image_base64,
@@ -136,7 +159,34 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
             except Exception:
                 pass
 
-    return f"Error: unknown Reachy tool {tool_name!r}."
+        if image_url:
+            # Append a one-line pointer to the saved image so the LLM knows
+            # the capture is available and the frontend's
+            # `generatedMediaAttachments` regex can render it as an inline
+            # image from the persisted tool_result content.
+            description = f"{description}\n\nReachy camera capture saved as {image_url}."
+        return description, image_url
+
+    return f"Error: unknown Reachy tool {tool_name!r}.", None
+
+
+async def _store_reachy_capture(image_base64: str, content_type: str, llm_config: dict) -> str:
+    """Persist a Reachy camera capture so the chat thread can embed it."""
+    from app.database import AsyncSessionLocal
+    from app.models.models import GeneratedImage
+
+    raw = base64.b64decode(image_base64)
+    ext = "jpg" if "jpeg" in (content_type or "").lower() else "png"
+    filename = f"reachy-{uuid.uuid4().hex}.{ext}"
+    async with AsyncSessionLocal() as db:
+        await db.merge(
+            GeneratedImage(filename=filename, content=raw, content_type=content_type or "image/jpeg")
+        )
+        await db.commit()
+    public_base_url = str(llm_config.get("public_base_url") or "").rstrip("/")
+    url = f"{public_base_url}/api/generated-images/{filename}" if public_base_url else f"/api/generated-images/{filename}"
+    print(f"[reachy-camera] stored capture as {filename} ({len(raw)} bytes)", flush=True)
+    return url
 
 
 @defn

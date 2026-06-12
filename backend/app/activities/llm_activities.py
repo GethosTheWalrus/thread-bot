@@ -4574,14 +4574,40 @@ async def generated_images_for_latest_turn(args: dict) -> list[str]:
         if message.role != "tool_result":
             continue
         meta = message.metadata_ or {}
-        if meta.get("tool_name") != "generate_image":
+        tool_name = meta.get("tool_name")
+        is_generated_image = tool_name == "generate_image"
+        is_reachy_capture = tool_name == "reachy_capture_image"
+        if not is_generated_image and not is_reachy_capture:
             continue
+        label = "Reachy capture" if is_reachy_capture else "Generated image"
+        attachments = meta.get("image_attachments") or []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            url = attachment.get("url")
+            if not isinstance(url, str) or not url:
+                continue
+            if url in seen or url in assistant_content:
+                continue
+            seen.add(url)
+            image_markdown.append(f"![{label}]({url})")
         for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", message.content or ""):
             url = match.group(1).strip()
             if not url or url in seen or url in assistant_content:
                 continue
             seen.add(url)
-            image_markdown.append(f"![Generated image]({url})")
+            image_markdown.append(f"![{label}]({url})")
+        # Reachy camera descriptions embed the URL on its own line, e.g.
+        # "Reachy camera capture saved as <url>." Pick those up too so the
+        # final assistant response includes the inline image markdown.
+        for match in re.finditer(
+            r"(https?://\S+?/api/generated-images/\S+)", message.content or ""
+        ):
+            url = match.group(1).rstrip(".,)>")
+            if not url or url in seen or url in assistant_content:
+                continue
+            seen.add(url)
+            image_markdown.append(f"![{label}]({url})")
 
     return list(reversed(image_markdown))
 

@@ -656,6 +656,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'tool_result':
         final tool = event['tool'] as String? ?? 'Tool';
         final success = event['success'] as bool? ?? true;
+        // The backend includes any image URL directly in `content` (e.g.
+        // "Reachy camera capture saved as <url>"), and the Message model's
+        // `generatedMediaAttachments` regex picks it up for inline
+        // rendering. We still surface `image_url` on the event for callers
+        // that want to handle it explicitly.
         final id = 'temp-tr-${DateTime.now().millisecondsSinceEpoch}';
         tempIds.add(id);
         setState(() {

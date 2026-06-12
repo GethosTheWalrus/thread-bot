@@ -124,7 +124,7 @@ class RunThreadWorkflow:
             tool_args = {}
 
         try:
-            result_text = await execute_activity(
+            result = await execute_activity(
                 execute_reachy_tool_activity,
                 {
                     "tool_name": name,
@@ -144,10 +144,26 @@ class RunThreadWorkflow:
                 ),
                 summary=f"Execute Reachy tool {name}",
             )
-            success = not str(result_text).startswith("Error:")
         except Exception as exc:
-            result_text = f"Error executing Reachy tool: {exc}"
-            success = False
+            result = {"text": f"Error executing Reachy tool: {exc}", "image_url": None}
+
+        # Backwards-compatible normalization: the activity may return either a
+        # ``{"text": ..., "image_url": ...}`` dict (current contract) or a bare
+        # string (older callers, tests).
+        if isinstance(result, dict):
+            result_text = str(result.get("text") or "")
+            image_url = result.get("image_url") or None
+        else:
+            result_text = str(result)
+            image_url = None
+        success = not result_text.startswith("Error:")
+
+        # The activity result text already includes the image URL (it
+        # appends "Reachy camera capture saved as <url>"). The frontend's
+        # `generatedMediaAttachments` regex picks up the bare URL, so we do
+        # NOT mirror it into `image_attachments` metadata to avoid rendering
+        # the same image twice.
+        tool_result_metadata = {"tool_call_id": tool_call_id, "tool_name": name}
 
         await execute_activity(
             save_message_activity,
@@ -155,17 +171,24 @@ class RunThreadWorkflow:
                 "thread_id": thread_id,
                 "role": "tool_result",
                 "content": result_text,
-                "metadata": {"tool_call_id": tool_call_id, "tool_name": name},
+                "metadata": tool_result_metadata,
             },
             start_to_close_timeout=timedelta(seconds=10),
         )
-        await self._publish_event(llm_config, {
+        event_payload = {
             "type": "tool_result",
             "tool": display_name,
             "tool_call_id": tool_call_id,
             "content": result_text,
             "success": success,
-        })
+        }
+        if image_url:
+            # Stream consumers (live chat) use the explicit field; the
+            # persisted row gets the URL via the description text and the
+            # `generated_images_for_latest_turn` activity re-inserts it
+            # into the final assistant response if the LLM dropped it.
+            event_payload["image_url"] = image_url
+        await self._publish_event(llm_config, event_payload)
         return result_text
 
     def _estimate_context_tokens(self, messages: list[dict]) -> int:

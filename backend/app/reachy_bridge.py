@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -32,11 +33,14 @@ def _strip_wake_word(text: str, wake_word: str) -> str | None:
     lowered = text.lower()
     if lowered == wake:
         return ""
-    prefixes = [f"{wake} ", f"hey {wake} ", f"okay {wake} ", f"ok {wake} "]
-    for prefix in prefixes:
-        if lowered.startswith(prefix):
-            return text[len(prefix):].strip(" ,:;-")
-    return None
+    pattern = re.compile(
+        rf"^\s*(?:hey|okay|ok)?[\s,;:!\.\-]*\s*{re.escape(wake)}\b[\s,;:!\.\-]*",
+        re.IGNORECASE,
+    )
+    match = pattern.match(lowered)
+    if not match:
+        return None
+    return text[match.end():].strip(" ,:;!?.-")
 
 
 async def _read_transcript(args: argparse.Namespace) -> str | None:
