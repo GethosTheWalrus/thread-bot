@@ -76,6 +76,8 @@ def _build_agents_model_provider(config: dict):
         provider_name = "ollama" if ":11434" in api_url or "ollama" in api_url.lower() else "llama_cpp"
 
     if provider_name == "ollama":
+        if api_url and not api_url.endswith("/v1"):
+            api_url = f"{api_url}/v1"
         return OllamaProvider(base_url=api_url, model=model_name, api_key=api_key, timeout=timeout)
 
     if provider_name in {"llama_cpp", "llamacpp", "local", "openai_compatible"}:

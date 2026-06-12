@@ -1464,7 +1464,7 @@ async def start_discord_reply_workflow(
 
 
 async def _active_thread_workflow_id(temporal_client: TemporalClient, thread_id) -> str | None:
-    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-"):
+    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-", f"reachy-thread-{thread_id}-"):
         query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "{prefix}"'
         async for execution in temporal_client.list_workflows(query=query, limit=1):
             return execution.id

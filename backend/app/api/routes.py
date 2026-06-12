@@ -99,7 +99,7 @@ def set_temporal_client(client: TemporalClient):
 
 
 async def _active_thread_workflow_id(client: TemporalClient, thread_id: UUID) -> str | None:
-    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-"):
+    for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-", f"reachy-thread-{thread_id}-"):
         query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "{prefix}"'
         async for execution in client.list_workflows(query=query, limit=1):
             return execution.id
