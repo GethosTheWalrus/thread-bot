@@ -160,11 +160,11 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                 pass
 
         if image_url:
-            # Append a one-line pointer to the saved image so the LLM knows
-            # the capture is available and the frontend's
-            # `generatedMediaAttachments` regex can render it as an inline
-            # image from the persisted tool_result content.
-            description = f"{description}\n\nReachy camera capture saved as {image_url}."
+            # Append a one-line marker so the LLM knows the capture is
+            # available and the frontend's `generatedMediaAttachments`
+            # regex can render it. Put the URL on its own line so the
+            # chat UI can extract and inline-display it.
+            description = f"{description}\n\n{image_url}"
         return description, image_url
 
     return f"Error: unknown Reachy tool {tool_name!r}.", None

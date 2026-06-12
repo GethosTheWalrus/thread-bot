@@ -653,10 +653,29 @@ class _CollapsibleResultBlock extends StatelessWidget {
     }
   }
 
+  /// Extract the first generated image URL found in the raw content, if any.
+  /// Mirrors the regex used by `Message.generatedMediaAttachments`.
+  String? _firstImageUrl(String raw) {
+    for (final match in RegExp(r'!?\[[^\]]*\]\(([^)]+)\)').allMatches(raw)) {
+      final url = (match.group(1) ?? '').trim();
+      if (url.contains('/api/generated-images/')) return url;
+    }
+    for (final match in RegExp(
+      r'(?:https?://\S+|/api/generated-(?:images|media)/\S+)',
+    ).allMatches(raw)) {
+      final url = (match.group(0) ?? '')
+          .replaceAll(RegExp(r'[)>.,]+$'), '')
+          .trim();
+      if (url.contains('/api/generated-images/')) return url;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final formatted = _format(content);
     final isJson = _isJson(content);
+    final imageUrl = _firstImageUrl(content);
 
     return Container(
       width: double.infinity,
@@ -699,6 +718,34 @@ class _CollapsibleResultBlock extends StatelessWidget {
               ],
             ),
           ),
+          // Inline image (e.g. Reachy camera capture saved as <url>)
+          if (imageUrl != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 10, 10, 0),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  constraints: const BoxConstraints(maxHeight: 360),
+                  width: double.infinity,
+                  color: Colors.black,
+                  child: Image.network(
+                    Uri.base.resolve(imageUrl).toString(),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => Container(
+                      padding: const EdgeInsets.all(8),
+                      child: Text(
+                        imageUrl,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontFamily: 'monospace',
+                          color: Color(0xFFA1A1AA),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
           // Content
           Padding(
             padding: const EdgeInsets.all(10),

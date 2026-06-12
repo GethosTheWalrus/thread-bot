@@ -4598,13 +4598,16 @@ async def generated_images_for_latest_turn(args: dict) -> list[str]:
             seen.add(url)
             image_markdown.append(f"![{label}]({url})")
         # Reachy camera descriptions embed the URL on its own line, e.g.
-        # "Reachy camera capture saved as <url>." Pick those up too so the
-        # final assistant response includes the inline image markdown.
+        # "/api/generated-images/reachy-abc.jpg" or "https://host/api/...".
+        # Pick those up so the final assistant response includes the
+        # inline image markdown.
         for match in re.finditer(
-            r"(https?://\S+?/api/generated-images/\S+)", message.content or ""
+            r"(?:https?://\S+?|/api/generated-images/)\S+", message.content or ""
         ):
-            url = match.group(1).rstrip(".,)>")
-            if not url or url in seen or url in assistant_content:
+            url = match.group(0).rstrip(".,)>")
+            if not url or "/api/generated-images/" not in url:
+                continue
+            if url in seen or url in assistant_content:
                 continue
             seen.add(url)
             image_markdown.append(f"![{label}]({url})")
