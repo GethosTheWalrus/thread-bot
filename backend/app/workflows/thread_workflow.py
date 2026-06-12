@@ -564,7 +564,7 @@ class RunThreadWorkflow:
                             "Move the connected Reachy Mini robot. Use this when the user asks Reachy to look, nod, "
                             "turn, point attention, or physically react. Angles are degrees and are clamped to safe "
                             "Reachy Mini ranges by the SDK. Keep movements smooth and modest unless the user asks "
-                            "for a large gesture."
+                            "for a large gesture. Use yaw for head-only looking, and body_yaw when the base/foot should rotate."
                         ),
                         "parameters": {
                             "type": "object",
@@ -573,7 +573,7 @@ class RunThreadWorkflow:
                                 "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25."},
                                 "yaw": {"type": "number", "description": "Head yaw in degrees. Positive turns one way, negative the other."},
                                 "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15."},
-                                "body_yaw": {"type": "number", "description": "Body yaw in degrees, usually -90 to 90."},
+                                "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, usually -90 to 90. Use this when Reachy should rotate its body/base, not just its head."},
                                 "right_antenna": {"type": "number", "description": "Right antenna angle in degrees."},
                                 "left_antenna": {"type": "number", "description": "Left antenna angle in degrees."},
                                 "duration": {"type": "number", "description": "Smooth movement duration in seconds. Defaults to 1.0."},
@@ -586,13 +586,21 @@ class RunThreadWorkflow:
                     "function": {
                         "name": "reachy_animation",
                         "description": (
-                            "Play a simple built-in Reachy Mini expression animation. Use thinking while planning or "
-                            "inspecting, talking while speaking, wake after the wake word, and sleep when ending interaction."
+                            "Play a Reachy Mini animation. Use thinking while planning or inspecting, talking while speaking, "
+                            "wake after the wake word, and sleep when ending interaction. For expressive reactions, use a mood "
+                            "name; mood names play the smooth recorded emoji/emotion choreographies from the Reachy daemon."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string", "enum": ["thinking", "talking", "wake", "sleep"]},
+                                "name": {
+                                    "type": "string",
+                                    "enum": [
+                                        "thinking", "talking", "wake", "sleep", "helpful", "cheerful", "excited",
+                                        "grateful", "proud", "thoughtful", "curious", "surprised", "confused",
+                                        "sad", "calm", "relieved", "welcoming", "laughing", "tired", "concerned",
+                                    ],
+                                },
                                 "duration": {"type": "number", "description": "Animation duration in seconds. Defaults to 3."},
                             },
                             "required": ["name"],

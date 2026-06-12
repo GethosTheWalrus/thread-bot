@@ -145,6 +145,8 @@ class Settings(BaseSettings):
     REACHY_WAKE_WORD: str = "Reachy"
     REACHY_CONNECTION_MODE: str = ""  # auto when empty; localhost_only or network when set
     REACHY_MEDIA_BACKEND: str = "no_media"  # no_media for motion tools; default/local/webrtc for camera/audio bridge
+    REACHY_CAMERA_MEDIA_BACKEND: str = ""
+    REACHY_DAEMON_URL: str = "http://localhost:8000"
     REACHY_TASK_QUEUE: str = "reachy-local"
     REACHY_SPEECH_ENABLED: bool = True
 
@@ -439,6 +441,8 @@ def get_reachy_config() -> dict:
         "wake_word": get_setting("REACHY_WAKE_WORD") or "Reachy",
         "connection_mode": get_setting("REACHY_CONNECTION_MODE") or "",
         "media_backend": get_setting("REACHY_MEDIA_BACKEND") or "no_media",
+        "camera_media_backend": get_setting("REACHY_CAMERA_MEDIA_BACKEND") or "",
+        "daemon_url": get_setting("REACHY_DAEMON_URL") or "http://localhost:8000",
         "task_queue": get_setting("REACHY_TASK_QUEUE") or "reachy-local",
         "speech_enabled": bool(get_setting("REACHY_SPEECH_ENABLED")),
     }

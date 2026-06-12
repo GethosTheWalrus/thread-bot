@@ -9,6 +9,7 @@ dependencies.
 from __future__ import annotations
 
 import asyncio
+import os
 
 from temporalio.activity import defn, heartbeat
 
@@ -16,6 +17,16 @@ from temporalio.activity import defn, heartbeat
 def _reachy_config(args: dict) -> dict:
     config = dict(args.get("reachy") or args.get("llm_config", {}).get("reachy") or {})
     config["enabled"] = True
+    # Hardware/media access is local to this worker. Let the local process env
+    # override values that may have been captured from the Kubernetes config.
+    if os.environ.get("REACHY_CONNECTION_MODE") is not None:
+        config["connection_mode"] = os.environ.get("REACHY_CONNECTION_MODE") or ""
+    if os.environ.get("REACHY_MEDIA_BACKEND") is not None:
+        config["media_backend"] = os.environ.get("REACHY_MEDIA_BACKEND") or "default"
+    if os.environ.get("REACHY_CAMERA_MEDIA_BACKEND") is not None:
+        config["camera_media_backend"] = os.environ.get("REACHY_CAMERA_MEDIA_BACKEND") or "default"
+    if os.environ.get("REACHY_DAEMON_URL") is not None:
+        config["daemon_url"] = os.environ.get("REACHY_DAEMON_URL") or "http://localhost:8000"
     return config
 
 
@@ -47,10 +58,12 @@ async def execute_reachy_tool_activity(args: dict) -> str:
         return await asyncio.to_thread(goto_pose, reachy_config, pose)
 
     if tool_name == "reachy_animation":
-        from app.reachy_client import play_animation
+        from app.reachy_client import MOOD_EMOTIONS, play_animation, play_mood_animation
 
         name = str(tool_args.get("name") or "thinking")
         duration = float(tool_args.get("duration") or 3.0)
+        if name.strip().lower().replace(" ", "_").replace("-", "_") in MOOD_EMOTIONS:
+            return await asyncio.to_thread(play_mood_animation, reachy_config, name)
         return await asyncio.to_thread(play_animation, reachy_config, name, duration)
 
     if tool_name == "reachy_capture_image":
@@ -58,7 +71,12 @@ async def execute_reachy_tool_activity(args: dict) -> str:
         from app.activities.llm_activities import _execute_builtin
 
         question = str(tool_args.get("question") or "Describe what Reachy sees concisely.").strip()
-        image_base64, content_type = await asyncio.to_thread(capture_image_base64, reachy_config)
+        try:
+            image_base64, content_type = await asyncio.to_thread(capture_image_base64, reachy_config)
+        except Exception as exc:
+            error = f"Reachy camera capture failed: {exc}"
+            print(f"[reachy-camera] {error}", flush=True)
+            return error
         return await _execute_builtin(
             "describe_image",
             {
@@ -76,6 +94,26 @@ async def execute_reachy_tool_activity(args: dict) -> str:
 
 
 @defn
+async def play_reachy_mood(args: dict) -> dict:
+    """Play one of the smooth recorded emotion choreographies from the daemon."""
+    mood = str(args.get("mood") or "helpful")
+    reachy_config = _reachy_config(args)
+
+    from app.reachy_client import play_mood_animation
+
+    print(f"[reachy-mood] playing mood: {mood}", flush=True)
+    heartbeat({"step": "reachy_mood", "mood": mood})
+    try:
+        message = await asyncio.to_thread(play_mood_animation, reachy_config, mood)
+    except Exception as exc:
+        error = f"Reachy mood animation failed: {exc}"
+        print(f"[reachy-mood] {error}", flush=True)
+        return {"played": False, "mood": mood, "error": error}
+    print(f"[reachy-mood] {message}", flush=True)
+    return {"played": True, "mood": mood, "message": message}
+
+
+@defn
 async def speak_reachy_text(args: dict) -> dict:
     """Synthesize a text chunk and play it through Reachy locally."""
     text = str(args.get("text") or "").strip()
@@ -84,7 +122,12 @@ async def speak_reachy_text(args: dict) -> dict:
 
     llm_config = args.get("llm_config") or {}
     reachy_config = _reachy_config(args)
-    reachy_config["media_backend"] = reachy_config.get("media_backend") or "default"
+    reachy_config["media_backend"] = (
+        os.environ.get("REACHY_SPEECH_MEDIA_BACKEND")
+        or os.environ.get("REACHY_MEDIA_BACKEND")
+        or reachy_config.get("media_backend")
+        or "default"
+    )
 
     from app.activities.llm_activities import _synthesize_speech_audio
     from app.reachy_client import run_animation_background, speak_wav
@@ -105,7 +148,12 @@ async def speak_reachy_text(args: dict) -> dict:
     animation_task = asyncio.create_task(run_animation_background(reachy_config, "talking", stop))
     try:
         heartbeat({"step": "reachy_speech_playback", "chars": len(text)})
-        duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
+        try:
+            duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
+        except Exception as exc:
+            error = f"Reachy audio playback failed: {exc}"
+            print(f"[reachy-speech] {error}", flush=True)
+            return {"spoken": False, "duration": 0.0, "error": error}
         print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
     finally:
         stop.set()

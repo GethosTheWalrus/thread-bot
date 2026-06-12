@@ -9,11 +9,38 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 import math
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import wave
 from dataclasses import dataclass
 from typing import Any
+
+
+EMOTION_DATASET = "pollen-robotics/reachy-mini-emotions-library"
+
+MOOD_EMOTIONS: dict[str, str] = {
+    "neutral": "helpful1",
+    "helpful": "helpful1",
+    "cheerful": "cheerful1",
+    "excited": "enthusiastic1",
+    "grateful": "grateful1",
+    "proud": "proud1",
+    "thoughtful": "thoughtful1",
+    "curious": "curious1",
+    "surprised": "surprised1",
+    "confused": "confused1",
+    "sad": "sad1",
+    "calm": "relief1",
+    "relieved": "relief1",
+    "welcoming": "welcoming1",
+    "laughing": "laughing1",
+    "tired": "tired1",
+    "concerned": "anxiety1",
+}
 
 
 @dataclass
@@ -53,7 +80,78 @@ def _mini_kwargs(config: dict | None, *, media_backend: str | None = None) -> di
     return kwargs
 
 
+def _daemon_base_url(config: dict | None) -> str:
+    config = config or {}
+    return str(config.get("daemon_url") or "http://localhost:8000").rstrip("/")
+
+
+def _post_daemon(config: dict | None, endpoint: str, *, body: dict | None = None, timeout: float = 10.0) -> None:
+    url = f"{_daemon_base_url(config)}{endpoint}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Reachy daemon returned HTTP {exc.code} for {endpoint}: {body[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Reachy daemon is not reachable at {_daemon_base_url(config)}: {exc.reason}") from exc
+
+
+def play_recorded_move(config: dict | None, dataset: str, move: str) -> str:
+    dataset_path = "/".join(urllib.parse.quote(part, safe="") for part in dataset.split("/"))
+    move_path = urllib.parse.quote(move, safe="")
+    _post_daemon(config, f"/api/move/play/recorded-move-dataset/{dataset_path}/{move_path}")
+    return f"Played Reachy recorded move {dataset}/{move}."
+
+
+def play_mood_animation(config: dict | None, mood: str) -> str:
+    mood_key = (mood or "helpful").strip().lower().replace(" ", "_").replace("-", "_")
+    emotion = MOOD_EMOTIONS.get(mood_key)
+    if emotion is None and mood_key in MOOD_EMOTIONS.values():
+        emotion = mood_key
+    if emotion is None:
+        emotion = MOOD_EMOTIONS["helpful"]
+        mood_key = "helpful"
+    play_recorded_move(config, EMOTION_DATASET, emotion)
+    return f"Played Reachy {mood_key} mood animation ({emotion})."
+
+
+def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
+    np, _ReachyMini, create_head_pose = _sdk_imports()
+    duration = max(0.2, min(float(pose.duration or 1.0), 10.0))
+    head_pose = create_head_pose(
+        z=float(pose.z),
+        roll=float(pose.roll),
+        pitch=float(pose.pitch),
+        yaw=float(pose.yaw),
+        degrees=True,
+        mm=True,
+    )
+    payload = {
+        "head_pose": {"m": np.array(head_pose, dtype=float).flatten().tolist()},
+        "antennas": np.deg2rad([float(pose.right_antenna), float(pose.left_antenna)]).tolist(),
+        "body_yaw": math.radians(float(pose.body_yaw)),
+        "duration": duration,
+        "interpolation": "minjerk",
+    }
+    _post_daemon(config, "/api/move/goto", body=payload, timeout=5.0)
+    return (
+        "Moved Reachy via daemon: "
+        f"head roll={pose.roll:.1f} pitch={pose.pitch:.1f} yaw={pose.yaw:.1f} z={pose.z:.1f}mm, "
+        f"body_yaw={pose.body_yaw:.1f}, antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
+    )
+
+
 def goto_pose(config: dict | None, pose: ReachyPose) -> str:
+    if not (config or {}).get("prefer_sdk_motion"):
+        try:
+            return goto_pose_via_daemon(config, pose)
+        except Exception as exc:
+            print(f"[reachy] daemon movement failed, falling back to SDK: {exc}", flush=True)
+
     np, ReachyMini, create_head_pose = _sdk_imports()
     duration = max(0.2, min(float(pose.duration or 1.0), 10.0))
     with ReachyMini(**_mini_kwargs(config, media_backend="no_media")) as mini:
@@ -71,6 +169,9 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
             duration=duration,
             method="minjerk",
         )
+        if abs(float(pose.body_yaw)) > 0.1:
+            mini.set_target_body_yaw(np.deg2rad(float(pose.body_yaw)))
+            time.sleep(min(duration, 1.0))
     return (
         "Moved Reachy: "
         f"head roll={pose.roll:.1f} pitch={pose.pitch:.1f} yaw={pose.yaw:.1f} z={pose.z:.1f}mm, "
@@ -135,19 +236,48 @@ def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: 
     return f"Played Reachy {name} animation for {duration:.1f}s."
 
 
-def capture_image_base64(config: dict | None) -> tuple[str, str]:
+def _capture_image_with_backend(config: dict | None, media_backend: str) -> tuple[Any, str]:
     np, ReachyMini, _create_head_pose = _sdk_imports()
-    with ReachyMini(**_mini_kwargs(config, media_backend=str((config or {}).get("media_backend") or "default"))) as mini:
+    with ReachyMini(**_mini_kwargs(config, media_backend=media_backend)) as mini:
         frame = mini.media.get_frame()
+    if frame is None:
+        raise RuntimeError(f"media backend {media_backend!r} returned no camera frame")
+    return np.asarray(frame), media_backend
+
+
+def capture_image_base64(config: dict | None) -> tuple[str, str]:
+    config = config or {}
+    requested_backend = str(config.get("camera_media_backend") or config.get("media_backend") or "default")
+    backends = []
+    for backend in (requested_backend, "local", "default", "webrtc"):
+        if backend and backend not in backends and backend != "no_media":
+            backends.append(backend)
+
+    errors = []
+    frame = None
+    used_backend = ""
+    for backend in backends:
+        try:
+            frame, used_backend = _capture_image_with_backend(config, backend)
+            break
+        except Exception as exc:
+            errors.append(f"{backend}: {exc}")
+
+    if frame is None:
+        raise RuntimeError(
+            "Reachy camera capture failed for all media backends. "
+            f"Tried {', '.join(backends) or 'none'}. Errors: {' | '.join(errors)}"
+        )
 
     try:
         from PIL import Image
     except Exception as exc:  # pragma: no cover - optional local dependency
         raise RuntimeError("Pillow is required to encode Reachy's camera frame. Install `pillow`.") from exc
 
-    image = Image.fromarray(np.asarray(frame).astype("uint8"), "RGB")
+    image = Image.fromarray(frame.astype("uint8"), "RGB")
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90)
+    print(f"[reachy-camera] captured frame using media backend {used_backend}", flush=True)
     return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
 
 
