@@ -332,19 +332,19 @@ def _play_animation_via_daemon(config: dict | None, name: str, duration: float =
         goto_pose_via_daemon(config, pose)
 
     if name == "thinking":
+        phase = time.monotonic() * 0.35
+        move(ReachyPose(
+            pitch=5.0 + 2.0 * math.sin(phase),
+            roll=2.0 * math.sin(phase + 0.7),
+            yaw=2.5 * math.sin(phase * 0.7),
+            z=1.5 * math.sin(phase + 1.1),
+            right_antenna=18.0 + 3.0 * math.sin(phase + 0.2),
+            left_antenna=18.0 + 3.0 * math.sin(phase + 1.4),
+            duration=min(duration, 2.5),
+            head_mode="head_only",
+        ))
         while time.monotonic() - started < duration and not (stop and stop.is_set()):
-            t = time.monotonic() - started
-            move(ReachyPose(
-                pitch=4.0 + 3.0 * math.sin(t * 0.45),
-                roll=2.8 * math.sin(t * 0.32 + 0.7),
-                yaw=3.5 * math.sin(t * 0.25),
-                z=2.0 * math.sin(t * 0.28 + 1.1),
-                right_antenna=18.0 + 5.0 * math.sin(t * 0.4 + 0.2),
-                left_antenna=18.0 + 5.0 * math.sin(t * 0.4 + 1.4),
-                duration=0.35,
-                head_mode="head_only",
-            ))
-            time.sleep(0.18)
+            time.sleep(0.2)
     elif name == "talking":
         while time.monotonic() - started < duration and not (stop and stop.is_set()):
             t = time.monotonic() - started
