@@ -127,6 +127,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: unless-stopped
 
@@ -152,6 +153,8 @@ services:
       - REACHY_CONNECTION_MODE=${REACHY_CONNECTION_MODE:-}
       - REACHY_MEDIA_BACKEND=${REACHY_MEDIA_BACKEND:-default}
       - REACHY_CAMERA_MEDIA_BACKEND=${REACHY_CAMERA_MEDIA_BACKEND:-local}
+      - REACHY_CAMERA_CAPTURE_MODE=${REACHY_CAMERA_CAPTURE_MODE:-ffmpeg}
+      - REACHY_CAMERA_DEVICE=${REACHY_CAMERA_DEVICE:-}
       - REACHY_SPEECH_MEDIA_BACKEND=${REACHY_SPEECH_MEDIA_BACKEND:-default}
       - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
@@ -160,6 +163,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: unless-stopped
 
@@ -188,6 +192,8 @@ services:
       - REACHY_CONNECTION_MODE=${REACHY_CONNECTION_MODE:-}
       - REACHY_MEDIA_BACKEND=${REACHY_MEDIA_BACKEND:-default}
       - REACHY_CAMERA_MEDIA_BACKEND=${REACHY_CAMERA_MEDIA_BACKEND:-local}
+      - REACHY_CAMERA_CAPTURE_MODE=${REACHY_CAMERA_CAPTURE_MODE:-ffmpeg}
+      - REACHY_CAMERA_DEVICE=${REACHY_CAMERA_DEVICE:-}
       - REACHY_SPEECH_MEDIA_BACKEND=${REACHY_SPEECH_MEDIA_BACKEND:-default}
       - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
@@ -196,11 +202,13 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: "no"
 
 volumes:
   postgres-data:
+  reachy-tmp:
 
 networks:
   chatbot-network:

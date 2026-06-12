@@ -12,6 +12,7 @@ import io
 import json
 import math
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -388,6 +389,12 @@ def _capture_image_with_backend(config: dict | None, media_backend: str) -> tupl
 
 def capture_image_base64(config: dict | None) -> tuple[str, str]:
     config = config or {}
+    capture_mode = str(
+        config.get("camera_capture_mode") or os.environ.get("REACHY_CAMERA_CAPTURE_MODE") or ""
+    ).strip().lower()
+    if capture_mode == "ffmpeg":
+        return _capture_image_with_ffmpeg(config)
+
     requested_backend = str(config.get("camera_media_backend") or config.get("media_backend") or "default")
     backends = []
     for backend in (requested_backend, "local", "default", "webrtc"):
@@ -405,6 +412,10 @@ def capture_image_base64(config: dict | None) -> tuple[str, str]:
             errors.append(f"{backend}: {exc}")
 
     if frame is None:
+        try:
+            return _capture_image_with_ffmpeg(config)
+        except Exception as exc:
+            errors.append(f"ffmpeg: {exc}")
         raise RuntimeError(
             "Reachy camera capture failed for all media backends. "
             f"Tried {', '.join(backends) or 'none'}. Errors: {' | '.join(errors)}. "
@@ -426,8 +437,81 @@ def capture_image_base64(config: dict | None) -> tuple[str, str]:
     return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
 
 
+def _reachy_camera_device(config: dict | None) -> str:
+    configured = str(
+        (config or {}).get("camera_device") or os.environ.get("REACHY_CAMERA_DEVICE") or ""
+    ).strip()
+    if configured:
+        return configured
+
+    by_id_dir = "/dev/v4l/by-id"
+    try:
+        for name in sorted(os.listdir(by_id_dir)):
+            if "Reachy_Mini_Camera" in name and "video-index0" in name:
+                return os.path.join(by_id_dir, name)
+    except OSError:
+        pass
+    return "/dev/video0"
+
+
+def _capture_image_with_ffmpeg(config: dict | None) -> tuple[str, str]:
+    """Capture one frame directly from V4L2 as a Docker-safe fallback."""
+    config = config or {}
+    device = _reachy_camera_device(config)
+    output_path = f"/tmp/reachy_capture_{os.getpid()}_{int(time.time() * 1000)}.jpg"
+    released = False
+    try:
+        try:
+            _post_daemon(config, "/api/media/release", timeout=5.0)
+            released = True
+            time.sleep(0.4)
+        except Exception as exc:
+            print(
+                f"[reachy-camera] daemon media release failed before ffmpeg capture: {exc}",
+                flush=True,
+            )
+
+        command = [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "v4l2",
+            "-video_size",
+            str(config.get("camera_video_size") or "1920x1080"),
+            "-i",
+            device,
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            output_path,
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"ffmpeg exited {result.returncode} for {device}: {stderr[-800:]}")
+        with open(output_path, "rb") as f:
+            image = f.read()
+        if not image:
+            raise RuntimeError(f"ffmpeg produced an empty image from {device}")
+        print(f"[reachy-camera] captured frame with ffmpeg from {device}", flush=True)
+        return base64.b64encode(image).decode("ascii"), "image/jpeg"
+    finally:
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        finally:
+            if released:
+                try:
+                    _post_daemon(config, "/api/media/acquire", timeout=8.0)
+                except Exception as exc:
+                    print(
+                        f"[reachy-camera] daemon media reacquire failed after ffmpeg capture: {exc}",
+                        flush=True,
+                    )
+
+
 def speak_wav(config: dict | None, audio: bytes) -> float:
-    np, ReachyMini, _create_head_pose = _sdk_imports()
     with wave.open(io.BytesIO(audio), "rb") as wav:
         channels = wav.getnchannels()
         sample_width = wav.getsampwidth()
@@ -436,6 +520,26 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
 
     if sample_width != 2:
         raise RuntimeError("Reachy speaker playback currently expects 16-bit PCM WAV audio.")
+
+    duration = len(frames) / float(sample_rate * channels * sample_width)
+    if not (config or {}).get("prefer_sdk_audio"):
+        sound_path = f"/tmp/reachy_speech_{os.getpid()}_{int(time.time() * 1000)}.wav"
+        try:
+            with open(sound_path, "wb") as f:
+                f.write(audio)
+            _post_daemon(config, "/api/media/play_sound", body={"file": sound_path}, timeout=8.0)
+            time.sleep(duration)
+            return duration
+        except Exception as exc:
+            print(f"[reachy-speech] daemon playback failed, falling back to SDK audio: {exc}", flush=True)
+        finally:
+            try:
+                if os.path.exists(sound_path):
+                    os.remove(sound_path)
+            except OSError:
+                pass
+
+    np, ReachyMini, _create_head_pose = _sdk_imports()
 
     samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
     samples = samples.reshape((-1, channels))
