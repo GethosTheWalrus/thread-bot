@@ -1,4 +1,4 @@
-from temporalio.workflow import defn, execute_activity, init, run, signal
+from temporalio.workflow import ParentClosePolicy, defn, execute_activity, init, run, signal
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from typing import Any
@@ -1023,6 +1023,7 @@ class RunThreadWorkflow:
                     },
                     id=f"reachy-speech-{workflow.info().workflow_id}",
                     task_queue=reachy_task_queue,
+                    parent_close_policy=ParentClosePolicy.ABANDON,
                 )
             discord_config = agent_llm_config.get("discord") or {}
             discord_instruction = ""
@@ -1224,8 +1225,6 @@ class RunThreadWorkflow:
                 "estimated_tokens": self._estimate_context_tokens(retained_messages),
                 "context_window": llm_config.get("context_window", 8192),
             })
-            if reachy_speech_handle:
-                await reachy_speech_handle.result()
             should_title = len(chat_history) <= 5 or len(chat_history) % 5 == 1
 
             return {

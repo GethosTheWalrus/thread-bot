@@ -89,19 +89,24 @@ async def speak_reachy_text(args: dict) -> dict:
     from app.activities.llm_activities import _synthesize_speech_audio
     from app.reachy_client import run_animation_background, speak_wav
 
+    print(f"[reachy-speech] speaking chunk ({len(text)} chars): {text[:80]!r}", flush=True)
     heartbeat({"step": "reachy_speech_tts", "chars": len(text)})
     audio_result = await _synthesize_speech_audio(text, llm_config, {"audio_format": "wav"})
     if isinstance(audio_result, str):
+        print(f"[reachy-speech] TTS unavailable: {audio_result}", flush=True)
         return {"spoken": False, "duration": 0.0, "error": audio_result}
     audio, content_type, _filename = audio_result
     if "wav" not in content_type.lower():
-        return {"spoken": False, "duration": 0.0, "error": f"TTS returned {content_type}; expected WAV."}
+        error = f"TTS returned {content_type}; expected WAV."
+        print(f"[reachy-speech] {error}", flush=True)
+        return {"spoken": False, "duration": 0.0, "error": error}
 
     stop = asyncio.Event()
     animation_task = asyncio.create_task(run_animation_background(reachy_config, "talking", stop))
     try:
         heartbeat({"step": "reachy_speech_playback", "chars": len(text)})
         duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
+        print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
     finally:
         stop.set()
         try:

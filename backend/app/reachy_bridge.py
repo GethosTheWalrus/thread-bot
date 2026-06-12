@@ -13,6 +13,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 import uuid as uuid_mod
 from uuid import UUID
 
@@ -168,16 +169,26 @@ async def run_bridge(args: argparse.Namespace) -> None:
     initial_thread_id = await _resolve_bound_thread_id(args)
     binding_text = initial_thread_id or "no thread yet; connect one in ThreadBot UI"
     print(f"[reachy] Listening for wake word {wake_word!r}; bound to {binding_text}", flush=True)
+    if not args.stdin and not args.stt_command:
+        print("[reachy] No input source configured. Use --stdin for testing or --stt-command for voice transcripts.", flush=True)
+    awake_until = 0.0
     while True:
         transcript = await _read_transcript(args)
         if transcript is None:
             break
         prompt = _strip_wake_word(transcript, wake_word)
         if prompt is None:
-            continue
+            if time.monotonic() < awake_until:
+                prompt = transcript.strip()
+            else:
+                continue
         if not prompt:
-            await asyncio.to_thread(play_animation, reachy_config, "wake", 1.0)
-            print("[reachy] Awake. Say the request after the wake word.", flush=True)
+            try:
+                await asyncio.to_thread(play_animation, reachy_config, "wake", 1.0)
+            except Exception as exc:
+                print(f"[reachy] Wake animation failed: {exc}", flush=True)
+            awake_until = time.monotonic() + float(args.awake_timeout)
+            print(f"[reachy] Awake for {args.awake_timeout:.0f}s. Say the request.", flush=True)
             continue
 
         thread_id = await _resolve_bound_thread_id(args)
@@ -186,8 +197,12 @@ async def run_bridge(args: argparse.Namespace) -> None:
             await asyncio.to_thread(play_animation, reachy_config, "sleep", 1.0)
             continue
         turn_reachy_config = {**reachy_config, "thread_id": thread_id}
+        awake_until = 0.0
         print(f"[reachy] Heard: {prompt}", flush=True)
-        await asyncio.to_thread(play_animation, turn_reachy_config, "wake", 1.0)
+        try:
+            await asyncio.to_thread(play_animation, turn_reachy_config, "wake", 1.0)
+        except Exception as exc:
+            print(f"[reachy] Wake animation failed: {exc}", flush=True)
         thinking_stop = asyncio.Event()
         thinking_task = asyncio.create_task(run_animation_background(turn_reachy_config, "thinking", thinking_stop))
         async def stop_thinking() -> None:
@@ -217,6 +232,7 @@ def main() -> None:
     parser.add_argument("--stdin", action="store_true", help="Use terminal lines as transcripts for testing.")
     parser.add_argument("--stt-command", default="", help="Command that blocks until one transcript is available and prints it.")
     parser.add_argument("--stt-timeout", type=float, default=120.0, help="Seconds before killing one STT command invocation.")
+    parser.add_argument("--awake-timeout", type=float, default=12.0, help="Seconds after a bare wake word to accept the next transcript without repeating the wake word.")
     parser.add_argument("--direct-speak", action="store_true", help="Fallback mode: speak the final response directly from the bridge instead of the Temporal speech workflow.")
     args = parser.parse_args()
     try:

@@ -69,7 +69,7 @@ class ReachySpeechWorkflow:
                 continue
 
             try:
-                await execute_activity(
+                result = await execute_activity(
                     speak_reachy_text,
                     {"text": text, "llm_config": llm_config, "reachy": reachy_config},
                     start_to_close_timeout=timedelta(seconds=180),
@@ -77,9 +77,12 @@ class ReachySpeechWorkflow:
                     retry_policy=RetryPolicy(maximum_attempts=1),
                     summary="Speak Reachy response chunk",
                 )
+                if isinstance(result, dict) and not result.get("spoken"):
+                    workflow.logger.warning("Reachy speech chunk was not spoken: %s", result.get("error") or result)
             except Exception:
                 # Speech is a side effect; a robot/audio failure should not fail
                 # the ThreadBot response that already streamed to the user.
+                workflow.logger.exception("Reachy speech chunk failed")
                 pass
             spoken_chunks += 1
 

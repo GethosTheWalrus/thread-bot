@@ -1,0 +1,46 @@
+# Local Reachy host requirements.
+#
+# This is intentionally standalone instead of inheriting requirements.txt.
+# The Kubernetes backend has conservative pins that can conflict with the
+# Reachy Mini SDK, while the local worker/bridge only needs the subset below.
+# Install reachy-mini separately with `--no-deps`; its published dependency
+# metadata currently asks for a libusb_package version that is not available on
+# PyPI, so the install scripts pin the closest available release explicitly.
+
+# ThreadBot runtime pieces used by the Reachy worker/bridge.
+sqlalchemy==2.0.35
+asyncpg==0.30.0
+pydantic==2.12.5
+pydantic-settings==2.5.2
+aiohttp>=3.14.0
+asgiref
+fastapi==0.115.0
+huggingface-hub>=1.17.0,<2.0.0
+jinja2
+log-throttling==0.0.3
+openai-agents==0.17.1
+openai-agents-python-providers==1.0.0
+temporalio[openai-agents]==1.27.2
+cryptography
+psutil
+pyserial
+pyusb>=1.2.1
+pyyaml>=6.0
+pillow>=10.0.0
+questionary
+reachy_mini_motor_controller>=1.5.5
+reachy-mini-rust-kinematics>=1.0.3
+rich
+rustypot>=1.4.2
+starlette<1.0.0
+toml
+websockets>=12,<16
+zeroconf>=0.149.7,<1
+pulsectl>=24.1.0; sys_platform == "linux"
+PyGObject>=3.42.2,<=3.46.0; sys_platform == "linux"
+gstreamer-bundle==1.28.3; sys_platform != "linux"
+
+# Reachy Mini SDK support libraries used by app/reachy_client.py.
+libusb_package==1.0.26.1
+numpy>=1.26.0
+scipy>=1.11.0
