@@ -562,6 +562,7 @@ async def _vision_chat_completion(
     if max_tokens:
         payload["max_tokens"] = max_tokens
     timeout = aiohttp.ClientTimeout(total=int(config.get("stream_timeout") or 600))
+    data: dict = {}
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(url, headers=headers, json=payload) as resp:
@@ -569,6 +570,14 @@ async def _vision_chat_completion(
                 if resp.status >= 400:
                     raise RuntimeError(f"vision endpoint HTTP {resp.status}: {text[:1000]}")
                 data = await resp.json()
+    except asyncio.CancelledError:
+        print("[vision] vision endpoint cancelled, falling back to main LLM", flush=True)
+        return await _agents_chat_completion(
+            [{"role": "user", "content": content_parts}],
+            config,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
     except Exception as exc:
         print(f"[vision] vision endpoint failed, falling back to main LLM: {exc}", flush=True)
         return await _agents_chat_completion(

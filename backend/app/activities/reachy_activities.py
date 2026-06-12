@@ -41,7 +41,17 @@ async def execute_reachy_tool_activity(args: dict) -> str:
     reachy_config = _reachy_config(args)
 
     heartbeat({"step": "reachy_tool", "tool": tool_name})
+    try:
+        return await _run_reachy_tool(tool_name, tool_args, reachy_config, llm_config, args.get("thread_id"))
+    except asyncio.CancelledError:
+        print(f"[reachy-tool] {tool_name} cancelled by worker/activity timeout", flush=True)
+        return f"Error: Reachy tool {tool_name!r} was cancelled (activity timeout or shutdown)."
+    except BaseException as exc:
+        print(f"[reachy-tool] {tool_name} crashed: {exc!r}", flush=True)
+        return f"Error: Reachy tool {tool_name!r} failed: {exc}"
 
+
+async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict, llm_config: dict, thread_id) -> str:
     if tool_name == "reachy_move":
         from app.reachy_client import ReachyPose, goto_pose
 
@@ -84,7 +94,7 @@ async def execute_reachy_tool_activity(args: dict) -> str:
                 "content_type": content_type,
                 "question": question,
             },
-            args.get("thread_id"),
+            thread_id,
             None,
             None,
             llm_config,
