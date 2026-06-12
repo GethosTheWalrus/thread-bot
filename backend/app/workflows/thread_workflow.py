@@ -200,6 +200,7 @@ class RunThreadWorkflow:
         execute_tool_activity,
         execute_reachy_tool_activity,
         save_message_activity,
+        reachy_speech_handle=None,
     ):
         tools = []
         tool_timeout = int(llm_config.get("tool_timeout") or llm_config.get("stream_timeout") or 600)
@@ -209,6 +210,10 @@ class RunThreadWorkflow:
             tool_name = fn.get("name", "")
 
             async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
+                if reachy_speech_handle:
+                    await reachy_speech_handle.signal("flush")
+                    await reachy_speech_handle.signal("start_thinking")
+
                 if name in reachy_tool_names:
                     return await self._execute_reachy_tool(
                         execute_reachy_tool_activity=execute_reachy_tool_activity,
@@ -1058,6 +1063,7 @@ class RunThreadWorkflow:
                     task_queue=reachy_task_queue,
                     parent_close_policy=ParentClosePolicy.ABANDON,
                 )
+                await reachy_speech_handle.signal("start_thinking")
             discord_config = agent_llm_config.get("discord") or {}
             discord_instruction = ""
             if discord_config.get("enabled"):
@@ -1110,6 +1116,7 @@ class RunThreadWorkflow:
                     execute_agent_tool_activity,
                     execute_reachy_tool_activity,
                     save_message,
+                    reachy_speech_handle,
                 ),
             )
 
@@ -1156,6 +1163,8 @@ class RunThreadWorkflow:
                                     parts.append(text)
                             thinking = "\n".join(parts).strip()
                             if thinking:
+                                if reachy_speech_handle:
+                                    await reachy_speech_handle.signal("start_thinking")
                                 await execute_activity(
                                     save_message,
                                     {"thread_id": thread_id, "role": "thinking", "content": thinking},

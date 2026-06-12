@@ -160,6 +160,27 @@ async def play_reachy_mood(args: dict) -> dict:
 
 
 @defn
+async def play_reachy_animation(args: dict) -> dict:
+    """Play a short built-in Reachy animation on the local robot."""
+    name = str(args.get("name") or "thinking")
+    duration = float(args.get("duration") or 2.0)
+    reachy_config = _reachy_config(args)
+
+    from app.reachy_client import play_animation
+
+    print(f"[reachy-animation] playing {name} for {duration:.1f}s", flush=True)
+    heartbeat({"step": "reachy_animation", "name": name, "duration": duration})
+    try:
+        message = await asyncio.to_thread(play_animation, reachy_config, name, duration)
+    except Exception as exc:
+        error = f"Reachy animation failed: {exc}"
+        print(f"[reachy-animation] {error}", flush=True)
+        return {"played": False, "name": name, "error": error}
+    print(f"[reachy-animation] {message}", flush=True)
+    return {"played": not message.startswith("Error:"), "name": name, "message": message}
+
+
+@defn
 async def speak_reachy_text(args: dict) -> dict:
     """Synthesize a text chunk and play it through Reachy locally."""
     text = str(args.get("text") or "").strip()

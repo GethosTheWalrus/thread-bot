@@ -7,7 +7,12 @@ import argparse
 
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from app.activities.reachy_activities import execute_reachy_tool_activity, play_reachy_mood, speak_reachy_text
+from app.activities.reachy_activities import (
+    execute_reachy_tool_activity,
+    play_reachy_animation,
+    play_reachy_mood,
+    speak_reachy_text,
+)
 from app.config import get_reachy_config, get_settings, load_settings_from_db
 from app.temporal_client import build_worker_versioning_config, connect_temporal_client
 from app.workflows.reachy_speech_workflow import ReachySpeechWorkflow
@@ -37,7 +42,7 @@ async def run_worker() -> None:
         client,
         task_queue=task_queue,
         workflows=[ReachySpeechWorkflow],
-        activities=[execute_reachy_tool_activity, play_reachy_mood, speak_reachy_text],
+        activities=[execute_reachy_tool_activity, play_reachy_animation, play_reachy_mood, speak_reachy_text],
         workflow_runner=UnsandboxedWorkflowRunner(),
         **worker_kwargs,
     )

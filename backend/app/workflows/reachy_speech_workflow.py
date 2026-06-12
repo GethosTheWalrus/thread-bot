@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 from temporalio import workflow
@@ -20,28 +21,46 @@ class ReachySpeechWorkflow:
     def __init__(self, input: dict) -> None:
         self._chunks: list[str] = []
         self._done = False
+        self._flush_requested = False
+        self._thinking_active = False
+        self._thinking_mood_played = False
 
     @signal
     async def add_text(self, text: str) -> None:
         if text:
             self._chunks.append(text)
+            self._thinking_active = False
+
+    @signal
+    async def flush(self) -> None:
+        self._flush_requested = True
+
+    @signal
+    async def start_thinking(self) -> None:
+        self._thinking_active = True
+
+    @signal
+    async def stop_thinking(self) -> None:
+        self._thinking_active = False
 
     @signal
     async def finish(self) -> None:
         self._done = True
+        self._thinking_active = False
+        self._flush_requested = True
 
     def _take_speakable(self, pending: str, *, force: bool = False) -> tuple[str, str]:
         if not pending:
             return "", ""
         if force:
             return pending.strip(), ""
-        if len(pending) < 80:
-            return "", pending
 
         split_at = -1
         for idx, char in enumerate(pending):
-            if char in ".!?\n" and idx >= 40:
+            if char in ".!?\n" and idx >= 24:
                 split_at = idx + 1
+        if split_at < 0 and len(pending) < 80:
+            return "", pending
         if split_at < 0 and len(pending) >= 220:
             split_at = pending.rfind(" ", 0, 220)
         if split_at <= 0:
@@ -73,7 +92,7 @@ class ReachySpeechWorkflow:
     @run
     async def run(self, input: dict) -> dict:
         with workflow.unsafe.imports_passed_through():
-            from app.activities.reachy_activities import play_reachy_mood, speak_reachy_text
+            from app.activities.reachy_activities import play_reachy_animation, play_reachy_mood, speak_reachy_text
 
         pending = ""
         spoken_chunks = 0
@@ -82,12 +101,49 @@ class ReachySpeechWorkflow:
         reachy_config = input.get("reachy") or {}
 
         while not self._done or self._chunks or pending.strip():
-            await workflow.wait_condition(lambda: self._done or bool(self._chunks))
+            if not self._chunks and not pending.strip():
+                if self._thinking_active:
+                    if not self._thinking_mood_played:
+                        try:
+                            await execute_activity(
+                                play_reachy_mood,
+                                {"mood": "thoughtful", "reachy": reachy_config},
+                                start_to_close_timeout=timedelta(seconds=20),
+                                heartbeat_timeout=timedelta(seconds=10),
+                                retry_policy=RetryPolicy(maximum_attempts=1),
+                                summary="Play Reachy thinking mood",
+                            )
+                        except Exception:
+                            workflow.logger.exception("Reachy thinking mood failed")
+                        self._thinking_mood_played = True
+                    try:
+                        await execute_activity(
+                            play_reachy_animation,
+                            {"name": "thinking", "duration": 2.0, "reachy": reachy_config},
+                            start_to_close_timeout=timedelta(seconds=5),
+                            heartbeat_timeout=timedelta(seconds=5),
+                            retry_policy=RetryPolicy(maximum_attempts=1),
+                            summary="Play Reachy thinking animation",
+                        )
+                    except Exception:
+                        workflow.logger.exception("Reachy thinking animation failed")
+                    continue
+
+                try:
+                    await workflow.wait_condition(
+                        lambda: self._done or bool(self._chunks) or self._thinking_active,
+                        timeout=timedelta(seconds=2),
+                        timeout_summary="Wait for Reachy speech text",
+                    )
+                except asyncio.TimeoutError:
+                    pass
             if self._chunks:
                 pending += "".join(self._chunks)
                 self._chunks.clear()
 
-            text, pending = self._take_speakable(pending, force=self._done and not self._chunks)
+            force = self._flush_requested or (self._done and not self._chunks)
+            text, pending = self._take_speakable(pending, force=force)
+            self._flush_requested = False
             if not text:
                 continue
 
