@@ -13,6 +13,7 @@ with workflow.unsafe.imports_passed_through():
 
     from agents import Agent, FunctionTool, ModelSettings, Runner
     from agents.exceptions import MaxTurnsExceeded
+    from app.agents_provider import encode_agents_model_config
 
 
 @defn
@@ -1099,7 +1100,7 @@ class RunThreadWorkflow:
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
                 ),
-                model=agent_llm_config.get("model"),
+                model=encode_agents_model_config(agent_llm_config),
                 model_settings=self._agent_model_settings(agent_llm_config),
                 tools=self._agent_tools(
                     openai_tools,
