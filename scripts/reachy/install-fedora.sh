@@ -24,6 +24,7 @@ sudo dnf install -y --skip-unavailable \
   gstreamer1-plugins-good \
   libffi-devel \
   libnice-devel \
+  libnice-gstreamer1 \
   portaudio-devel \
   openssl-devel \
   make \
@@ -63,6 +64,15 @@ esac
 echo
 echo "Add this to your shell profile:"
 echo "export GST_PLUGIN_PATH=\"$plugin_path:\$GST_PLUGIN_PATH\""
+echo
+
+env_file="$ROOT_DIR/.reachy.env"
+{
+  echo "# Reachy local env (sourced by reachy worker/bridge/daemon)"
+  echo "export GST_PLUGIN_PATH=\"$plugin_path:\$GST_PLUGIN_PATH\""
+  echo "export LD_LIBRARY_PATH=\"$plugin_root/lib64:\$LD_LIBRARY_PATH\""
+} > "$env_file"
+echo "Wrote $env_file"
 echo
 venv_dir="$ROOT_DIR/.venv-reachy"
 python3.10 -m venv "$venv_dir"
