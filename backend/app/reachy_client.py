@@ -192,6 +192,8 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
             duration=duration,
             method="minjerk",
         )
+        # goto_target interpolates body_yaw; set_target_body_yaw is a real-time
+        # fallback in case goto_target silently skipped the body on this firmware.
         if abs(float(pose.body_yaw)) > 0.1:
             mini.set_target_body_yaw(np.deg2rad(float(pose.body_yaw)))
             time.sleep(min(duration, 1.0))

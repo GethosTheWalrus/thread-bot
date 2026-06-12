@@ -87,18 +87,42 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
             error = f"Reachy camera capture failed: {exc}"
             print(f"[reachy-camera] {error}", flush=True)
             return error
-        return await _execute_builtin(
-            "describe_image",
-            {
-                "image_base64": image_base64,
-                "content_type": content_type,
-                "question": question,
-            },
-            thread_id,
-            None,
-            None,
-            llm_config,
-        )
+        heartbeat({"step": "reachy_capture_image_describing", "chars": len(image_base64)})
+        # Periodic heartbeats so the vision HTTP call cannot trip the
+        # heartbeat_timeout if the local vision model is slow to respond.
+        stop_heartbeat = asyncio.Event()
+        async def _heartbeat_loop() -> None:
+            while not stop_heartbeat.is_set():
+                try:
+                    heartbeat({"step": "reachy_capture_image_describing"})
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(stop_heartbeat.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    continue
+                else:
+                    return
+        hb_task = asyncio.create_task(_heartbeat_loop())
+        try:
+            return await _execute_builtin(
+                "describe_image",
+                {
+                    "image_base64": image_base64,
+                    "content_type": content_type,
+                    "question": question,
+                },
+                thread_id,
+                None,
+                None,
+                llm_config,
+            )
+        finally:
+            stop_heartbeat.set()
+            try:
+                await hb_task
+            except Exception:
+                pass
 
     return f"Error: unknown Reachy tool {tool_name!r}."
 

@@ -564,16 +564,19 @@ class RunThreadWorkflow:
                             "Move the connected Reachy Mini robot. Use this when the user asks Reachy to look, nod, "
                             "turn, point attention, or physically react. Angles are degrees and are clamped to safe "
                             "Reachy Mini ranges by the SDK. Keep movements smooth and modest unless the user asks "
-                            "for a large gesture. Use yaw for head-only looking, and body_yaw when the base/foot should rotate."
+                            "for a large gesture. CRITICAL: 'yaw' rotates ONLY the head; 'body_yaw' rotates the "
+                            "base/foot and must be set whenever the user wants Reachy to face a different direction, "
+                            "look behind itself, aim at something off to the side, or follow a moving target with its "
+                            "whole body. When in doubt, pass both yaw (head) and body_yaw (base)."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "roll": {"type": "number", "description": "Head roll in degrees, usually -20 to 20."},
                                 "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25."},
-                                "yaw": {"type": "number", "description": "Head yaw in degrees. Positive turns one way, negative the other."},
+                                "yaw": {"type": "number", "description": "Head yaw in degrees. Positive turns one way, negative the other. This is head-only and does NOT rotate the body."},
                                 "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15."},
-                                "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, usually -90 to 90. Use this when Reachy should rotate its body/base, not just its head."},
+                                "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, usually -90 to 90. ALWAYS pass this when the user wants Reachy to face or look toward a direction with its whole body, not just tilt its head."},
                                 "right_antenna": {"type": "number", "description": "Right antenna angle in degrees."},
                                 "left_antenna": {"type": "number", "description": "Left antenna angle in degrees."},
                                 "duration": {"type": "number", "description": "Smooth movement duration in seconds. Defaults to 1.0."},
