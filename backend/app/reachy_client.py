@@ -264,6 +264,9 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
 
 
 def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: asyncio.Event | None = None) -> str:
+    if not (config or {}).get("prefer_sdk_motion"):
+        return _play_animation_via_daemon(config, name, duration, stop)
+
     np, ReachyMini, create_head_pose = _sdk_imports()
     name = (name or "thinking").strip().lower()
     duration = max(0.5, min(float(duration or 3.0), 30.0))
@@ -318,6 +321,52 @@ def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: 
             return f"Error: unknown Reachy animation {name!r}. Use thinking, talking, wake, or sleep."
 
     return f"Played Reachy {name} animation for {duration:.1f}s."
+
+
+def _play_animation_via_daemon(config: dict | None, name: str, duration: float = 3.0, stop: asyncio.Event | None = None) -> str:
+    name = (name or "thinking").strip().lower()
+    duration = max(0.5, min(float(duration or 3.0), 30.0))
+    started = time.monotonic()
+
+    def move(pose: ReachyPose) -> None:
+        goto_pose_via_daemon(config, pose)
+
+    if name == "thinking":
+        while time.monotonic() - started < duration and not (stop and stop.is_set()):
+            t = time.monotonic() - started
+            move(ReachyPose(
+                pitch=4.0 + 3.0 * math.sin(t * 0.45),
+                roll=2.8 * math.sin(t * 0.32 + 0.7),
+                yaw=3.5 * math.sin(t * 0.25),
+                z=2.0 * math.sin(t * 0.28 + 1.1),
+                right_antenna=18.0 + 5.0 * math.sin(t * 0.4 + 0.2),
+                left_antenna=18.0 + 5.0 * math.sin(t * 0.4 + 1.4),
+                duration=0.35,
+                head_mode="head_only",
+            ))
+            time.sleep(0.18)
+    elif name == "talking":
+        while time.monotonic() - started < duration and not (stop and stop.is_set()):
+            t = time.monotonic() - started
+            move(ReachyPose(
+                pitch=1.6 * math.sin(t * 1.15) + 0.8 * math.sin(t * 2.2),
+                roll=1.0 * math.sin(t * 0.9 + 0.4),
+                yaw=2.6 * math.sin(t * 0.85),
+                z=1.0 * math.sin(t * 1.0 + 0.8),
+                right_antenna=16.0 + 3.5 * math.sin(t * 1.6),
+                left_antenna=16.0 + 3.5 * math.sin(t * 1.6 + 1.1),
+                duration=0.25,
+                head_mode="head_only",
+            ))
+            time.sleep(0.12)
+    elif name == "wake":
+        move(ReachyPose(z=8.0, pitch=-5.0, right_antenna=35.0, left_antenna=35.0, duration=min(duration, 1.2)))
+    elif name == "sleep":
+        move(ReachyPose(z=-8.0, pitch=10.0, right_antenna=-10.0, left_antenna=-10.0, duration=min(duration, 1.5)))
+    else:
+        return f"Error: unknown Reachy animation {name!r}. Use thinking, talking, wake, or sleep."
+
+    return f"Played Reachy {name} animation via daemon for {duration:.1f}s."
 
 
 def _capture_image_with_backend(config: dict | None, media_backend: str) -> tuple[Any, str]:
