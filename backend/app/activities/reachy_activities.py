@@ -53,18 +53,30 @@ async def execute_reachy_tool_activity(args: dict) -> str:
 
 async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict, llm_config: dict, thread_id) -> str:
     if tool_name == "reachy_move":
-        from app.reachy_client import ReachyPose, goto_pose
+        from app.reachy_client import VALID_HEAD_MODES, ReachyPose, goto_pose
 
-        pose = ReachyPose(
-            roll=float(tool_args.get("roll") or 0.0),
-            pitch=float(tool_args.get("pitch") or 0.0),
-            yaw=float(tool_args.get("yaw") or 0.0),
-            z=float(tool_args.get("z") or 0.0),
-            body_yaw=float(tool_args.get("body_yaw") or 0.0),
-            right_antenna=float(tool_args.get("right_antenna") or 0.0),
-            left_antenna=float(tool_args.get("left_antenna") or 0.0),
-            duration=float(tool_args.get("duration") or 1.0),
-        )
+        head_mode = str(tool_args.get("head_mode") or "").strip()
+        if head_mode not in VALID_HEAD_MODES:
+            return (
+                "Error: reachy_move requires 'head_mode' set to one of "
+                f"{list(VALID_HEAD_MODES)}; got {head_mode!r}. Pick the mode "
+                "that matches the user's intent and call reachy_move again."
+            )
+
+        try:
+            pose = ReachyPose(
+                roll=float(tool_args.get("roll") or 0.0),
+                pitch=float(tool_args.get("pitch") or 0.0),
+                yaw=float(tool_args.get("yaw") or 0.0),
+                z=float(tool_args.get("z") or 0.0),
+                body_yaw=float(tool_args.get("body_yaw") or 0.0),
+                right_antenna=float(tool_args.get("right_antenna") or 0.0),
+                left_antenna=float(tool_args.get("left_antenna") or 0.0),
+                duration=float(tool_args.get("duration") or 1.0),
+                head_mode=head_mode,
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
         return await asyncio.to_thread(goto_pose, reachy_config, pose)
 
     if tool_name == "reachy_animation":

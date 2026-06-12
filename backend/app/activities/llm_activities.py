@@ -1715,7 +1715,15 @@ async def _execute_builtin(
         if not (config.get("reachy") or {}).get("enabled"):
             return "Error: Reachy tools are disabled. Set REACHY_ENABLED=true for the worker/bridge."
         try:
-            from app.reachy_client import ReachyPose, goto_pose
+            from app.reachy_client import VALID_HEAD_MODES, ReachyPose, goto_pose
+
+            head_mode = str(tool_args.get("head_mode") or "").strip()
+            if head_mode not in VALID_HEAD_MODES:
+                return (
+                    "Error: reachy_move requires 'head_mode' set to one of "
+                    f"{list(VALID_HEAD_MODES)}; got {head_mode!r}. Pick the mode "
+                    "that matches the user's intent and call reachy_move again."
+                )
 
             pose = ReachyPose(
                 roll=float(tool_args.get("roll") or 0.0),
@@ -1726,7 +1734,10 @@ async def _execute_builtin(
                 right_antenna=float(tool_args.get("right_antenna") or 0.0),
                 left_antenna=float(tool_args.get("left_antenna") or 0.0),
                 duration=float(tool_args.get("duration") or 1.0),
+                head_mode=head_mode,
             )
+        except ValueError as exc:
+            return f"Error: {exc}"
             return await asyncio.to_thread(goto_pose, config.get("reachy") or {}, pose)
         except Exception as exc:
             return f"Error moving Reachy: {exc}"

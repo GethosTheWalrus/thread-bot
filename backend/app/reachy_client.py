@@ -44,6 +44,9 @@ MOOD_EMOTIONS: dict[str, str] = {
 }
 
 
+VALID_HEAD_MODES = ("head_only", "body_turn_head_follows", "body_turn_head_stays_world_fixed")
+
+
 @dataclass
 class ReachyPose:
     roll: float = 0.0
@@ -54,6 +57,58 @@ class ReachyPose:
     right_antenna: float = 0.0
     left_antenna: float = 0.0
     duration: float = 1.0
+    head_mode: str = "head_only"
+
+    def __post_init__(self) -> None:
+        if self.head_mode not in VALID_HEAD_MODES:
+            raise ValueError(
+                f"Invalid ReachyPose.head_mode {self.head_mode!r}. "
+                f"Must be one of {VALID_HEAD_MODES}."
+            )
+
+    def resolve_head_pose(self) -> "ReachyPose":
+        """Return a copy with head/body values resolved for the chosen head_mode.
+
+        head_only:
+            body_yaw must be 0 (or omitted). yaw is the head's body-frame yaw.
+        body_turn_head_follows:
+            body_yaw is the world direction Reachy should face. yaw is forced
+            to 0 so the head pose matrix is identity in body frame — visually
+            the head moves with the body.
+        body_turn_head_stays_world_fixed:
+            body_yaw rotates the body, and yaw is the world-frame direction the
+            LLM wants the camera to keep pointing at. We convert to a body-frame
+            head pose: head_yaw = world_yaw - body_yaw, so world camera direction
+            ends up at the LLM's requested world yaw.
+        """
+        if self.head_mode == "head_only":
+            if abs(float(self.body_yaw)) > 0.001:
+                raise ValueError(
+                    "head_mode=head_only requires body_yaw=0 (or omitted); "
+                    f"got body_yaw={self.body_yaw}. To rotate the body, use "
+                    "head_mode=body_turn_head_follows or body_turn_head_stays_world_fixed."
+                )
+            return ReachyPose(
+                roll=self.roll, pitch=self.pitch, yaw=self.yaw, z=self.z,
+                body_yaw=0.0,
+                right_antenna=self.right_antenna, left_antenna=self.left_antenna,
+                duration=self.duration, head_mode=self.head_mode,
+            )
+        if self.head_mode == "body_turn_head_follows":
+            return ReachyPose(
+                roll=self.roll, pitch=self.pitch, yaw=0.0, z=self.z,
+                body_yaw=self.body_yaw,
+                right_antenna=self.right_antenna, left_antenna=self.left_antenna,
+                duration=self.duration, head_mode=self.head_mode,
+            )
+        # body_turn_head_stays_world_fixed
+        head_yaw_body = float(self.yaw) - float(self.body_yaw)
+        return ReachyPose(
+            roll=self.roll, pitch=self.pitch, yaw=head_yaw_body, z=self.z,
+            body_yaw=self.body_yaw,
+            right_antenna=self.right_antenna, left_antenna=self.left_antenna,
+            duration=self.duration, head_mode=self.head_mode,
+        )
 
 
 def _sdk_imports():
@@ -144,6 +199,7 @@ def play_mood_animation(config: dict | None, mood: str) -> str:
 
 def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
     np, _ReachyMini, create_head_pose = _sdk_imports()
+    pose = pose.resolve_head_pose()
     duration = max(0.2, min(float(pose.duration or 1.0), 10.0))
     head_pose = create_head_pose(
         z=float(pose.z),
@@ -163,8 +219,9 @@ def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
     _post_daemon(config, "/api/move/goto", body=payload, timeout=5.0)
     return (
         "Moved Reachy via daemon: "
-        f"head roll={pose.roll:.1f} pitch={pose.pitch:.1f} yaw={pose.yaw:.1f} z={pose.z:.1f}mm, "
-        f"body_yaw={pose.body_yaw:.1f}, antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
+        f"head_mode={pose.head_mode}; head roll={pose.roll:.1f} pitch={pose.pitch:.1f} "
+        f"yaw={pose.yaw:.1f} (body-frame) z={pose.z:.1f}mm, body_yaw={pose.body_yaw:.1f}, "
+        f"antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
     )
 
 
@@ -176,6 +233,7 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
             print(f"[reachy] daemon movement failed, falling back to SDK: {exc}", flush=True)
 
     np, ReachyMini, create_head_pose = _sdk_imports()
+    pose = pose.resolve_head_pose()
     duration = max(0.2, min(float(pose.duration or 1.0), 10.0))
     with ReachyMini(**_mini_kwargs(config, media_backend="no_media")) as mini:
         mini.goto_target(
@@ -199,8 +257,9 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
             time.sleep(min(duration, 1.0))
     return (
         "Moved Reachy: "
-        f"head roll={pose.roll:.1f} pitch={pose.pitch:.1f} yaw={pose.yaw:.1f} z={pose.z:.1f}mm, "
-        f"body_yaw={pose.body_yaw:.1f}, antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
+        f"head_mode={pose.head_mode}; head roll={pose.roll:.1f} pitch={pose.pitch:.1f} "
+        f"yaw={pose.yaw:.1f} (body-frame) z={pose.z:.1f}mm, body_yaw={pose.body_yaw:.1f}, "
+        f"antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
     )
 
 

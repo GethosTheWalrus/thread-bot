@@ -564,23 +564,44 @@ class RunThreadWorkflow:
                             "Move the connected Reachy Mini robot. Use this when the user asks Reachy to look, nod, "
                             "turn, point attention, or physically react. Angles are degrees and are clamped to safe "
                             "Reachy Mini ranges by the SDK. Keep movements smooth and modest unless the user asks "
-                            "for a large gesture. CRITICAL: 'yaw' rotates ONLY the head; 'body_yaw' rotates the "
-                            "base/foot and must be set whenever the user wants Reachy to face a different direction, "
-                            "look behind itself, aim at something off to the side, or follow a moving target with its "
-                            "whole body. When in doubt, pass both yaw (head) and body_yaw (base)."
+                            "for a large gesture.\n\n"
+                            "HOW HEAD AND BODY INTERACT (READ THIS EVERY TIME):\n"
+                            "There are TWO independently controllable parts: the HEAD (roll/pitch/yaw/z) and the BASE/FOOT (body_yaw). "
+                            "When you set BOTH a head 'yaw' and a non-zero 'body_yaw' in the same call, the daemon counter-rotates "
+                            "the head pose so the camera keeps pointing at the same WORLD direction — visually the head and body appear "
+                            "to swing in OPPOSITE directions. This is correct for 'rotate the body but keep looking at the same spot'.\n"
+                            "When you set ONLY 'body_yaw' and leave 'yaw' at 0 (or omit it), the head does NOT counter-rotate, so the head "
+                            "and body appear to turn TOGETHER — the whole robot faces a new direction. This is what you want for 'look over "
+                            "there' / 'turn around' / 'face the screen on the left'.\n\n"
+                            "YOU MUST PICK head_mode EXPLICITLY EVERY CALL. There is no default. The three modes are:\n"
+                            "- head_mode='head_only': rotate ONLY the head, do NOT touch the body. body_yaw MUST be 0 or omitted. "
+                            "Use for: 'look up', 'look at me', 'tilt your head', 'glance left'. head yaw is relative to the current body.\n"
+                            "- head_mode='body_turn_head_follows': rotate the body AND have the head follow, so the whole robot turns to face "
+                            "a new direction together. Pass body_yaw (the direction to face, in degrees, -180..180) and set yaw=0. "
+                            "Use for: 'turn around', 'look at the screen on the left', 'face the door', 'follow me as I walk'.\n"
+                            "- head_mode='body_turn_head_stays_world_fixed': rotate the body but keep the camera looking at the same WORLD "
+                            "direction. Pass body_yaw AND a yaw that, combined with the body's rotation, would re-aim the head in body-frame. "
+                            "Use for: 'turn your body toward the user but keep watching the TV'.\n\n"
+                            "If you are unsure which mode the user wants, ASK. Do NOT guess. Do NOT call reachy_move without head_mode set."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "roll": {"type": "number", "description": "Head roll in degrees, usually -20 to 20."},
-                                "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25."},
-                                "yaw": {"type": "number", "description": "Head yaw in degrees. Positive turns one way, negative the other. This is head-only and does NOT rotate the body."},
-                                "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15."},
-                                "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, usually -90 to 90. ALWAYS pass this when the user wants Reachy to face or look toward a direction with its whole body, not just tilt its head."},
+                                "head_mode": {
+                                    "type": "string",
+                                    "enum": ["head_only", "body_turn_head_follows", "body_turn_head_stays_world_fixed"],
+                                    "description": "REQUIRED. Which of the three head/body interaction modes to use for this call. See the tool description for the full explanation. There is no default — you must pick one explicitly every call.",
+                                },
+                                "roll": {"type": "number", "description": "Head roll in degrees, usually -20 to 20. Independent of head_mode."},
+                                "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25. Independent of head_mode."},
+                                "yaw": {"type": "number", "description": "Head yaw in degrees. Interpretation depends on head_mode — see tool description. Omit or set to 0 for head_only and body_turn_head_follows unless the user wants a specific head tilt on top of the body turn."},
+                                "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15. Independent of head_mode."},
+                                "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, -180..180. MUST be 0 (or omitted) for head_mode=head_only. REQUIRED for body_turn_head_follows and body_turn_head_stays_world_fixed."},
                                 "right_antenna": {"type": "number", "description": "Right antenna angle in degrees."},
                                 "left_antenna": {"type": "number", "description": "Left antenna angle in degrees."},
                                 "duration": {"type": "number", "description": "Smooth movement duration in seconds. Defaults to 1.0."},
                             },
+                            "required": ["head_mode"],
                         },
                     },
                 },
