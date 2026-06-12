@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import math
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -98,6 +99,28 @@ def _post_daemon(config: dict | None, endpoint: str, *, body: dict | None = None
         raise RuntimeError(f"Reachy daemon returned HTTP {exc.code} for {endpoint}: {body[:300]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Reachy daemon is not reachable at {_daemon_base_url(config)}: {exc.reason}") from exc
+
+
+def _get_daemon_json(config: dict | None, endpoint: str, *, timeout: float = 3.0) -> Any:
+    url = f"{_daemon_base_url(config)}{endpoint}"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        return f"unavailable: {exc}"
+
+
+def camera_diagnostics(config: dict | None) -> str:
+    media_status = _get_daemon_json(config, "/api/media/status")
+    camera_specs = _get_daemon_json(config, "/api/camera/specs")
+    socket_path = "/tmp/reachymini_camera_socket"
+    return (
+        f"daemon_url={_daemon_base_url(config)}; "
+        f"media_status={media_status}; "
+        f"camera_specs={camera_specs}; "
+        f"local_camera_socket_exists={os.path.exists(socket_path)} ({socket_path})"
+    )
 
 
 def play_recorded_move(config: dict | None, dataset: str, move: str) -> str:
@@ -239,9 +262,17 @@ def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: 
 def _capture_image_with_backend(config: dict | None, media_backend: str) -> tuple[Any, str]:
     np, ReachyMini, _create_head_pose = _sdk_imports()
     with ReachyMini(**_mini_kwargs(config, media_backend=media_backend)) as mini:
-        frame = mini.media.get_frame()
+        frame = None
+        deadline = time.monotonic() + float((config or {}).get("camera_warmup_seconds") or 5.0)
+        attempts = 0
+        while time.monotonic() < deadline:
+            attempts += 1
+            frame = mini.media.get_frame()
+            if frame is not None:
+                break
+            time.sleep(0.2)
     if frame is None:
-        raise RuntimeError(f"media backend {media_backend!r} returned no camera frame")
+        raise RuntimeError(f"media backend {media_backend!r} returned no camera frame after {attempts} attempts")
     return np.asarray(frame), media_backend
 
 
@@ -266,7 +297,8 @@ def capture_image_base64(config: dict | None) -> tuple[str, str]:
     if frame is None:
         raise RuntimeError(
             "Reachy camera capture failed for all media backends. "
-            f"Tried {', '.join(backends) or 'none'}. Errors: {' | '.join(errors)}"
+            f"Tried {', '.join(backends) or 'none'}. Errors: {' | '.join(errors)}. "
+            f"Diagnostics: {camera_diagnostics(config)}"
         )
 
     try:
@@ -274,6 +306,9 @@ def capture_image_base64(config: dict | None) -> tuple[str, str]:
     except Exception as exc:  # pragma: no cover - optional local dependency
         raise RuntimeError("Pillow is required to encode Reachy's camera frame. Install `pillow`.") from exc
 
+    # Reachy media backends return BGR frames; PIL expects RGB.
+    if len(frame.shape) == 3 and frame.shape[2] == 3:
+        frame = frame[:, :, ::-1]
     image = Image.fromarray(frame.astype("uint8"), "RGB")
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90)

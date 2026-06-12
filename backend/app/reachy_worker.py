@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
@@ -44,5 +45,29 @@ async def run_worker() -> None:
     await worker.run()
 
 
+async def test_camera() -> None:
+    for attempt in range(1, 11):
+        try:
+            await load_settings_from_db()
+            break
+        except Exception:
+            if attempt == 10:
+                raise
+            await asyncio.sleep(2)
+
+    from app.reachy_client import camera_diagnostics, capture_image_base64
+
+    reachy_config = get_reachy_config()
+    print(f"[reachy-camera-test] diagnostics before capture: {camera_diagnostics(reachy_config)}", flush=True)
+    image_base64, content_type = await asyncio.to_thread(capture_image_base64, reachy_config)
+    print(
+        f"[reachy-camera-test] captured {content_type}; base64 chars={len(image_base64)}",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(run_worker())
+    parser = argparse.ArgumentParser(description="Run the local Reachy Temporal worker.")
+    parser.add_argument("--camera-test", action="store_true", help="Test local Reachy camera capture and exit.")
+    args = parser.parse_args()
+    asyncio.run(test_camera() if args.camera_test else run_worker())
