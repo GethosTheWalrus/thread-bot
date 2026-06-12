@@ -36,6 +36,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   String? _error;
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
+  bool _hasLlmOverrides = false;
   DiscordThreadLink? _discordLink;
   ReachyBinding? _reachyBinding;
   bool _isTogglingReachy = false;
@@ -160,7 +161,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
-    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; });
+    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; _hasLlmOverrides = false; });
     try {
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$threadId'));
       final thread = await _api.getThread(threadId);
@@ -183,6 +184,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
+        _loadLlmOverrideStatus(threadId);
         _loadReachyBinding();
 
         // If this thread is still generating (e.g., page was refreshed mid-response),
@@ -202,6 +204,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final overrides = data['overrides'] as List<dynamic>? ?? [];
       if (mounted) {
         setState(() => _hasToolOverrides = overrides.any((o) => o['enabled'] == false));
+      }
+    } catch (_) {
+      // Non-critical — don't show error
+    }
+  }
+
+  Future<void> _loadLlmOverrideStatus(String threadId) async {
+    try {
+      final overrides = await _api.getThreadLlmOverrides(threadId);
+      if (mounted) {
+        setState(() => _hasLlmOverrides = !overrides.isEmpty);
       }
     } catch (_) {
       // Non-critical — don't show error
@@ -418,6 +431,32 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             });
           }
         },
+      ),
+    );
+  }
+
+  void _showLlmOverrides() {
+    final threadId = _activeThreadId;
+    if (threadId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Open a thread first to set per-thread LLM overrides.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF16161E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => _LlmOverridesSheet(
+        threadId: threadId,
+        api: _api,
+        onChanged: () => _loadLlmOverrideStatus(threadId),
       ),
     );
   }
@@ -785,6 +824,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _contextEstimatedTokens = 0;
       _pendingToolOverrides = null;
       _hasToolOverrides = false;
+      _hasLlmOverrides = false;
       _discordLink = null;
     });
   }
@@ -952,6 +992,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _contextEstimatedTokens = 0;
         _pendingToolOverrides = null;
         _hasToolOverrides = false;
+        _hasLlmOverrides = false;
         _discordLink = link;
       });
       _loadThreads();
@@ -1218,6 +1259,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     isSending: _isSending,
                     onToolsPressed: _showToolOverrides,
                     hasToolOverrides: _hasToolOverrides,
+                    onLlmOverridesPressed: _showLlmOverrides,
+                    hasLlmOverrides: _hasLlmOverrides,
                     estimatedTokens: _contextEstimatedTokens,
                     contextWindow: _contextWindow,
                   ),
@@ -1999,4 +2042,608 @@ class _ToolState {
     required this.description,
     required this.enabled,
   });
+}
+
+class _LlmOverridesSheet extends StatefulWidget {
+  final String threadId;
+  final ApiService api;
+  final VoidCallback? onChanged;
+
+  const _LlmOverridesSheet({
+    required this.threadId,
+    required this.api,
+    this.onChanged,
+  });
+
+  @override
+  State<_LlmOverridesSheet> createState() => _LlmOverridesSheetState();
+}
+
+class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
+  ThreadLlmOverrides? _overrides;
+  bool _isLoading = true;
+  bool _isSaving = false;
+  String? _error;
+  final TextEditingController _searchController = TextEditingController();
+  String _search = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final overrides = await widget.api.getThreadLlmOverrides(widget.threadId);
+      if (!mounted) return;
+      setState(() {
+        _overrides = overrides;
+        _isLoading = false;
+        _error = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _save(Map<String, dynamic> next) async {
+    setState(() => _isSaving = true);
+    try {
+      final updated = await widget.api.setThreadLlmOverrides(widget.threadId, next);
+      if (!mounted) return;
+      setState(() {
+        _overrides = updated;
+        _isSaving = false;
+        _error = null;
+      });
+      widget.onChanged?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _isSaving = false;
+      });
+    }
+  }
+
+  Future<void> _clearAll() async {
+    setState(() => _isSaving = true);
+    try {
+      final updated = await widget.api.clearThreadLlmOverrides(widget.threadId);
+      if (!mounted) return;
+      setState(() {
+        _overrides = updated;
+        _isSaving = false;
+        _error = null;
+      });
+      widget.onChanged?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _isSaving = false;
+      });
+    }
+  }
+
+  void _setOverride(String key, dynamic value) {
+    final current = Map<String, dynamic>.from(_overrides?.overrides ?? const {});
+    current[key] = value;
+    _save(current);
+  }
+
+  void _clearOne(String key) {
+    final current = Map<String, dynamic>.from(_overrides?.overrides ?? const {});
+    current.remove(key);
+    if (current.isEmpty) {
+      _clearAll();
+    } else {
+      _save(current);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final overrides = _overrides;
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.9,
+      minChildSize: 0.4,
+      maxChildSize: 0.95,
+      builder: (context, scrollController) {
+        return Padding(
+          padding: EdgeInsets.only(bottom: mediaQuery.viewInsets.bottom),
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFF16161E),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              children: [
+                _buildHeader(),
+                if (_isLoading)
+                  const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: CircularProgressIndicator(),
+                  )
+                else if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      _error!,
+                      style: const TextStyle(color: Colors.redAccent),
+                    ),
+                  )
+                else if (overrides != null)
+                  Expanded(
+                    child: _buildBody(overrides, scrollController),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHeader() {
+    final overrides = _overrides;
+    final hasAny = overrides != null && overrides.overrides.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: Color(0xFF22222D))),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Per-thread LLM overrides',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white70),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            hasAny
+                ? '${overrides.overrides.length} override${overrides.overrides.length == 1 ? '' : 's'} set on this thread. Anything not set falls back to the global LLM settings.'
+                : 'Anything you set here overrides the global LLM settings for this thread only. Anything you leave unset falls back to the global LLM settings.',
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: 'Search overrides…',
+                    hintStyle: const TextStyle(color: Colors.white38),
+                    prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 16),
+                    filled: true,
+                    fillColor: const Color(0xFF1E1E2A),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (hasAny)
+                TextButton.icon(
+                  onPressed: _isSaving ? null : _clearAll,
+                  icon: const Icon(Icons.clear_all, color: Color(0xFFEF4444), size: 16),
+                  label: const Text(
+                    'Clear all',
+                    style: TextStyle(color: Color(0xFFEF4444)),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody(ThreadLlmOverrides overrides, ScrollController scrollController) {
+    final keys = overrides.keys.where((k) {
+      if (_search.isEmpty) return true;
+      final entry = overrides.schema[k];
+      final label = entry?.label.toLowerCase() ?? k;
+      return label.contains(_search) || k.contains(_search);
+    }).toList();
+
+    if (keys.isEmpty) {
+      return Center(
+        child: Text(
+          'No matches for "$_search"',
+          style: const TextStyle(color: Colors.white54),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      controller: scrollController,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: keys.length,
+      separatorBuilder: (_, __) => const Divider(color: Color(0xFF22222D), height: 1),
+      itemBuilder: (context, index) {
+        final key = keys[index];
+        final entry = overrides.schema[key];
+        if (entry == null) return const SizedBox.shrink();
+        return _buildRow(key, entry, overrides);
+      },
+    );
+  }
+
+  Widget _buildRow(String key, ThreadLlmOverrideSchemaEntry entry, ThreadLlmOverrides overrides) {
+    final effective = overrides.effectiveValue(key);
+    final isOverridden = overrides.overrides.containsKey(key);
+    final displayValue = isOverridden ? overrides.overrides[key] : effective;
+    final type = entry.type;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        entry.label,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    if (isOverridden)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'override',
+                          style: TextStyle(color: Color(0xFF8B5CF6), fontSize: 10),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  key,
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                const SizedBox(height: 6),
+                if (type == 'boolean')
+                  Row(
+                    children: [
+                      Switch.adaptive(
+                        value: displayValue == true,
+                        activeColor: const Color(0xFF8B5CF6),
+                        onChanged: _isSaving
+                            ? null
+                            : (v) => _setOverride(key, v),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        displayValue == true ? 'On' : 'Off',
+                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const Spacer(),
+                      if (isOverridden)
+                        TextButton(
+                          onPressed: _isSaving ? null : () => _clearOne(key),
+                          child: const Text('Reset to default'),
+                        ),
+                    ],
+                  )
+                else
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: type == 'number'
+                            ? _NumberField(
+                                keyName: key,
+                                initial: displayValue,
+                                isOverridden: isOverridden,
+                                isSaving: _isSaving,
+                                onSubmit: (v) => _setOverride(key, v),
+                                onReset: isOverridden ? () => _clearOne(key) : null,
+                              )
+                            : _StringField(
+                                keyName: key,
+                                initial: displayValue?.toString() ?? '',
+                                isOverridden: isOverridden,
+                                isSaving: _isSaving,
+                                multiline: key == 'api_key' ||
+                                    key == 'tts_api_key' ||
+                                    key == 'vision_api_key',
+                                onSubmit: (v) {
+                                  if (v.isEmpty) {
+                                    _clearOne(key);
+                                  } else {
+                                    _setOverride(key, v);
+                                  }
+                                },
+                                onReset: isOverridden ? () => _clearOne(key) : null,
+                              ),
+                      ),
+                    ],
+                  ),
+                if (!isOverridden && effective != null && effective != '')
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'Default: ${_formatDefault(effective, type)}',
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _formatDefault(Object value, String type) {
+    if (type == 'number') {
+      if (value is num) {
+        return value.toString();
+      }
+    }
+    final str = value.toString();
+    if (str.length > 80) {
+      return '${str.substring(0, 77)}…';
+    }
+    return str;
+  }
+}
+
+class _NumberField extends StatefulWidget {
+  final String keyName;
+  final Object? initial;
+  final bool isOverridden;
+  final bool isSaving;
+  final ValueChanged<Object?> onSubmit;
+  final VoidCallback? onReset;
+
+  const _NumberField({
+    required this.keyName,
+    required this.initial,
+    required this.isOverridden,
+    required this.isSaving,
+    required this.onSubmit,
+    this.onReset,
+  });
+
+  @override
+  State<_NumberField> createState() => _NumberFieldState();
+}
+
+class _NumberFieldState extends State<_NumberField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initial?.toString() ?? '');
+    _focusNode = FocusNode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _NumberField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_focusNode.hasFocus && widget.initial != oldWidget.initial) {
+      _controller.text = widget.initial?.toString() ?? '';
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _commit() {
+    if (widget.isSaving) return;
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) {
+      widget.onSubmit(null);
+      return;
+    }
+    if (raw.contains('.')) {
+      widget.onSubmit(double.tryParse(raw));
+    } else {
+      widget.onSubmit(int.tryParse(raw));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            onSubmitted: (_) => _commit(),
+            onEditingComplete: _commit,
+            onTapOutside: (_) => _commit(),
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: const Color(0xFF1E1E2A),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        IconButton(
+          tooltip: 'Save',
+          icon: const Icon(Icons.check, color: Color(0xFF8B5CF6), size: 18),
+          onPressed: widget.isSaving ? null : _commit,
+        ),
+        if (widget.onReset != null)
+          IconButton(
+            tooltip: 'Reset to default',
+            icon: const Icon(Icons.undo, color: Colors.white54, size: 18),
+            onPressed: widget.isSaving ? null : widget.onReset,
+          ),
+      ],
+    );
+  }
+}
+
+class _StringField extends StatefulWidget {
+  final String keyName;
+  final String initial;
+  final bool isOverridden;
+  final bool isSaving;
+  final bool multiline;
+  final ValueChanged<String> onSubmit;
+  final VoidCallback? onReset;
+
+  const _StringField({
+    required this.keyName,
+    required this.initial,
+    required this.isOverridden,
+    required this.isSaving,
+    required this.multiline,
+    required this.onSubmit,
+    this.onReset,
+  });
+
+  @override
+  State<_StringField> createState() => _StringFieldState();
+}
+
+class _StringFieldState extends State<_StringField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initial);
+    _focusNode = FocusNode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StringField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_focusNode.hasFocus && widget.initial != oldWidget.initial) {
+      _controller.text = widget.initial;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _commit() {
+    if (widget.isSaving) return;
+    widget.onSubmit(_controller.text.trim());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            minLines: 1,
+            maxLines: widget.multiline ? 3 : 1,
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            onSubmitted: (_) => _commit(),
+            onEditingComplete: _commit,
+            onTapOutside: (_) => _commit(),
+            decoration: InputDecoration(
+              isDense: true,
+              filled: true,
+              fillColor: const Color(0xFF1E1E2A),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Save',
+                icon: const Icon(Icons.check, color: Color(0xFF8B5CF6), size: 18),
+                onPressed: widget.isSaving ? null : _commit,
+              ),
+              if (widget.onReset != null)
+                IconButton(
+                  tooltip: 'Reset to default',
+                  icon: const Icon(Icons.undo, color: Colors.white54, size: 18),
+                  onPressed: widget.isSaving ? null : widget.onReset,
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }

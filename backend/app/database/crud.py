@@ -30,6 +30,42 @@ async def get_thread(db: AsyncSession, thread_id: UUID) -> Thread | None:
     return result.scalar_one_or_none()
 
 
+async def get_thread_llm_overrides(db: AsyncSession, thread_id: UUID) -> dict:
+    """Return the per-thread LLM override dict, or {} if none is set.
+
+    The raw JSONB column is the source of truth; values are always plain
+    Python primitives (str, int, float, bool, None, list, dict).
+    """
+    thread = await get_thread(db, thread_id)
+    if thread is None:
+        return {}
+    overrides = thread.llm_overrides
+    if not overrides:
+        return {}
+    if not isinstance(overrides, dict):
+        return {}
+    return overrides
+
+
+async def set_thread_llm_overrides(db: AsyncSession, thread_id: UUID, overrides: dict) -> dict:
+    """Replace the per-thread LLM override dict. Empty dict clears overrides."""
+    thread = await get_thread(db, thread_id)
+    if thread is None:
+        return {}
+    cleaned = {str(k): v for k, v in (overrides or {}).items() if v is not None}
+    thread.llm_overrides = cleaned or None
+    await db.flush()
+    return cleaned
+
+
+async def clear_thread_llm_overrides(db: AsyncSession, thread_id: UUID) -> None:
+    thread = await get_thread(db, thread_id)
+    if thread is None:
+        return
+    thread.llm_overrides = None
+    await db.flush()
+
+
 async def get_thread_with_messages(db: AsyncSession, thread_id: UUID) -> Thread | None:
     from sqlalchemy.orm import selectinload
     result = await db.execute(

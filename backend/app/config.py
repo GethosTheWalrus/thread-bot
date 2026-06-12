@@ -422,6 +422,176 @@ def get_llm_config() -> dict:
     }
 
 
+# Keys that get_llm_config() exposes and that are safe to override per-thread.
+# Used by the per-thread override sheet to render a typed editor.
+THREAD_OVERRIDABLE_KEYS: tuple[str, ...] = (
+    "model",
+    "provider",
+    "api_url",
+    "api_key",
+    "temperature",
+    "max_tokens",
+    "max_iterations",
+    "context_window",
+    "stream_timeout",
+    "video_tool_timeout",
+    "compaction_threshold",
+    "preserve_recent",
+    "tool_result_max_chars",
+    "image_enabled",
+    "image_model",
+    "image_api_url",
+    "image_provider",
+    "audio_enabled",
+    "tts_provider",
+    "tts_api_url",
+    "tts_api_key",
+    "tts_model",
+    "tts_voice",
+    "tts_format",
+    "tts_timeout",
+    "lipsync_enabled",
+    "video_enabled",
+    "vision_enabled",
+    "vision_api_url",
+    "vision_api_key",
+    "vision_model",
+    "vision_provider",
+    "vision_max_tokens",
+)
+
+# Friendly labels for the override sheet.
+THREAD_OVERRIDABLE_LABELS: dict[str, str] = {
+    "model": "Chat model",
+    "provider": "Provider",
+    "api_url": "API URL",
+    "api_key": "API key",
+    "temperature": "Temperature",
+    "max_tokens": "Max tokens",
+    "max_iterations": "Max iterations",
+    "context_window": "Context window",
+    "stream_timeout": "Stream timeout (s)",
+    "video_tool_timeout": "Video tool timeout (s)",
+    "compaction_threshold": "Compaction threshold",
+    "preserve_recent": "Preserve recent messages",
+    "tool_result_max_chars": "Tool result max chars",
+    "image_enabled": "Image generation enabled",
+    "image_model": "Image model",
+    "image_api_url": "Image API URL",
+    "image_provider": "Image provider",
+    "audio_enabled": "TTS enabled",
+    "tts_provider": "TTS provider",
+    "tts_api_url": "TTS API URL",
+    "tts_api_key": "TTS API key",
+    "tts_model": "TTS model",
+    "tts_voice": "TTS voice",
+    "tts_format": "TTS format",
+    "tts_timeout": "TTS timeout (s)",
+    "lipsync_enabled": "Lip-sync enabled",
+    "video_enabled": "Video generation enabled",
+    "vision_enabled": "Vision enabled",
+    "vision_api_url": "Vision API URL",
+    "vision_api_key": "Vision API key",
+    "vision_model": "Vision model",
+    "vision_provider": "Vision provider",
+    "vision_max_tokens": "Vision max tokens",
+}
+
+# Keys that should be rendered as multiline / longer strings in the UI.
+THREAD_OVERRIDABLE_MULTILINE: frozenset[str] = frozenset({"api_key", "tts_api_key", "vision_api_key"})
+
+# Numeric keys (so the editor can use a number input).
+THREAD_OVERRIDABLE_NUMERIC: frozenset[str] = frozenset(
+    {
+        "temperature",
+        "max_tokens",
+        "max_iterations",
+        "context_window",
+        "stream_timeout",
+        "video_tool_timeout",
+        "compaction_threshold",
+        "preserve_recent",
+        "tool_result_max_chars",
+        "tts_timeout",
+        "vision_max_tokens",
+    }
+)
+
+# Boolean keys (rendered as a switch).
+THREAD_OVERRIDABLE_BOOLEAN: frozenset[str] = frozenset(
+    {
+        "image_enabled",
+        "audio_enabled",
+        "lipsync_enabled",
+        "video_enabled",
+        "vision_enabled",
+    }
+)
+
+
+def apply_thread_llm_overrides(base: dict, overrides: dict | None) -> dict:
+    """Return a copy of ``base`` with per-thread overrides merged in.
+
+    The merge only touches keys in :data:`THREAD_OVERRIDABLE_KEYS`. Values
+    that are equal to the base value are kept (so the UI can show which keys
+    are actually overridden by the user). Nested dicts (e.g. ``reachy``) are
+    never overridden at the top level.
+    """
+    if not overrides:
+        return base
+    merged = dict(base)
+    for key, value in overrides.items():
+        if key not in THREAD_OVERRIDABLE_KEYS:
+            continue
+        merged[key] = value
+    return merged
+
+
+def coerce_thread_llm_override(key: str, value) -> object:
+    """Coerce an override value coming from JSON / the UI to the right type.
+
+    The DB stores overrides as JSONB (strings, numbers, bools). The Pydantic
+    global config layer also uses ``int``/``float``/``bool`` for some keys.
+    This helper normalizes a raw override value to the type the runtime code
+    expects when reading ``llm_config[key]``.
+    """
+    if value is None or value == "":
+        return None
+    if key in THREAD_OVERRIDABLE_BOOLEAN:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+    if key in THREAD_OVERRIDABLE_NUMERIC:
+        try:
+            if "." in str(value):
+                return float(value)
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    return str(value)
+
+
+def clean_thread_llm_overrides(raw: dict | None) -> dict:
+    """Return a typed override dict ready to persist on a thread.
+
+    Unknown keys are dropped, empty values become None (treated as 'unset'
+    downstream), and the value is coerced to the expected Python type.
+    """
+    if not raw:
+        return {}
+    cleaned: dict = {}
+    for key, value in raw.items():
+        if key not in THREAD_OVERRIDABLE_KEYS:
+            continue
+        coerced = coerce_thread_llm_override(key, value)
+        if coerced is None or coerced == "":
+            continue
+        cleaned[key] = coerced
+    return cleaned
+
+
 def get_discord_config() -> dict:
     """Get current Discord integration config with overrides applied."""
     return {

@@ -67,6 +67,7 @@ class ThreadResponse(BaseModel):
     reachy_connected: bool = False
     estimated_tokens: int = 0
     context_window: int = 8192
+    has_llm_overrides: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -81,8 +82,20 @@ class ThreadListItem(BaseModel):
     is_discord_thread: bool = False
     discord_server_name: Optional[str] = None
     is_reachy_thread: bool = False
+    has_llm_overrides: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class ThreadLlmOverridesResponse(BaseModel):
+    thread_id: UUID
+    overrides: dict = Field(default_factory=dict)
+    defaults: dict = Field(default_factory=dict)
+    schema: dict = Field(default_factory=dict)
+
+
+class ThreadLlmOverridesRequest(BaseModel):
+    overrides: dict = Field(default_factory=dict, description="Per-thread LLM override dict. Empty clears all overrides.")
 
 
 class ThreadListResponse(BaseModel):

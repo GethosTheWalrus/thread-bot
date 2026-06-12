@@ -103,6 +103,23 @@ async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_
     llm_config["reachy"] = {**reachy_config, "enabled": True, "thread_id": thread_id, "speech_enabled": True}
     llm_config["stream_batch_chars"] = 24
 
+    # Apply per-thread LLM overrides on top of the global config.
+    try:
+        from uuid import UUID
+        from app.database import AsyncSessionLocal
+        from app.database.crud import get_thread_llm_overrides
+        from app.config import apply_thread_llm_overrides
+
+        async with AsyncSessionLocal() as setup_db:
+            try:
+                thread_overrides = await get_thread_llm_overrides(setup_db, UUID(thread_id))
+            except Exception:
+                thread_overrides = {}
+            if thread_overrides:
+                llm_config = apply_thread_llm_overrides(llm_config, thread_overrides)
+    except Exception as exc:
+        print(f"[reachy] failed to apply thread LLM overrides: {exc}", flush=True)
+
     client = await connect_temporal_client()
     settings = get_settings()
     workflow_id = f"reachy-thread-{thread_id}-{uuid_mod.uuid4().hex[:8]}"

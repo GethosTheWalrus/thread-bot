@@ -11,6 +11,8 @@ class ChatInput extends StatefulWidget {
   final bool isSending;
   final VoidCallback? onToolsPressed;
   final bool hasToolOverrides;
+  final VoidCallback? onLlmOverridesPressed;
+  final bool hasLlmOverrides;
   final int estimatedTokens;
   final int contextWindow;
 
@@ -20,6 +22,8 @@ class ChatInput extends StatefulWidget {
     this.isSending = false,
     this.onToolsPressed,
     this.hasToolOverrides = false,
+    this.onLlmOverridesPressed,
+    this.hasLlmOverrides = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
   });
@@ -344,6 +348,39 @@ class _ChatInputState extends State<ChatInput> {
                         child: _ContextDonut(
                           estimatedTokens: widget.estimatedTokens,
                           contextWindow: widget.contextWindow,
+                        ),
+                      ),
+                    if (widget.onLlmOverridesPressed != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: widget.onLlmOverridesPressed,
+                            child: Tooltip(
+                              message: widget.hasLlmOverrides
+                                  ? 'Thread has LLM overrides'
+                                  : 'Per-thread LLM overrides',
+                              child: Container(
+                                width: 36,
+                                height: 36,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(12),
+                                  color: widget.hasLlmOverrides
+                                      ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                      : Colors.transparent,
+                                ),
+                                child: Icon(
+                                  Icons.tune_rounded,
+                                  size: 16,
+                                  color: widget.hasLlmOverrides
+                                      ? const Color(0xFF8B5CF6)
+                                      : Colors.white.withValues(alpha: 0.3),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     if (widget.onToolsPressed != null)

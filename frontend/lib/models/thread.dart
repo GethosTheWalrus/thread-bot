@@ -12,6 +12,7 @@ class Thread {
   final bool reachyConnected;
   final int estimatedTokens;
   final int contextWindow;
+  final bool hasLlmOverrides;
 
   Thread({
     required this.id,
@@ -25,6 +26,7 @@ class Thread {
     this.reachyConnected = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
+    this.hasLlmOverrides = false,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -47,6 +49,7 @@ class Thread {
       reachyConnected: json['reachy_connected'] as bool? ?? false,
       estimatedTokens: json['estimated_tokens'] as int? ?? 0,
       contextWindow: json['context_window'] as int? ?? 8192,
+      hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
     );
   }
 
@@ -67,6 +70,7 @@ class ThreadListItem {
   final bool isDiscordThread;
   final String? discordServerName;
   final bool isReachyThread;
+  final bool hasLlmOverrides;
 
   ThreadListItem({
     required this.id,
@@ -78,6 +82,7 @@ class ThreadListItem {
     this.isDiscordThread = false,
     this.discordServerName,
     this.isReachyThread = false,
+    this.hasLlmOverrides = false,
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
@@ -91,8 +96,64 @@ class ThreadListItem {
       isDiscordThread: json['is_discord_thread'] as bool? ?? false,
       discordServerName: json['discord_server_name'] as String?,
       isReachyThread: json['is_reachy_thread'] as bool? ?? false,
+      hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
     );
   }
+}
+
+class ThreadLlmOverrideSchemaEntry {
+  final String label;
+  final String type;
+
+  ThreadLlmOverrideSchemaEntry({required this.label, required this.type});
+
+  factory ThreadLlmOverrideSchemaEntry.fromJson(Map<String, dynamic> json) {
+    return ThreadLlmOverrideSchemaEntry(
+      label: json['label'] as String? ?? '',
+      type: json['type'] as String? ?? 'string',
+    );
+  }
+}
+
+class ThreadLlmOverrides {
+  final String threadId;
+  final Map<String, dynamic> overrides;
+  final Map<String, dynamic> defaults;
+  final Map<String, ThreadLlmOverrideSchemaEntry> schema;
+
+  ThreadLlmOverrides({
+    required this.threadId,
+    required this.overrides,
+    required this.defaults,
+    required this.schema,
+  });
+
+  factory ThreadLlmOverrides.fromJson(Map<String, dynamic> json) {
+    final schemaRaw = (json['schema'] as Map<String, dynamic>? ?? const {});
+    final schema = <String, ThreadLlmOverrideSchemaEntry>{};
+    for (final entry in schemaRaw.entries) {
+      schema[entry.key] = ThreadLlmOverrideSchemaEntry.fromJson(
+        entry.value as Map<String, dynamic>,
+      );
+    }
+    return ThreadLlmOverrides(
+      threadId: json['thread_id'] as String,
+      overrides: Map<String, dynamic>.from(json['overrides'] as Map<String, dynamic>? ?? const {}),
+      defaults: Map<String, dynamic>.from(json['defaults'] as Map<String, dynamic>? ?? const {}),
+      schema: schema,
+    );
+  }
+
+  bool get isEmpty => overrides.isEmpty;
+
+  /// Resolve the value that the runtime sees for [key] (override or default).
+  Object? effectiveValue(String key) {
+    if (overrides.containsKey(key)) return overrides[key];
+    return defaults[key];
+  }
+
+  /// All keys in the schema, in the backend's defined order.
+  List<String> get keys => schema.keys.toList(growable: false);
 }
 
 class ReachyBinding {

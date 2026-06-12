@@ -1429,6 +1429,12 @@ async def start_discord_reply_workflow(
                 }
                 for o in thread_overrides
             ]
+        from app.database.crud import get_thread_llm_overrides
+        from app.config import apply_thread_llm_overrides
+
+        thread_llm_overrides = await get_thread_llm_overrides(db, thread_id)
+        if thread_llm_overrides:
+            llm_config = apply_thread_llm_overrides(llm_config, thread_llm_overrides)
     llm_config["discord"] = {
         "enabled": config.get("enabled"),
         "bot_token": config.get("bot_token"),

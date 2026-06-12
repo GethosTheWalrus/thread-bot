@@ -258,6 +258,52 @@ class ApiService {
     }
   }
 
+  // ── Per-thread LLM overrides ──────────────────────────────────────
+
+  Future<ThreadLlmOverrides> getThreadLlmOverrides(String threadId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
+    );
+    if (response.statusCode == 200) {
+      return ThreadLlmOverrides.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(
+        'Failed to load thread LLM overrides: ${response.statusCode}');
+  }
+
+  Future<ThreadLlmOverrides> setThreadLlmOverrides(
+    String threadId,
+    Map<String, dynamic> overrides,
+  ) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'overrides': overrides}),
+    );
+    if (response.statusCode == 200) {
+      return ThreadLlmOverrides.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(
+        'Failed to save thread LLM overrides: ${response.statusCode}');
+  }
+
+  Future<ThreadLlmOverrides> clearThreadLlmOverrides(String threadId) async {
+    final response = await http.delete(
+      Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
+    );
+    if (response.statusCode == 200) {
+      return ThreadLlmOverrides.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception(
+        'Failed to clear thread LLM overrides: ${response.statusCode}');
+  }
+
   // ── MCP Servers ───────────────────────────────────────────────────
 
   Future<List<MCPServer>> getMCPServers() async {

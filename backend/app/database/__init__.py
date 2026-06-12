@@ -43,6 +43,9 @@ async def ensure_database_schema() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS llm_overrides JSONB DEFAULT NULL"
+        ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS generated_images (
                 filename VARCHAR(255) PRIMARY KEY,

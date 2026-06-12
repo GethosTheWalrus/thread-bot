@@ -16,6 +16,9 @@ from app.database.crud import (
     upsert_settings,
     get_thread_tool_overrides,
     set_thread_tool_overrides,
+    get_thread_llm_overrides,
+    set_thread_llm_overrides,
+    clear_thread_llm_overrides,
     get_discord_link,
     create_discord_link,
     set_discord_link_active,
@@ -54,6 +57,8 @@ from app.models.schemas import (
     ReachyBindingResponse,
     ImageUploadResponse,
     UploadedImageResponse,
+    ThreadLlmOverridesResponse,
+    ThreadLlmOverridesRequest,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -62,7 +67,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from datetime import timedelta
 import json
-from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config, get_reachy_config, get_comfyui_workflow_presets
+from app.config import (
+    get_settings,
+    get_llm_config,
+    get_setting,
+    update_settings,
+    get_discord_config,
+    get_reachy_config,
+    get_comfyui_workflow_presets,
+    apply_thread_llm_overrides,
+    clean_thread_llm_overrides,
+    THREAD_OVERRIDABLE_KEYS,
+    THREAD_OVERRIDABLE_LABELS,
+    THREAD_OVERRIDABLE_BOOLEAN,
+    THREAD_OVERRIDABLE_NUMERIC,
+)
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
@@ -386,6 +405,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
     msgs = messages or []
     config = get_llm_config()
     reachy_thread_id = str((config.get("reachy") or {}).get("thread_id") or "")
+    overrides = thread.llm_overrides or {}
     return ThreadResponse(
         id=thread.id,
         title=thread.title,
@@ -398,6 +418,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         reachy_connected=reachy_thread_id == str(thread.id),
         estimated_tokens=_estimate_context_tokens(msgs),
         context_window=config.get("context_window", 8192),
+        has_llm_overrides=bool(overrides),
     )
 
 
@@ -545,6 +566,11 @@ async def chat_websocket(websocket: WebSocket):
                 }
                 for o in thread_overrides
             ]
+
+        # Apply per-thread LLM overrides on top of the global config.
+        thread_llm_overrides = await get_thread_llm_overrides(setup_db, thread_id)
+        if thread_llm_overrides:
+            llm_config = apply_thread_llm_overrides(llm_config, thread_llm_overrides)
 
         discord_link = await get_discord_link(setup_db, thread_id)
         workflow_discord_config = _build_workflow_discord_config(get_discord_config(), discord_link)
@@ -744,6 +770,7 @@ async def list_threads_endpoint(
             is_discord_thread=bool(discord_link and discord_link.is_active),
             discord_server_name=discord_server_name,
             is_reachy_thread=reachy_thread_id == str(t.id),
+            has_llm_overrides=bool(t.llm_overrides),
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -857,6 +884,7 @@ async def get_thread_replies_endpoint(
             is_discord_thread=bool(discord_link and discord_link.is_active),
             discord_server_name=discord_server_name,
             is_reachy_thread=reachy_thread_id == str(t.id),
+            has_llm_overrides=bool(t.llm_overrides),
         ))
     return items
 
@@ -1513,6 +1541,74 @@ async def disconnect_thread_from_reachy_endpoint(
     await db.commit()
     await broadcast_thread_updated(str(thread_id))
     return await _build_reachy_binding_response(db)
+
+
+def _build_thread_llm_overrides_response(thread_id: UUID, overrides: dict, defaults: dict) -> ThreadLlmOverridesResponse:
+    schema = {
+        key: {
+            "label": THREAD_OVERRIDABLE_LABELS.get(key, key),
+            "type": (
+                "boolean" if key in THREAD_OVERRIDABLE_BOOLEAN
+                else "number" if key in THREAD_OVERRIDABLE_NUMERIC
+                else "string"
+            ),
+        }
+        for key in THREAD_OVERRIDABLE_KEYS
+    }
+    return ThreadLlmOverridesResponse(
+        thread_id=thread_id,
+        overrides=overrides or {},
+        defaults=defaults or {},
+        schema=schema,
+    )
+
+
+@router.get("/threads/{thread_id}/llm-overrides", response_model=ThreadLlmOverridesResponse)
+async def get_thread_llm_overrides_endpoint(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    overrides = await get_thread_llm_overrides(db, thread_id)
+    defaults = get_llm_config()
+    return _build_thread_llm_overrides_response(thread_id, overrides, defaults)
+
+
+@router.put("/threads/{thread_id}/llm-overrides", response_model=ThreadLlmOverridesResponse)
+async def put_thread_llm_overrides_endpoint(
+    thread_id: UUID,
+    request: ThreadLlmOverridesRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    cleaned = clean_thread_llm_overrides(request.overrides or {})
+    if cleaned:
+        await set_thread_llm_overrides(db, thread_id, cleaned)
+    else:
+        await clear_thread_llm_overrides(db, thread_id)
+    await db.commit()
+    await broadcast_thread_updated(str(thread_id))
+    defaults = get_llm_config()
+    return _build_thread_llm_overrides_response(thread_id, cleaned, defaults)
+
+
+@router.delete("/threads/{thread_id}/llm-overrides", response_model=ThreadLlmOverridesResponse)
+async def delete_thread_llm_overrides_endpoint(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    await clear_thread_llm_overrides(db, thread_id)
+    await db.commit()
+    await broadcast_thread_updated(str(thread_id))
+    defaults = get_llm_config()
+    return _build_thread_llm_overrides_response(thread_id, {}, defaults)
 
 
 @router.get("/mcp", response_model=list[MCPServerResponse])
