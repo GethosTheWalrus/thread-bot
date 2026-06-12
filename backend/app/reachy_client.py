@@ -78,7 +78,7 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
     )
 
 
-def play_animation(config: dict | None, name: str, duration: float = 3.0) -> str:
+def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: asyncio.Event | None = None) -> str:
     np, ReachyMini, create_head_pose = _sdk_imports()
     name = (name or "thinking").strip().lower()
     duration = max(0.5, min(float(duration or 3.0), 30.0))
@@ -86,35 +86,35 @@ def play_animation(config: dict | None, name: str, duration: float = 3.0) -> str
 
     with ReachyMini(**_mini_kwargs(config, media_backend="no_media")) as mini:
         if name == "thinking":
-            while time.monotonic() - started < duration:
+            while time.monotonic() - started < duration and not (stop and stop.is_set()):
                 t = time.monotonic() - started
                 # Slow, asymmetrical motion reads as pondering instead of twitching.
-                pitch = 5.0 + 4.0 * math.sin(t * 0.85)
-                roll = 4.0 * math.sin(t * 0.55 + 0.7)
-                yaw = 5.0 * math.sin(t * 0.38)
-                z = 3.0 * math.sin(t * 0.45 + 1.1)
-                right = 18.0 + 7.0 * math.sin(t * 0.75 + 0.2)
-                left = 18.0 + 7.0 * math.sin(t * 0.75 + 1.4)
+                pitch = 4.0 + 3.0 * math.sin(t * 0.45)
+                roll = 2.8 * math.sin(t * 0.32 + 0.7)
+                yaw = 3.5 * math.sin(t * 0.25)
+                z = 2.0 * math.sin(t * 0.28 + 1.1)
+                right = 18.0 + 5.0 * math.sin(t * 0.4 + 0.2)
+                left = 18.0 + 5.0 * math.sin(t * 0.4 + 1.4)
+                mini.set_target(
+                    head=create_head_pose(z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=True, mm=True),
+                    antennas=np.deg2rad([right, left]),
+                )
+                time.sleep(0.18)
+        elif name == "talking":
+            while time.monotonic() - started < duration and not (stop and stop.is_set()):
+                t = time.monotonic() - started
+                # More active than thinking, but low amplitude and continuous.
+                pitch = 1.6 * math.sin(t * 1.15) + 0.8 * math.sin(t * 2.2)
+                roll = 1.0 * math.sin(t * 0.9 + 0.4)
+                yaw = 2.6 * math.sin(t * 0.85)
+                z = 1.0 * math.sin(t * 1.0 + 0.8)
+                right = 16.0 + 3.5 * math.sin(t * 1.6)
+                left = 16.0 + 3.5 * math.sin(t * 1.6 + 1.1)
                 mini.set_target(
                     head=create_head_pose(z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=True, mm=True),
                     antennas=np.deg2rad([right, left]),
                 )
                 time.sleep(0.12)
-        elif name == "talking":
-            while time.monotonic() - started < duration:
-                t = time.monotonic() - started
-                # More active than thinking, but low amplitude and continuous.
-                pitch = 2.0 * math.sin(t * 2.4) + 1.2 * math.sin(t * 4.1)
-                roll = 1.6 * math.sin(t * 1.7 + 0.4)
-                yaw = 4.0 * math.sin(t * 1.25)
-                z = 1.5 * math.sin(t * 2.0 + 0.8)
-                right = 16.0 + 6.0 * math.sin(t * 3.0)
-                left = 16.0 + 6.0 * math.sin(t * 3.0 + 1.1)
-                mini.set_target(
-                    head=create_head_pose(z=z, roll=roll, pitch=pitch, yaw=yaw, degrees=True, mm=True),
-                    antennas=np.deg2rad([right, left]),
-                )
-                time.sleep(0.08)
         elif name == "wake":
             mini.goto_target(
                 head=create_head_pose(z=8, pitch=-5, degrees=True, mm=True),
@@ -184,9 +184,7 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
 
 
 async def run_animation_background(config: dict | None, name: str, stop: asyncio.Event) -> None:
-    while not stop.is_set():
-        try:
-            await asyncio.to_thread(play_animation, config, name, 4.0)
-        except Exception as exc:
-            print(f"[reachy] animation failed: {exc}", flush=True)
-            await asyncio.sleep(1.0)
+    try:
+        await asyncio.to_thread(play_animation, config, name, 60.0, stop)
+    except Exception as exc:
+        print(f"[reachy] animation failed: {exc}", flush=True)
