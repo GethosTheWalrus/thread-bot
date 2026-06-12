@@ -92,7 +92,7 @@ class ReachySpeechWorkflow:
     @run
     async def run(self, input: dict) -> dict:
         with workflow.unsafe.imports_passed_through():
-            from app.activities.reachy_activities import play_reachy_animation, play_reachy_mood, speak_reachy_text
+            from app.activities.reachy_activities import play_reachy_mood, speak_reachy_text
 
         pending = ""
         spoken_chunks = 0
@@ -116,17 +116,15 @@ class ReachySpeechWorkflow:
                         except Exception:
                             workflow.logger.exception("Reachy thinking mood failed")
                         self._thinking_mood_played = True
+
                     try:
-                        await execute_activity(
-                            play_reachy_animation,
-                            {"name": "thinking", "duration": 2.0, "reachy": reachy_config},
-                            start_to_close_timeout=timedelta(seconds=5),
-                            heartbeat_timeout=timedelta(seconds=5),
-                            retry_policy=RetryPolicy(maximum_attempts=1),
-                            summary="Play Reachy thinking animation",
+                        await workflow.wait_condition(
+                            lambda: self._done or bool(self._chunks) or not self._thinking_active,
+                            timeout=timedelta(seconds=10),
+                            timeout_summary="Wait while Reachy is thinking",
                         )
-                    except Exception:
-                        workflow.logger.exception("Reachy thinking animation failed")
+                    except asyncio.TimeoutError:
+                        pass
                     continue
 
                 try:

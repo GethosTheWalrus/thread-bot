@@ -197,7 +197,7 @@ async def speak_reachy_text(args: dict) -> dict:
     )
 
     from app.activities.llm_activities import _synthesize_speech_audio
-    from app.reachy_client import run_animation_background, speak_wav
+    from app.reachy_client import speak_wav
 
     print(f"[reachy-speech] speaking chunk ({len(text)} chars): {text[:80]!r}", flush=True)
     heartbeat({"step": "reachy_speech_tts", "chars": len(text)})
@@ -211,22 +211,13 @@ async def speak_reachy_text(args: dict) -> dict:
         print(f"[reachy-speech] {error}", flush=True)
         return {"spoken": False, "duration": 0.0, "error": error}
 
-    stop = asyncio.Event()
-    animation_task = asyncio.create_task(run_animation_background(reachy_config, "talking", stop))
+    heartbeat({"step": "reachy_speech_playback", "chars": len(text)})
     try:
-        heartbeat({"step": "reachy_speech_playback", "chars": len(text)})
-        try:
-            duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
-        except Exception as exc:
-            error = f"Reachy audio playback failed: {exc}"
-            print(f"[reachy-speech] {error}", flush=True)
-            return {"spoken": False, "duration": 0.0, "error": error}
-        print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
-    finally:
-        stop.set()
-        try:
-            await animation_task
-        except Exception:
-            pass
+        duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
+    except Exception as exc:
+        error = f"Reachy audio playback failed: {exc}"
+        print(f"[reachy-speech] {error}", flush=True)
+        return {"spoken": False, "duration": 0.0, "error": error}
+    print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
 
     return {"spoken": True, "duration": duration}

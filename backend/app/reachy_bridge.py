@@ -181,7 +181,7 @@ async def run_bridge(args: argparse.Namespace) -> None:
     wake_word = args.wake_word or reachy_config.get("wake_word") or "Reachy"
     reachy_config = {**reachy_config, "enabled": True, "media_backend": args.media_backend or reachy_config.get("media_backend") or "default"}
 
-    from app.reachy_client import play_animation, run_animation_background
+    from app.reachy_client import play_animation, play_mood_animation
 
     initial_thread_id = await _resolve_bound_thread_id(args)
     binding_text = initial_thread_id or "no thread yet; connect one in ThreadBot UI"
@@ -220,25 +220,18 @@ async def run_bridge(args: argparse.Namespace) -> None:
             await asyncio.to_thread(play_animation, turn_reachy_config, "wake", 1.0)
         except Exception as exc:
             print(f"[reachy] Wake animation failed: {exc}", flush=True)
-        thinking_stop = asyncio.Event()
-        thinking_task = asyncio.create_task(run_animation_background(turn_reachy_config, "thinking", thinking_stop))
         async def stop_thinking() -> None:
-            thinking_stop.set()
+            return None
 
         try:
-            response = await _run_thread_turn(thread_id, prompt, turn_reachy_config, on_first_token=stop_thinking)
-        finally:
-            thinking_stop.set()
-            await thinking_task
+            await asyncio.to_thread(play_mood_animation, turn_reachy_config, "thoughtful")
+        except Exception as exc:
+            print(f"[reachy] Thinking mood failed: {exc}", flush=True)
+
+        response = await _run_thread_turn(thread_id, prompt, turn_reachy_config, on_first_token=stop_thinking)
 
         if args.direct_speak:
-            talking_stop = asyncio.Event()
-            talking_task = asyncio.create_task(run_animation_background(turn_reachy_config, "talking", talking_stop))
-            try:
-                await _speak_response(response, turn_reachy_config)
-            finally:
-                talking_stop.set()
-                await talking_task
+            await _speak_response(response, turn_reachy_config)
 
 
 def main() -> None:
