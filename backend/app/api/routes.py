@@ -51,6 +51,7 @@ from app.models.schemas import (
     DiscordServerListResponse,
     DiscordServerMcpOverridesResponse,
     DiscordServerMcpOverridesRequest,
+    ReachyBindingResponse,
     ImageUploadResponse,
     UploadedImageResponse,
 )
@@ -61,7 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from datetime import timedelta
 import json
-from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config, get_comfyui_workflow_presets
+from app.config import get_settings, get_llm_config, get_setting, update_settings, get_discord_config, get_reachy_config, get_comfyui_workflow_presets
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
@@ -384,6 +385,7 @@ def _clean_image_attachment_lines(content: str) -> str:
 def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None) -> ThreadResponse:
     msgs = messages or []
     config = get_llm_config()
+    reachy_thread_id = str((config.get("reachy") or {}).get("thread_id") or "")
     return ThreadResponse(
         id=thread.id,
         title=thread.title,
@@ -393,8 +395,35 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         messages=[_build_message_response(m) for m in msgs],
         is_generating=is_generating,
         discord_link=_build_discord_link_response(discord_link),
+        reachy_connected=reachy_thread_id == str(thread.id),
         estimated_tokens=_estimate_context_tokens(msgs),
         context_window=config.get("context_window", 8192),
+    )
+
+
+async def _build_reachy_binding_response(db: AsyncSession) -> ReachyBindingResponse:
+    from app.config import load_settings_from_db
+
+    await load_settings_from_db()
+    config = get_reachy_config()
+    thread_id_raw = str(config.get("thread_id") or "").strip()
+    thread_id = None
+    thread_title = None
+    if thread_id_raw:
+        try:
+            parsed = UUID(thread_id_raw)
+            thread = await get_thread(db, parsed)
+            if thread:
+                thread_id = thread.id
+                thread_title = thread.title
+        except Exception:
+            pass
+    return ReachyBindingResponse(
+        enabled=bool(config.get("enabled")),
+        thread_id=thread_id,
+        thread_title=thread_title,
+        wake_word=config.get("wake_word") or "Reachy",
+        task_queue=config.get("task_queue") or "reachy-local",
     )
 
 
@@ -697,6 +726,7 @@ async def list_threads_endpoint(
 ):
     threads = await get_root_threads(db, limit=limit, offset=offset)
     thread_items = []
+    reachy_thread_id = str(get_reachy_config().get("thread_id") or "")
     for t in threads:
         msg_count_result = await db.execute(
             select(func.count(Message.id)).where(Message.thread_id == t.id)
@@ -713,6 +743,7 @@ async def list_threads_endpoint(
             message_count=msg_count,
             is_discord_thread=bool(discord_link and discord_link.is_active),
             discord_server_name=discord_server_name,
+            is_reachy_thread=reachy_thread_id == str(t.id),
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -811,6 +842,7 @@ async def get_thread_replies_endpoint(
 ):
     replies = await get_child_threads(db, thread_id)
     items = []
+    reachy_thread_id = str(get_reachy_config().get("thread_id") or "")
     for t in replies:
         cnt = await db.execute(select(func.count(Message.id)).where(Message.thread_id == t.id))
         discord_link = await _get_discord_link_for_thread(db, t.id)
@@ -824,6 +856,7 @@ async def get_thread_replies_endpoint(
             message_count=cnt.scalar_one(),
             is_discord_thread=bool(discord_link and discord_link.is_active),
             discord_server_name=discord_server_name,
+            is_reachy_thread=reachy_thread_id == str(t.id),
         ))
     return items
 
@@ -880,6 +913,10 @@ async def delete_thread_endpoint(
     deleted = await delete_thread(db, thread_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Thread not found")
+    if str(get_reachy_config().get("thread_id") or "") == str(thread_id):
+        update_settings(reachy_thread_id="")
+        await upsert_settings(db, {"reachy_thread_id": ""})
+        await db.commit()
     return {"detail": "Thread deleted"}
 
 
@@ -900,6 +937,9 @@ async def delete_all_threads_endpoint(
             except Exception as exc:
                 print(f"[discord] failed to delete Discord thread {discord_link.discord_thread_id}: {exc}", flush=True)
         await db.delete(t)
+    if get_reachy_config().get("thread_id"):
+        update_settings(reachy_thread_id="")
+        await upsert_settings(db, {"reachy_thread_id": ""})
     await db.commit()
     return {"detail": "All threads deleted"}
 
@@ -1428,6 +1468,51 @@ async def unshare_thread_from_discord_endpoint(
         raise HTTPException(status_code=404, detail="Discord link not found")
     await db.commit()
     return {"detail": "Discord sync disabled for thread"}
+
+
+# ── Reachy Mini Binding ──────────────────────────────────────────────
+
+
+@router.get("/reachy", response_model=ReachyBindingResponse)
+async def get_reachy_binding_endpoint(db: AsyncSession = Depends(get_db)):
+    return await _build_reachy_binding_response(db)
+
+
+@router.post("/threads/{thread_id}/reachy", response_model=ReachyBindingResponse)
+async def connect_thread_to_reachy_endpoint(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    updates = {
+        "reachy_enabled": True,
+        "reachy_thread_id": str(thread_id),
+    }
+    update_settings(**updates)
+    await upsert_settings(db, {k: str(v) for k, v in updates.items()})
+    await db.commit()
+    await broadcast_thread_updated(str(thread_id))
+    return await _build_reachy_binding_response(db)
+
+
+@router.delete("/threads/{thread_id}/reachy", response_model=ReachyBindingResponse)
+async def disconnect_thread_from_reachy_endpoint(
+    thread_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    config = get_reachy_config()
+    if str(config.get("thread_id") or "") != str(thread_id):
+        return await _build_reachy_binding_response(db)
+
+    updates = {"reachy_thread_id": ""}
+    update_settings(**updates)
+    await upsert_settings(db, updates)
+    await db.commit()
+    await broadcast_thread_updated(str(thread_id))
+    return await _build_reachy_binding_response(db)
 
 
 @router.get("/mcp", response_model=list[MCPServerResponse])

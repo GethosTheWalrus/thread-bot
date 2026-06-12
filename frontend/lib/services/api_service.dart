@@ -207,6 +207,32 @@ class ApiService {
     throw Exception('Failed to rename thread: ${response.statusCode}');
   }
 
+  // ── Reachy ────────────────────────────────────────────────────────
+
+  Future<ReachyBinding> getReachyBinding() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/reachy'));
+    if (response.statusCode == 200) {
+      return ReachyBinding.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to load Reachy binding: ${response.statusCode}');
+  }
+
+  Future<ReachyBinding> connectReachyThread(String threadId) async {
+    final response = await http.post(Uri.parse('$baseUrl/api/threads/$threadId/reachy'));
+    if (response.statusCode == 200) {
+      return ReachyBinding.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to connect Reachy: ${response.statusCode}');
+  }
+
+  Future<ReachyBinding> disconnectReachyThread(String threadId) async {
+    final response = await http.delete(Uri.parse('$baseUrl/api/threads/$threadId/reachy'));
+    if (response.statusCode == 200) {
+      return ReachyBinding.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to disconnect Reachy: ${response.statusCode}');
+  }
+
   // ── Settings ──────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getSettings() async {

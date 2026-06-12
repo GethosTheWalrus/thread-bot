@@ -87,6 +87,14 @@ async def _save_user_message(thread_id: str, content: str) -> None:
         await db.commit()
 
 
+async def _resolve_bound_thread_id(args: argparse.Namespace) -> str | None:
+    if args.thread_id:
+        return args.thread_id
+    await load_settings_from_db()
+    reachy_config = get_reachy_config()
+    return str(reachy_config.get("thread_id") or os.environ.get("REACHY_THREAD_ID") or "").strip() or None
+
+
 async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_first_token=None) -> str:
     await _save_user_message(thread_id, prompt)
 
@@ -152,15 +160,14 @@ async def _speak_response(text: str, reachy_config: dict) -> None:
 async def run_bridge(args: argparse.Namespace) -> None:
     await load_settings_from_db()
     reachy_config = get_reachy_config()
-    thread_id = args.thread_id or reachy_config.get("thread_id") or os.environ.get("REACHY_THREAD_ID")
-    if not thread_id:
-        raise RuntimeError("Provide --thread-id or set REACHY_THREAD_ID to bind Reachy to one ThreadBot thread.")
     wake_word = args.wake_word or reachy_config.get("wake_word") or "Reachy"
-    reachy_config = {**reachy_config, "enabled": True, "thread_id": thread_id, "media_backend": args.media_backend or reachy_config.get("media_backend") or "default"}
+    reachy_config = {**reachy_config, "enabled": True, "media_backend": args.media_backend or reachy_config.get("media_backend") or "default"}
 
     from app.reachy_client import play_animation, run_animation_background
 
-    print(f"[reachy] Listening for wake word {wake_word!r}; bound to thread {thread_id}", flush=True)
+    initial_thread_id = await _resolve_bound_thread_id(args)
+    binding_text = initial_thread_id or "no thread yet; connect one in ThreadBot UI"
+    print(f"[reachy] Listening for wake word {wake_word!r}; bound to {binding_text}", flush=True)
     while True:
         transcript = await _read_transcript(args)
         if transcript is None:
@@ -173,24 +180,30 @@ async def run_bridge(args: argparse.Namespace) -> None:
             print("[reachy] Awake. Say the request after the wake word.", flush=True)
             continue
 
+        thread_id = await _resolve_bound_thread_id(args)
+        if not thread_id:
+            print("[reachy] No ThreadBot thread is connected to Reachy. Connect one in the ThreadBot UI.", flush=True)
+            await asyncio.to_thread(play_animation, reachy_config, "sleep", 1.0)
+            continue
+        turn_reachy_config = {**reachy_config, "thread_id": thread_id}
         print(f"[reachy] Heard: {prompt}", flush=True)
-        await asyncio.to_thread(play_animation, reachy_config, "wake", 1.0)
+        await asyncio.to_thread(play_animation, turn_reachy_config, "wake", 1.0)
         thinking_stop = asyncio.Event()
-        thinking_task = asyncio.create_task(run_animation_background(reachy_config, "thinking", thinking_stop))
+        thinking_task = asyncio.create_task(run_animation_background(turn_reachy_config, "thinking", thinking_stop))
         async def stop_thinking() -> None:
             thinking_stop.set()
 
         try:
-            response = await _run_thread_turn(thread_id, prompt, reachy_config, on_first_token=stop_thinking)
+            response = await _run_thread_turn(thread_id, prompt, turn_reachy_config, on_first_token=stop_thinking)
         finally:
             thinking_stop.set()
             await thinking_task
 
         if args.direct_speak:
             talking_stop = asyncio.Event()
-            talking_task = asyncio.create_task(run_animation_background(reachy_config, "talking", talking_stop))
+            talking_task = asyncio.create_task(run_animation_background(turn_reachy_config, "talking", talking_stop))
             try:
-                await _speak_response(response, reachy_config)
+                await _speak_response(response, turn_reachy_config)
             finally:
                 talking_stop.set()
                 await talking_task
@@ -198,7 +211,7 @@ async def run_bridge(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bind Reachy Mini voice input/output to one ThreadBot thread.")
-    parser.add_argument("--thread-id", help="Existing ThreadBot thread UUID to talk to.")
+    parser.add_argument("--thread-id", help="Optional fixed ThreadBot thread UUID. If omitted, uses the thread connected to Reachy in the UI.")
     parser.add_argument("--wake-word", default="", help="Wake word prefix. Defaults to REACHY_WAKE_WORD or Reachy.")
     parser.add_argument("--media-backend", default="default", help="Reachy SDK media backend for bridge audio/camera.")
     parser.add_argument("--stdin", action="store_true", help="Use terminal lines as transcripts for testing.")

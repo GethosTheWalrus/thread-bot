@@ -9,6 +9,7 @@ class Thread {
   final List<Message> messages;
   final bool isGenerating;
   final DiscordThreadLink? discordLink;
+  final bool reachyConnected;
   final int estimatedTokens;
   final int contextWindow;
 
@@ -21,6 +22,7 @@ class Thread {
     this.messages = const [],
     this.isGenerating = false,
     this.discordLink,
+    this.reachyConnected = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
   });
@@ -42,6 +44,7 @@ class Thread {
       discordLink: json['discord_link'] != null
           ? DiscordThreadLink.fromJson(json['discord_link'] as Map<String, dynamic>)
           : null,
+      reachyConnected: json['reachy_connected'] as bool? ?? false,
       estimatedTokens: json['estimated_tokens'] as int? ?? 0,
       contextWindow: json['context_window'] as int? ?? 8192,
     );
@@ -63,6 +66,7 @@ class ThreadListItem {
   final int messageCount;
   final bool isDiscordThread;
   final String? discordServerName;
+  final bool isReachyThread;
 
   ThreadListItem({
     required this.id,
@@ -73,6 +77,7 @@ class ThreadListItem {
     required this.messageCount,
     this.isDiscordThread = false,
     this.discordServerName,
+    this.isReachyThread = false,
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
@@ -85,6 +90,33 @@ class ThreadListItem {
       messageCount: json['message_count'] as int? ?? 0,
       isDiscordThread: json['is_discord_thread'] as bool? ?? false,
       discordServerName: json['discord_server_name'] as String?,
+      isReachyThread: json['is_reachy_thread'] as bool? ?? false,
+    );
+  }
+}
+
+class ReachyBinding {
+  final bool enabled;
+  final String? threadId;
+  final String? threadTitle;
+  final String wakeWord;
+  final String taskQueue;
+
+  ReachyBinding({
+    required this.enabled,
+    this.threadId,
+    this.threadTitle,
+    required this.wakeWord,
+    required this.taskQueue,
+  });
+
+  factory ReachyBinding.fromJson(Map<String, dynamic> json) {
+    return ReachyBinding(
+      enabled: json['enabled'] as bool? ?? false,
+      threadId: json['thread_id'] as String?,
+      threadTitle: json['thread_title'] as String?,
+      wakeWord: json['wake_word'] as String? ?? 'Reachy',
+      taskQueue: json['task_queue'] as String? ?? 'reachy-local',
     );
   }
 }

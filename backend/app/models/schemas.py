@@ -64,6 +64,7 @@ class ThreadResponse(BaseModel):
     messages: list[MessageResponse] = []
     is_generating: bool = False
     discord_link: Optional[DiscordThreadLinkResponse] = None
+    reachy_connected: bool = False
     estimated_tokens: int = 0
     context_window: int = 8192
 
@@ -79,6 +80,7 @@ class ThreadListItem(BaseModel):
     message_count: int = 0
     is_discord_thread: bool = False
     discord_server_name: Optional[str] = None
+    is_reachy_thread: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -166,6 +168,14 @@ class DiscordShareRequest(BaseModel):
     guild_id: Optional[str] = None
     channel_id: Optional[str] = None
     name: Optional[str] = None
+
+
+class ReachyBindingResponse(BaseModel):
+    enabled: bool = False
+    thread_id: Optional[UUID] = None
+    thread_title: Optional[str] = None
+    wake_word: str = "Reachy"
+    task_queue: str = "reachy-local"
 
 
 class DiscordServerResponse(BaseModel):

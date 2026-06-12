@@ -37,6 +37,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
   DiscordThreadLink? _discordLink;
+  ReachyBinding? _reachyBinding;
+  bool _isTogglingReachy = false;
   List<Map<String, dynamic>>? _pendingToolOverrides;
   bool _isAtBottom = true; // auto-scroll when anchored to bottom
   int _contextEstimatedTokens = 0;
@@ -68,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _loadThread(widget.initialThreadId!);
       }
     });
+    _loadReachyBinding();
     _threadRefreshTimer = Timer.periodic(
       const Duration(seconds: 10),
       (_) => _loadThreads(silent: true),
@@ -145,6 +148,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _loadReachyBinding() async {
+    try {
+      final binding = await _api.getReachyBinding();
+      if (mounted) {
+        setState(() => _reachyBinding = binding);
+      }
+    } catch (_) {
+      // Non-critical: the chat still works without Reachy status.
+    }
+  }
+
   Future<void> _loadThread(String threadId) async {
     setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; });
     try {
@@ -154,6 +168,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
        setState(() {
           _messages = thread.messages;
           _discordLink = thread.discordLink;
+          _reachyBinding = ReachyBinding(
+            enabled: _reachyBinding?.enabled ?? false,
+            threadId: thread.reachyConnected ? thread.id : _reachyBinding?.threadId,
+            threadTitle: thread.reachyConnected ? thread.title : _reachyBinding?.threadTitle,
+            wakeWord: _reachyBinding?.wakeWord ?? 'Reachy',
+            taskQueue: _reachyBinding?.taskQueue ?? 'reachy-local',
+          );
           _contextEstimatedTokens = thread.estimatedTokens;
           _contextWindow = thread.contextWindow;
           _isLoadingMessages = false;
@@ -162,6 +183,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
+        _loadReachyBinding();
 
         // If this thread is still generating (e.g., page was refreshed mid-response),
         // reconnect to the in-progress stream.
@@ -398,6 +420,46 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         },
       ),
     );
+  }
+
+  Future<void> _toggleReachyBinding() async {
+    final threadId = _activeThreadId;
+    if (threadId == null || _isTogglingReachy) return;
+    setState(() => _isTogglingReachy = true);
+    try {
+      final isConnected = _reachyBinding?.threadId == threadId;
+      final binding = isConnected
+          ? await _api.disconnectReachyThread(threadId)
+          : await _api.connectReachyThread(threadId);
+      if (!mounted) return;
+      setState(() => _reachyBinding = binding);
+      await _loadThreads(silent: true);
+      if (!mounted) return;
+      final message = binding.threadId == threadId
+          ? 'Reachy connected to this thread'
+          : 'Reachy disconnected';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: const Color(0xFF27272A),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reachy binding failed: $e'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isTogglingReachy = false);
+    }
   }
 
   Future<void> _sendMessage(String content, [List<String> imageUrls = const []]) async {
@@ -1268,6 +1330,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                 icon: _DiscordShareIcon(active: _discordLink?.isActive == true),
               ),
             ),
+            Tooltip(
+              message: _reachyBinding?.threadId == _activeThreadId
+                  ? 'Disconnect Reachy from this thread'
+                  : _reachyBinding?.threadId != null
+                      ? 'Move Reachy connection to this thread'
+                      : 'Connect this thread to Reachy',
+              child: IconButton(
+                onPressed: _isTogglingReachy ? null : _toggleReachyBinding,
+                icon: _ReachyShareIcon(
+                  active: _reachyBinding?.threadId == _activeThreadId,
+                  busy: _isTogglingReachy,
+                ),
+              ),
+            ),
           ] else
             const Spacer(),
         ],
@@ -1421,6 +1497,34 @@ class _DiscordShareIcon extends StatelessWidget {
       Icons.discord,
       size: 14,
       color: active ? Colors.white : Colors.white.withValues(alpha: 0.45),
+    );
+  }
+}
+
+class _ReachyShareIcon extends StatelessWidget {
+  final bool active;
+  final bool busy;
+
+  const _ReachyShareIcon({required this.active, this.busy = false});
+
+  @override
+  Widget build(BuildContext context) {
+    if (busy) {
+      return SizedBox(
+        width: 14,
+        height: 14,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          valueColor: AlwaysStoppedAnimation(
+            Colors.white.withValues(alpha: 0.7),
+          ),
+        ),
+      );
+    }
+    return Icon(
+      Icons.smart_toy_rounded,
+      size: 17,
+      color: active ? const Color(0xFF34D399) : Colors.white.withValues(alpha: 0.45),
     );
   }
 }
