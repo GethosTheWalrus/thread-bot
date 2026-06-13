@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid as uuid_mod
+from dataclasses import dataclass
 from uuid import UUID
 
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
@@ -43,12 +44,126 @@ def _strip_wake_word(text: str, wake_word: str) -> str | None:
     return text[match.end():].strip(" ,:;!?.-")
 
 
+@dataclass
+class VoiceTranscriber:
+    source: str
+    model_name: str
+    device: str
+    compute_type: str
+    sample_rate: int
+    phrase_seconds: float
+    silence_threshold: float
+    language: str | None
+    input_device: str | int | None
+    reachy_config: dict
+    _model: object | None = None
+
+    def _load_model(self):
+        if self._model is None:
+            from faster_whisper import WhisperModel
+
+            print(
+                f"[reachy] Loading Whisper STT model {self.model_name!r} "
+                f"on {self.device} ({self.compute_type})...",
+                flush=True,
+            )
+            self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+        return self._model
+
+    def _transcribe_samples(self, samples) -> str:
+        import numpy as np
+
+        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+        rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
+        if rms < self.silence_threshold:
+            return ""
+
+        model = self._load_model()
+        segments, _info = model.transcribe(
+            samples,
+            language=self.language,
+            beam_size=1,
+            vad_filter=True,
+        )
+        return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def _record_reachy_audio(self):
+        import numpy as np
+
+        from app.reachy_client import _mini_kwargs
+        from reachy_mini import ReachyMini
+
+        chunks = []
+        print("[reachy] Listening through Reachy's microphone...", flush=True)
+        with ReachyMini(**_mini_kwargs(self.reachy_config, media_backend=str(self.reachy_config.get("media_backend") or "default"))) as mini:
+            sample_rate = int(mini.media.get_input_audio_samplerate() or self.sample_rate)
+            deadline = time.monotonic() + self.phrase_seconds
+            mini.media.start_recording()
+            try:
+                while time.monotonic() < deadline:
+                    sample = mini.media.get_audio_sample()
+                    if sample is not None:
+                        chunks.append(np.asarray(sample, dtype=np.float32))
+                    time.sleep(0.02)
+            finally:
+                mini.media.stop_recording()
+
+        if not chunks:
+            return np.asarray([], dtype=np.float32), sample_rate
+        audio = np.concatenate(chunks, axis=0)
+        if audio.ndim == 2:
+            audio = audio.mean(axis=1)
+        return audio.astype(np.float32, copy=False), sample_rate
+
+    def _record_host_audio(self):
+        import numpy as np
+        import sounddevice as sd
+
+        frames = max(1, int(self.sample_rate * self.phrase_seconds))
+        input_device = self.input_device
+        if isinstance(input_device, str) and input_device.isdigit():
+            input_device = int(input_device)
+        print("[reachy] Listening through host microphone...", flush=True)
+        audio = sd.rec(
+            frames,
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype="float32",
+            device=input_device,
+        )
+        sd.wait()
+        return np.asarray(audio, dtype=np.float32).reshape(-1), self.sample_rate
+
+    def _record_and_transcribe(self) -> str:
+        if self.source == "host":
+            samples, sample_rate = self._record_host_audio()
+        else:
+            samples, sample_rate = self._record_reachy_audio()
+        if sample_rate != 16000:
+            print(f"[reachy] Warning: STT audio sample rate is {sample_rate} Hz; Whisper expects 16 kHz.", flush=True)
+        return self._transcribe_samples(samples)
+
+    async def read_once(self) -> str:
+        try:
+            return await asyncio.to_thread(self._record_and_transcribe)
+        except Exception as exc:
+            print(f"[reachy] voice transcription failed: {exc}", flush=True)
+            await asyncio.sleep(1.0)
+            return ""
+
+
 async def _read_transcript(args: argparse.Namespace) -> str | None:
     if args.stdin:
         try:
             return await asyncio.to_thread(input, "reachy> ")
         except EOFError:
             return None
+
+    if args.voice:
+        transcriber = getattr(args, "voice_transcriber", None)
+        if transcriber is None:
+            raise RuntimeError("Voice mode was enabled but no transcriber was initialized")
+        return await transcriber.read_once()
 
     if not args.stt_command:
         await asyncio.sleep(1.0)
@@ -190,13 +305,30 @@ async def run_bridge(args: argparse.Namespace) -> None:
     initial_thread_id = await _resolve_bound_thread_id(args)
     binding_text = initial_thread_id or "no thread yet; connect one in ThreadBot UI"
     print(f"[reachy] Listening for wake word {wake_word!r}; bound to {binding_text}", flush=True)
-    if not args.stdin and not args.stt_command:
-        print("[reachy] No input source configured. Use --stdin for testing or --stt-command for voice transcripts.", flush=True)
+    if args.voice:
+        args.voice_transcriber = VoiceTranscriber(
+            source=args.voice_source,
+            model_name=args.voice_model,
+            device=args.voice_device,
+            compute_type=args.voice_compute_type,
+            sample_rate=args.voice_sample_rate,
+            phrase_seconds=args.voice_phrase_seconds,
+            silence_threshold=args.voice_silence_threshold,
+            language=args.voice_language or None,
+            input_device=args.voice_input_device or None,
+            reachy_config=reachy_config,
+        )
+    if not args.stdin and not args.stt_command and not args.voice:
+        print("[reachy] No input source configured. Use --stdin, --voice, or --stt-command.", flush=True)
     awake_until = 0.0
     while True:
         transcript = await _read_transcript(args)
         if transcript is None:
             break
+        if args.voice and not transcript.strip():
+            continue
+        if args.voice:
+            print(f"[reachy] Transcript: {transcript}", flush=True)
         prompt = _strip_wake_word(transcript, wake_word)
         if prompt is None:
             if time.monotonic() < awake_until:
@@ -244,6 +376,16 @@ def main() -> None:
     parser.add_argument("--wake-word", default="", help="Wake word prefix. Defaults to REACHY_WAKE_WORD or Reachy.")
     parser.add_argument("--media-backend", default="default", help="Reachy SDK media backend for bridge audio/camera.")
     parser.add_argument("--stdin", action="store_true", help="Use terminal lines as transcripts for testing.")
+    parser.add_argument("--voice", action="store_true", help="Use built-in Whisper transcription. Defaults to Reachy's microphone.")
+    parser.add_argument("--voice-source", choices=("reachy", "host"), default=os.environ.get("REACHY_VOICE_SOURCE", "reachy"), help="Microphone source for built-in voice mode.")
+    parser.add_argument("--voice-model", default=os.environ.get("REACHY_VOICE_MODEL", "base.en"), help="faster-whisper model name/path for built-in voice mode.")
+    parser.add_argument("--voice-device", default=os.environ.get("REACHY_VOICE_DEVICE", "cpu"), help="Whisper device: cpu, cuda, or auto.")
+    parser.add_argument("--voice-compute-type", default=os.environ.get("REACHY_VOICE_COMPUTE_TYPE", "int8"), help="Whisper compute type, e.g. int8, float16, float32.")
+    parser.add_argument("--voice-language", default=os.environ.get("REACHY_VOICE_LANGUAGE", "en"), help="Transcription language hint. Empty enables auto-detect.")
+    parser.add_argument("--voice-input-device", default=os.environ.get("REACHY_VOICE_INPUT_DEVICE", ""), help="Optional host sounddevice input device name or index when --voice-source=host.")
+    parser.add_argument("--voice-sample-rate", type=int, default=int(os.environ.get("REACHY_VOICE_SAMPLE_RATE", "16000")), help="Microphone sample rate for built-in voice mode.")
+    parser.add_argument("--voice-phrase-seconds", type=float, default=float(os.environ.get("REACHY_VOICE_PHRASE_SECONDS", "4.0")), help="Seconds to record for each transcription window.")
+    parser.add_argument("--voice-silence-threshold", type=float, default=float(os.environ.get("REACHY_VOICE_SILENCE_THRESHOLD", "0.01")), help="RMS threshold below which microphone windows are ignored.")
     parser.add_argument("--stt-command", default="", help="Command that blocks until one transcript is available and prints it.")
     parser.add_argument("--stt-timeout", type=float, default=120.0, help="Seconds before killing one STT command invocation.")
     parser.add_argument("--awake-timeout", type=float, default=12.0, help="Seconds after a bare wake word to accept the next transcript without repeating the wake word.")

@@ -2400,7 +2400,8 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                                 initial: displayValue?.toString() ?? '',
                                 isOverridden: isOverridden,
                                 isSaving: _isSaving,
-                                multiline: key == 'api_key' ||
+                                multiline: key == 'system_prompt' ||
+                                    key == 'api_key' ||
                                     key == 'tts_api_key' ||
                                     key == 'vision_api_key',
                                 onSubmit: (v) {
@@ -2611,8 +2612,8 @@ class _StringFieldState extends State<_StringField> {
           child: TextField(
             controller: _controller,
             focusNode: _focusNode,
-            minLines: 1,
-            maxLines: widget.multiline ? 3 : 1,
+            minLines: widget.multiline ? 3 : 1,
+            maxLines: widget.keyName == 'system_prompt' ? 8 : (widget.multiline ? 3 : 1),
             style: const TextStyle(color: Colors.white, fontSize: 13),
             onSubmitted: (_) => _commit(),
             onEditingComplete: _commit,

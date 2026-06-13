@@ -425,6 +425,7 @@ def get_llm_config() -> dict:
 # Keys that get_llm_config() exposes and that are safe to override per-thread.
 # Used by the per-thread override sheet to render a typed editor.
 THREAD_OVERRIDABLE_KEYS: tuple[str, ...] = (
+    "system_prompt",
     "model",
     "provider",
     "api_url",
@@ -462,6 +463,7 @@ THREAD_OVERRIDABLE_KEYS: tuple[str, ...] = (
 
 # Friendly labels for the override sheet.
 THREAD_OVERRIDABLE_LABELS: dict[str, str] = {
+    "system_prompt": "System prompt",
     "model": "Chat model",
     "provider": "Provider",
     "api_url": "API URL",
@@ -498,7 +500,7 @@ THREAD_OVERRIDABLE_LABELS: dict[str, str] = {
 }
 
 # Keys that should be rendered as multiline / longer strings in the UI.
-THREAD_OVERRIDABLE_MULTILINE: frozenset[str] = frozenset({"api_key", "tts_api_key", "vision_api_key"})
+THREAD_OVERRIDABLE_MULTILINE: frozenset[str] = frozenset({"system_prompt", "api_key", "tts_api_key", "vision_api_key"})
 
 # Numeric keys (so the editor can use a number input).
 THREAD_OVERRIDABLE_NUMERIC: frozenset[str] = frozenset(

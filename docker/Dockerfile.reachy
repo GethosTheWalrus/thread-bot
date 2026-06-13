@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgstreamer1.0-0 \
     libgstreamer1.0-dev \
     libnice10 \
+    libportaudio2 \
     libusb-1.0-0 \
     pkg-config \
     python3-cairo \

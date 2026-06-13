@@ -29,6 +29,27 @@ Run the bridge with a real STT command:
 REACHY_BRIDGE_ARGS='--stt-command "your-stt-command"' docker compose --profile reachy run --rm reachy-bridge
 ```
 
+Run the bridge with Reachy's built-in microphone and local Whisper transcription:
+
+```bash
+REACHY_BRIDGE_ARGS='--voice' docker compose --profile reachy run --rm reachy-bridge
+```
+
+The built-in voice mode records short windows from Reachy's SDK microphone (`mini.media.start_recording()` / `get_audio_sample()`), transcribes them locally with `faster-whisper`, then applies the same wake-word flow as typed input. Say `Reachy, ...` in one phrase, or say only `Reachy` to wake him and then speak the request within the awake timeout.
+
+Useful voice tuning variables:
+
+```bash
+REACHY_VOICE_SOURCE=reachy        # reachy or host
+REACHY_VOICE_MODEL=base.en        # faster-whisper model name/path
+REACHY_VOICE_DEVICE=cpu           # cpu, cuda, or auto
+REACHY_VOICE_COMPUTE_TYPE=int8
+REACHY_VOICE_PHRASE_SECONDS=4.0
+REACHY_VOICE_SILENCE_THRESHOLD=0.01
+```
+
+Use `REACHY_VOICE_SOURCE=host` only if you explicitly want a host microphone instead of Reachy's microphone.
+
 ## Important Defaults
 
 The Reachy profile defaults to the external ThreadBot/Temporal/Postgres services used by the current deployment:

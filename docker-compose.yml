@@ -172,7 +172,7 @@ services:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile.reachy
-    command: sh -c "python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---stdin}"
+    command: sh -c "python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
     network_mode: host
     privileged: true
     stdin_open: true
@@ -195,6 +195,15 @@ services:
       - REACHY_CAMERA_CAPTURE_MODE=${REACHY_CAMERA_CAPTURE_MODE:-ffmpeg}
       - REACHY_CAMERA_DEVICE=${REACHY_CAMERA_DEVICE:-}
       - REACHY_SPEECH_MEDIA_BACKEND=${REACHY_SPEECH_MEDIA_BACKEND:-default}
+      - REACHY_VOICE_SOURCE=${REACHY_VOICE_SOURCE:-reachy}
+      - REACHY_VOICE_MODEL=${REACHY_VOICE_MODEL:-base.en}
+      - REACHY_VOICE_DEVICE=${REACHY_VOICE_DEVICE:-cpu}
+      - REACHY_VOICE_COMPUTE_TYPE=${REACHY_VOICE_COMPUTE_TYPE:-int8}
+      - REACHY_VOICE_LANGUAGE=${REACHY_VOICE_LANGUAGE:-en}
+      - REACHY_VOICE_INPUT_DEVICE=${REACHY_VOICE_INPUT_DEVICE:-}
+      - REACHY_VOICE_SAMPLE_RATE=${REACHY_VOICE_SAMPLE_RATE:-16000}
+      - REACHY_VOICE_PHRASE_SECONDS=${REACHY_VOICE_PHRASE_SECONDS:-4.0}
+      - REACHY_VOICE_SILENCE_THRESHOLD=${REACHY_VOICE_SILENCE_THRESHOLD:-0.01}
       - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
       - PULSE_SERVER=${PULSE_SERVER:-unix:/tmp/pulse/native}

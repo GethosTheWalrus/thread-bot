@@ -1036,6 +1036,7 @@ class RunThreadWorkflow:
 
             # ── Build initial message list ───────────────────────────────
             current_messages = list(chat_history)
+            custom_system_prompt = str(llm_config.get("system_prompt") or "").strip()
 
             server_tools = {}
             for info in mcp_tools_map.values():
@@ -1056,24 +1057,31 @@ class RunThreadWorkflow:
             ]
             tool_summary = "\n".join(tool_summary_lines)
 
+            system_parts = []
+            if custom_system_prompt:
+                system_parts.append(custom_system_prompt)
+
             # Inject system message when tools are available
             if openai_tools:
-                tool_instructions = (
+                system_parts.append(
                     "You are a helpful assistant with access to tools. "
                     "Use tools as many times as needed to thoroughly answer the user's question. "
                     "Gather information, verify it, and refine your answer "
                     "before providing a final response. You may call multiple tools in sequence.\n\n"
                     f"{tool_summary}"
                 )
+
+            if system_parts:
+                system_instructions = "\n\n".join(system_parts)
                 if current_messages and current_messages[0].get("role") == "system":
                     current_messages[0] = {
                         **current_messages[0],
-                        "content": f"{current_messages[0].get('content') or ''}\n\n{tool_instructions}",
+                        "content": f"{system_instructions}\n\n{current_messages[0].get('content') or ''}",
                     }
                 else:
                     current_messages.insert(0, {
                         "role": "system",
-                        "content": tool_instructions,
+                        "content": system_instructions,
                     })
 
             # The OpenAI Agents SDK drives the loop inside the workflow. The
@@ -1109,9 +1117,11 @@ class RunThreadWorkflow:
                 )
 
             tool_inventory_instruction = f"\n\n{tool_summary}" if tool_summary else ""
+            custom_system_instruction = f"{custom_system_prompt}\n\n" if custom_system_prompt else ""
             agent = Agent(
                 name="ThreadBot",
                 instructions=(
+                    f"{custom_system_instruction}"
                     "You are a helpful assistant. Use tools as many times as needed to thoroughly "
                     "answer the user's question. Gather information, verify it, and refine your "
                     "answer before providing a final response. When user messages include Image attachment URLs, "
