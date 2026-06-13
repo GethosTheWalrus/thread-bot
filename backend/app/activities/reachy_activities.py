@@ -74,11 +74,22 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                 None,
             )
 
+        yaw_value = tool_args.get("yaw")
+        if head_mode == "body_turn_head_follows" and yaw_value is None:
+            # Most natural-language requests like "turn left/right" imply the
+            # head should visibly turn with the body. If the model omits yaw,
+            # add a same-direction head offset so the head actuator moves too.
+            try:
+                body_yaw = float(tool_args.get("body_yaw") or 0.0)
+                yaw_value = max(-25.0, min(25.0, body_yaw * 0.6))
+            except Exception:
+                yaw_value = 0.0
+
         try:
             pose = ReachyPose(
                 roll=float(tool_args.get("roll") or 0.0),
                 pitch=float(tool_args.get("pitch") or 0.0),
-                yaw=float(tool_args.get("yaw") or 0.0),
+                yaw=float(yaw_value or 0.0),
                 z=float(tool_args.get("z") or 0.0),
                 body_yaw=float(tool_args.get("body_yaw") or 0.0),
                 right_antenna=float(tool_args.get("right_antenna") or 0.0),

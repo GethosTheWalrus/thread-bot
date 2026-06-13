@@ -596,20 +596,28 @@ class RunThreadWorkflow:
                             "head_only with yaw=0 and pitch=-5 is only a tiny nod and should NOT be used to satisfy "
                             "'move', 'turn', 'look around', or 'look left/right'. For visible head glances, use at least "
                             "about 20 degrees of head yaw or 10 degrees of pitch. For 'turn left/right', 'face the screen', "
-                            "or 'look around the room', prefer body_turn_head_follows with non-zero body_yaw.\n\n"
+                            "or 'look around the room', prefer body_turn_head_follows with non-zero body_yaw AND non-zero yaw.\n\n"
+                            "CRITICAL TURN RULES:\n"
+                            "- If the user says 'turn left', 'look left', 'turn your body and head left', or similar: call "
+                            "reachy_move with head_mode='body_turn_head_follows', body_yaw=+35 to +60, yaw=+15 to +30.\n"
+                            "- If the user says 'turn right', 'look right', 'turn your body and head right', or similar: call "
+                            "reachy_move with head_mode='body_turn_head_follows', body_yaw=-35 to -60, yaw=-15 to -30.\n"
+                            "- DO NOT omit yaw for turn/look left/right requests. Omitting yaw only turns the base and leaves the head centered.\n"
+                            "- DO NOT use head_only for turn/look left/right unless the user explicitly says only move your head.\n\n"
                             "HOW HEAD AND BODY INTERACT (READ THIS EVERY TIME):\n"
                             "There are TWO independently controllable parts: the HEAD (roll/pitch/yaw/z) and the BASE/FOOT (body_yaw). "
                             "When you set BOTH a head 'yaw' and a non-zero 'body_yaw' in the same call, the daemon counter-rotates "
                             "the head pose so the camera keeps pointing at the same WORLD direction — visually the head and body appear "
                             "to swing in OPPOSITE directions. This is correct for 'rotate the body but keep looking at the same spot'.\n"
-                            "When you set ONLY 'body_yaw' and leave 'yaw' at 0 (or omit it), the head does NOT counter-rotate, so the head "
-                            "and body appear to turn TOGETHER — the whole robot faces a new direction. This is what you want for 'look over "
-                            "there' / 'turn around' / 'face the screen on the left'.\n\n"
+                            "When you set body_yaw in body_turn_head_follows, the body turns. For ordinary 'turn/look left/right' requests, "
+                            "ALWAYS set yaw in the SAME direction as body_yaw so the head actuator visibly turns too. Only set yaw=0 if "
+                            "the user explicitly asks for a body-only turn or centered head.\n\n"
                             "YOU MUST PICK head_mode EXPLICITLY EVERY CALL. There is no default. The three modes are:\n"
                             "- head_mode='head_only': rotate ONLY the head, do NOT touch the body. body_yaw MUST be 0 or omitted. "
                             "Use for: 'look up', 'look at me', 'tilt your head', 'glance left'. head yaw is relative to the current body.\n"
                             "- head_mode='body_turn_head_follows': rotate the body AND have the head follow, so the whole robot turns to face "
-                            "a new direction together. Pass body_yaw (the direction to face, in degrees, -180..180) and set yaw=0. "
+                            "a new direction together. Pass body_yaw (the direction to face, in degrees, -180..180) AND same-sign yaw "
+                            "(about 15-30 degrees) for normal turn/look left/right requests. Use yaw=0 only for an explicitly centered head. "
                             "Use for: 'turn around', 'look at the screen on the left', 'face the door', 'follow me as I walk'.\n"
                             "- head_mode='body_turn_head_stays_world_fixed': rotate the body but keep the camera looking at the same WORLD "
                             "direction. Pass body_yaw AND a yaw that, combined with the body's rotation, would re-aim the head in body-frame. "
@@ -626,7 +634,7 @@ class RunThreadWorkflow:
                                 },
                                 "roll": {"type": "number", "description": "Head roll in degrees, usually -20 to 20. Independent of head_mode."},
                                 "pitch": {"type": "number", "description": "Head pitch in degrees, usually -25 to 25. Independent of head_mode."},
-                                "yaw": {"type": "number", "description": "Head yaw in degrees. Interpretation depends on head_mode — see tool description. Omit or set to 0 for head_only and body_turn_head_follows unless the user wants a specific head tilt on top of the body turn."},
+                                "yaw": {"type": "number", "description": "Head yaw in degrees. For normal turn/look left/right requests using body_turn_head_follows, REQUIRED and same sign as body_yaw: left = positive yaw about +15..+30, right = negative yaw about -15..-30. Only use 0 if the user explicitly asks for body-only or centered-head movement."},
                                 "z": {"type": "number", "description": "Head vertical offset in millimeters, usually -15 to 15. Independent of head_mode."},
                                 "body_yaw": {"type": "number", "description": "Base/foot rotation in degrees, -180..180. MUST be 0 (or omitted) for head_mode=head_only. REQUIRED for body_turn_head_follows and body_turn_head_stays_world_fixed."},
                                 "right_antenna": {"type": "number", "description": "Right antenna angle in degrees."},
