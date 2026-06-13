@@ -73,9 +73,10 @@ class ReachyPose:
         head_only:
             body_yaw must be 0 (or omitted). yaw is the head's body-frame yaw.
         body_turn_head_follows:
-            body_yaw is the world direction Reachy should face. yaw is forced
-            to 0 so the head pose matrix is identity in body frame — visually
-            the head moves with the body.
+            body_yaw is the world direction Reachy should face. yaw remains a
+            body-frame head yaw offset. Use yaw=0 when the head should stay
+            centered on the body; use a same-direction nonzero yaw when the
+            user explicitly asks for both the body and head to turn.
         body_turn_head_stays_world_fixed:
             body_yaw rotates the body, and yaw is the world-frame direction the
             LLM wants the camera to keep pointing at. We convert to a body-frame
@@ -97,7 +98,7 @@ class ReachyPose:
             )
         if self.head_mode == "body_turn_head_follows":
             return ReachyPose(
-                roll=self.roll, pitch=self.pitch, yaw=0.0, z=self.z,
+                roll=self.roll, pitch=self.pitch, yaw=self.yaw, z=self.z,
                 body_yaw=self.body_yaw,
                 right_antenna=self.right_antenna, left_antenna=self.left_antenna,
                 duration=self.duration, head_mode=self.head_mode,
