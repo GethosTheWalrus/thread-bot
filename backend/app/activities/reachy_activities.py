@@ -152,6 +152,11 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                 None,
                 llm_config,
             )
+            description_failed = False
+        except BaseException as exc:
+            description = f"Vision description unavailable: {exc}"
+            description_failed = True
+            print(f"[reachy-camera] vision describe failed: {exc!r}", flush=True)
         finally:
             stop_heartbeat.set()
             try:
@@ -160,11 +165,12 @@ async def _run_reachy_tool(tool_name: str, tool_args: dict, reachy_config: dict,
                 pass
 
         if image_url:
-            # Append a one-line marker so the LLM knows the capture is
-            # available and the frontend's `generatedMediaAttachments`
-            # regex can render it. Put the URL on its own line so the
-            # chat UI can extract and inline-display it.
-            description = f"{description}\n\n{image_url}"
+            # Always surface the saved image URL so the chat thread can
+            # display the capture even if the vision LLM call failed. The
+            # URL sits on its own line so the frontend's
+            # `generatedMediaAttachments` regex extracts it.
+            separator = " (note: vision description failed)" if description_failed else ""
+            description = f"{description}{separator}\n\n{image_url}"
         return description, image_url
 
     return f"Error: unknown Reachy tool {tool_name!r}.", None

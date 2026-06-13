@@ -127,14 +127,23 @@ class ReachySpeechWorkflow:
                         pass
                     continue
 
+                # Idle wait — give the workflow a chance to receive more
+                # text. We use a longer wait here (60s) and rely on
+                # signals (`add_text`, `finish`, `start_thinking`) to wake
+                # the workflow early. This avoids the tight 2s poll loop
+                # that previously tripped the Temporal deadlock detector
+                # on a fast inner loop.
                 try:
                     await workflow.wait_condition(
                         lambda: self._done or bool(self._chunks) or self._thinking_active,
-                        timeout=timedelta(seconds=2),
+                        timeout=timedelta(seconds=60),
                         timeout_summary="Wait for Reachy speech text",
                     )
                 except asyncio.TimeoutError:
                     pass
+                # Always re-enter the while loop's top condition check;
+                # `wait_condition` has already yielded, so we're not at
+                # risk of the deadlock detector.
             if self._chunks:
                 pending += "".join(self._chunks)
                 self._chunks.clear()
