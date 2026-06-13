@@ -592,8 +592,11 @@ class RunThreadWorkflow:
                         "description": (
                             "Move the connected Reachy Mini robot. Use this when the user asks Reachy to look, nod, "
                             "turn, point attention, or physically react. Angles are degrees and are clamped to safe "
-                            "Reachy Mini ranges by the SDK. Keep movements smooth and modest unless the user asks "
-                            "for a large gesture.\n\n"
+                            "Reachy Mini ranges by the SDK. IMPORTANT: make movements visibly meaningful. A call like "
+                            "head_only with yaw=0 and pitch=-5 is only a tiny nod and should NOT be used to satisfy "
+                            "'move', 'turn', 'look around', or 'look left/right'. For visible head glances, use at least "
+                            "about 20 degrees of head yaw or 10 degrees of pitch. For 'turn left/right', 'face the screen', "
+                            "or 'look around the room', prefer body_turn_head_follows with non-zero body_yaw.\n\n"
                             "HOW HEAD AND BODY INTERACT (READ THIS EVERY TIME):\n"
                             "There are TWO independently controllable parts: the HEAD (roll/pitch/yaw/z) and the BASE/FOOT (body_yaw). "
                             "When you set BOTH a head 'yaw' and a non-zero 'body_yaw' in the same call, the daemon counter-rotates "

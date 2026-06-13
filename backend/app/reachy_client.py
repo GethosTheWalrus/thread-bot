@@ -142,19 +142,57 @@ def _daemon_base_url(config: dict | None) -> str:
     return str(config.get("daemon_url") or "http://localhost:8000").rstrip("/")
 
 
-def _post_daemon(config: dict | None, endpoint: str, *, body: dict | None = None, timeout: float = 10.0) -> None:
+def _post_daemon(config: dict | None, endpoint: str, *, body: dict | None = None, timeout: float = 10.0) -> Any:
     url = f"{_daemon_base_url(config)}{endpoint}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = {"Content-Type": "application/json"} if body is not None else {}
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read()
+            raw = response.read()
+            if not raw:
+                return None
+            try:
+                return json.loads(raw.decode("utf-8"))
+            except Exception:
+                return raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Reachy daemon returned HTTP {exc.code} for {endpoint}: {body[:300]}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Reachy daemon is not reachable at {_daemon_base_url(config)}: {exc.reason}") from exc
+
+
+def _running_daemon_moves(config: dict | None) -> list[str]:
+    running = _get_daemon_json(config, "/api/move/running", timeout=2.0)
+    if not isinstance(running, list):
+        return []
+    ids = []
+    for item in running:
+        if isinstance(item, dict) and item.get("uuid"):
+            ids.append(str(item["uuid"]))
+    return ids
+
+
+def _wait_for_daemon_moves_idle(config: dict | None, *, timeout: float = 12.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _running_daemon_moves(config):
+            return
+        time.sleep(0.1)
+
+
+def _wait_for_daemon_move_done(config: dict | None, move_uuid: str | None, *, timeout: float) -> bool:
+    deadline = time.monotonic() + max(timeout, 0.5)
+    while time.monotonic() < deadline:
+        running = _running_daemon_moves(config)
+        if move_uuid:
+            if move_uuid not in running:
+                return True
+        elif not running:
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def _get_daemon_json(config: dict | None, endpoint: str, *, timeout: float = 3.0) -> Any:
@@ -217,12 +255,20 @@ def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
         "duration": duration,
         "interpolation": "minjerk",
     }
-    _post_daemon(config, "/api/move/goto", body=payload, timeout=5.0)
+    # The daemon accepts /api/move/goto asynchronously. If a mood animation is
+    # still running, the backend silently ignores the new move while the HTTP
+    # route still returns 200. Wait for the daemon to be idle first, then wait
+    # for this specific move task to finish before reporting success.
+    _wait_for_daemon_moves_idle(config, timeout=12.0)
+    response = _post_daemon(config, "/api/move/goto", body=payload, timeout=5.0)
+    move_uuid = str(response.get("uuid")) if isinstance(response, dict) and response.get("uuid") else None
+    completed = _wait_for_daemon_move_done(config, move_uuid, timeout=duration + 3.0)
+    suffix = "" if completed else " (daemon accepted the command but it did not report completion before timeout)"
     return (
         "Moved Reachy via daemon: "
         f"head_mode={pose.head_mode}; head roll={pose.roll:.1f} pitch={pose.pitch:.1f} "
         f"yaw={pose.yaw:.1f} (body-frame) z={pose.z:.1f}mm, body_yaw={pose.body_yaw:.1f}, "
-        f"antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f})."
+        f"antennas=({pose.right_antenna:.1f}, {pose.left_antenna:.1f}).{suffix}"
     )
 
 
