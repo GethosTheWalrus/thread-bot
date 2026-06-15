@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.workflow import defn, execute_activity, init, run, signal
+from temporalio.workflow import defn, execute_activity, init, run, signal, start_activity, ActivityCancellationType
 
 from app.activities.reachy_activities import (
     play_reachy_animation,
@@ -17,40 +17,31 @@ from app.activities.reachy_activities import (
 
 @defn
 class ReachySpeechWorkflow:
-    """Reachy speech workflow with thinking, mood, and speaking personas.
+    """Single-phase Reachy speech workflow with interrupt support.
 
-    Operates in two phases:
+    While the parent LLM workflow is processing (thinking/tools), this
+    workflow loops the thinking persona (mood + animation). When the
+    parent signals ``finish`` with the final text, it plays the response
+    mood, speaks the text, and plays the sleep animation.
 
-    Phase 1 — "thinking": Loops playing the thinking mood persona
-    (``play_reachy_mood`` + ``play_reachy_animation("thinking")``)
-    until the parent signals ``finish`` with the final LLM text.
-    Once ``finish`` arrives, the workflow calls ``continue_as_new``
-    to reset its event history, preventing TMPRL1101 deadlocks
-    caused by replaying accumulated events past the SDK's 2-second
-    yield window.
+    The ``interrupt`` signal terminates immediately: it cancels any
+    running activity via ``start_activity`` + ``ActivityHandle.cancel()``,
+    skips speech, and plays the sleep animation so the robot returns to
+    rest without waiting for the current thinking animation or mood to
+    finish.
 
-    Phase 2 — "speaking": Starts fresh after ``continue_as_new``
-    with only the text and config. Plays the response mood persona
-    once, then speaks the full text via
-    ``synthesize_and_speak_reachy_text``, then plays the sleep
-    animation.
-
-    The ``flush`` signal is used during tool-call pauses: the parent
-    signals ``flush`` to speak intermediate text (tool results, etc.)
-    before the final response. After a flush, the workflow resumes
-    the thinking persona until ``finish`` arrives.
+    The ``flush`` signal speaks intermediate text during tool-call
+    pauses, then resumes the thinking persona.
     """
 
     @init
     def __init__(self, input: dict) -> None:
-        phase = (input or {}).get("_phase") or "thinking"
-        self._phase: str = phase
-        self._buffered: list[str] = list((input or {}).get("_buffered") or [])
-        self._done = bool((input or {}).get("_done"))
-        self._flush_now = bool((input or {}).get("_flush_now"))
+        self._buffered: list[str] = []
+        self._done = False
+        self._flush_now = False
         self._thinking_active = bool((input or {}).get("start_thinking", True))
-        self._spoke = bool((input or {}).get("_spoke"))
-        self._interrupted = bool((input or {}).get("_interrupted"))
+        self._spoke = False
+        self._interrupted = False
         self._thinking_mood_played = False
 
     @signal
@@ -113,6 +104,41 @@ class ReachySpeechWorkflow:
             return "relieved"
         return "helpful"
 
+    async def _run_activity(self, activity_fn, args: dict, *, summary: str,
+                            timeout: timedelta = timedelta(seconds=20),
+                            heartbeat: timedelta = timedelta(seconds=10)) -> dict | None:
+        """Start an activity and race it against the ``interrupt`` signal.
+        If ``interrupt`` fires while the activity is running, the activity
+        handle is cancelled (TRY_CANCEL) and this returns None immediately."""
+        handle = start_activity(
+            activity_fn, args,
+            start_to_close_timeout=timeout,
+            heartbeat_timeout=heartbeat,
+            retry_policy=RetryPolicy(maximum_attempts=1),
+            cancellation_type=ActivityCancellationType.TRY_CANCEL,
+            summary=summary,
+        )
+        while not handle.done():
+            try:
+                await workflow.wait_condition(
+                    lambda: handle.done() or self._interrupted,
+                    timeout=timedelta(seconds=1),
+                )
+            except asyncio.TimeoutError:
+                pass
+            if self._interrupted:
+                handle.cancel()
+                try:
+                    await handle
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return None
+        try:
+            return handle.result()
+        except Exception:
+            workflow.logger.exception("Activity %s failed", summary)
+            return None
+
     @run
     async def run(self, input: dict) -> dict:
         llm_config = input.get("llm_config") or {}
@@ -121,186 +147,133 @@ class ReachySpeechWorkflow:
         output_volume = int(reachy_config.get("output_volume") or 100)
         response_mood = str(reachy_config.get("response_mood") or "helpful")
 
-        if self._phase == "speaking":
-            return await self._run_speaking_phase(input, llm_config, reachy_config, post_speech_sleep_delay, response_mood)
+        await self._run_activity(
+            set_reachy_volume,
+            {"volume": output_volume, "reachy": reachy_config},
+            summary="Set Reachy output volume",
+            timeout=timedelta(seconds=10),
+            heartbeat=timedelta(seconds=5),
+        )
+        if self._interrupted:
+            return await self._sleep_and_exit(reachy_config)
 
-        return await self._run_thinking_phase(input, llm_config, reachy_config, output_volume, response_mood, post_speech_sleep_delay)
+        await self._run_activity(
+            play_reachy_animation,
+            {"name": "wake", "duration": 1.0, "reachy": reachy_config},
+            summary="Wake Reachy for speech turn",
+        )
+        if self._interrupted:
+            return await self._sleep_and_exit(reachy_config)
 
-    async def _run_thinking_phase(
-        self,
-        input: dict,
-        llm_config: dict,
-        reachy_config: dict,
-        output_volume: int,
-        response_mood: str,
-        post_speech_sleep_delay: float,
-    ) -> dict:
-        try:
-            await execute_activity(
-                set_reachy_volume,
-                {"volume": output_volume, "reachy": reachy_config},
-                start_to_close_timeout=timedelta(seconds=10),
-                heartbeat_timeout=timedelta(seconds=5),
-                retry_policy=RetryPolicy(maximum_attempts=1),
-                summary="Set Reachy output volume",
-            )
-        except Exception:
-            workflow.logger.exception("Reachy volume setup failed")
-
-        try:
-            await execute_activity(
-                play_reachy_animation,
-                {"name": "wake", "duration": 1.0, "reachy": reachy_config},
-                start_to_close_timeout=timedelta(seconds=20),
-                heartbeat_timeout=timedelta(seconds=10),
-                retry_policy=RetryPolicy(maximum_attempts=1),
-                summary="Wake Reachy for speech turn",
-            )
-        except Exception:
-            workflow.logger.exception("Reachy wake failed")
-
+        # ── Thinking phase ──────────────────────────────────────────
         while not self._done:
             if self._flush_now:
                 self._flush_now = False
                 text = self._drain()
                 if text.strip():
                     mood = self._infer_mood(text) if not self._spoke else None
-                    try:
-                        if mood and not self._spoke:
-                            await execute_activity(
-                                play_reachy_mood,
-                                {"mood": mood, "reachy": reachy_config},
-                                start_to_close_timeout=timedelta(seconds=20),
-                                heartbeat_timeout=timedelta(seconds=10),
-                                retry_policy=RetryPolicy(maximum_attempts=1),
-                                summary="Play Reachy response mood persona",
-                            )
-                    except Exception:
-                        workflow.logger.exception("Reachy response mood persona failed")
-                    try:
-                        result = await execute_activity(
-                            synthesize_and_speak_reachy_text,
-                            {"texts": [text], "silence_between_seconds": 0.0, "llm_config": llm_config, "reachy": reachy_config},
-                            start_to_close_timeout=timedelta(seconds=600),
-                            heartbeat_timeout=timedelta(seconds=30),
-                            retry_policy=RetryPolicy(maximum_attempts=1),
-                            summary="Speak flushed Reachy text",
+                    if mood and not self._spoke:
+                        await self._run_activity(
+                            play_reachy_mood,
+                            {"mood": mood, "reachy": reachy_config},
+                            summary="Play Reachy response mood persona",
                         )
-                        if isinstance(result, dict) and result.get("spoken"):
-                            self._spoke = True
-                    except Exception:
-                        workflow.logger.exception("Reachy flushed speech failed")
+                        if self._interrupted:
+                            return await self._sleep_and_exit(reachy_config)
+                    result = await self._run_activity(
+                        synthesize_and_speak_reachy_text,
+                        {"texts": [text], "silence_between_seconds": 0.0, "llm_config": llm_config, "reachy": reachy_config},
+                        summary="Speak flushed Reachy text",
+                        timeout=timedelta(seconds=600),
+                        heartbeat=timedelta(seconds=30),
+                    )
+                    if isinstance(result, dict) and result.get("spoken"):
+                        self._spoke = True
+                    if self._interrupted:
+                        return await self._sleep_and_exit(reachy_config)
                     self._thinking_mood_played = False
                 self._thinking_active = True
                 continue
 
             if self._thinking_active and not self._done:
                 if not self._thinking_mood_played:
-                    try:
-                        await execute_activity(
-                            play_reachy_mood,
-                            {"mood": "thoughtful", "reachy": reachy_config},
-                            start_to_close_timeout=timedelta(seconds=20),
-                            heartbeat_timeout=timedelta(seconds=10),
-                            retry_policy=RetryPolicy(maximum_attempts=1),
-                            summary="Play Reachy thinking mood persona",
-                        )
-                    except Exception:
-                        workflow.logger.exception("Reachy thinking mood failed")
-                    self._thinking_mood_played = True
-
-                try:
-                    await execute_activity(
-                        play_reachy_animation,
-                        {"name": "thinking", "duration": 2.0, "reachy": reachy_config},
-                        start_to_close_timeout=timedelta(seconds=5),
-                        heartbeat_timeout=timedelta(seconds=5),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
-                        summary="Play Reachy thinking animation",
+                    await self._run_activity(
+                        play_reachy_mood,
+                        {"mood": "thoughtful", "reachy": reachy_config},
+                        summary="Play Reachy thinking mood persona",
                     )
-                except Exception:
-                    workflow.logger.exception("Reachy thinking animation failed")
+                    self._thinking_mood_played = True
+                    if self._interrupted:
+                        return await self._sleep_and_exit(reachy_config)
+
+                await self._run_activity(
+                    play_reachy_animation,
+                    {"name": "thinking", "duration": 2.0, "reachy": reachy_config},
+                    summary="Play Reachy thinking animation",
+                    timeout=timedelta(seconds=5),
+                    heartbeat=timedelta(seconds=5),
+                )
+                if self._interrupted:
+                    return await self._sleep_and_exit(reachy_config)
                 continue
 
             if self._buffered and not self._done:
                 self._thinking_active = False
                 try:
                     await workflow.wait_condition(
-                        lambda: self._done or self._flush_now or not self._buffered,
+                        lambda: self._done or self._flush_now or self._interrupted or not self._buffered,
                         timeout=timedelta(seconds=60),
-                        timeout_summary="Wait for finish or flush while buffer is non-empty",
                     )
                 except asyncio.TimeoutError:
                     pass
+                if self._interrupted:
+                    return await self._sleep_and_exit(reachy_config)
                 continue
 
             try:
                 await workflow.wait_condition(
-                    lambda: self._done or self._flush_now or bool(self._buffered) or self._thinking_active,
+                    lambda: self._done or self._flush_now or bool(self._buffered) or self._thinking_active or self._interrupted,
                     timeout=timedelta(seconds=60),
-                    timeout_summary="Wait for Reachy speech text",
                 )
             except asyncio.TimeoutError:
                 pass
+            if self._interrupted:
+                return await self._sleep_and_exit(reachy_config)
 
+        # ── Speaking phase ──────────────────────────────────────────
         text = self._drain().strip()
-        workflow.continue_as_new(
-            args=[
-                {
-                    "_phase": "speaking",
-                    "_text": text,
-                    "_spoke": self._spoke,
-                    "_interrupted": self._interrupted,
-                    "llm_config": llm_config,
-                    "reachy": reachy_config,
-                    "post_speech_sleep_delay": post_speech_sleep_delay,
-                    "response_mood": response_mood,
-                }
-            ]
-        )
-
-    async def _run_speaking_phase(
-        self,
-        input: dict,
-        llm_config: dict,
-        reachy_config: dict,
-        post_speech_sleep_delay: float,
-        response_mood: str,
-    ) -> dict:
-        text = input.get("_text", "")
-        spoke = bool(input.get("_spoke"))
-        interrupted = bool(input.get("_interrupted"))
-
-        if text and not interrupted:
-            if not spoke:
-                try:
-                    await execute_activity(
-                        play_reachy_mood,
-                        {"mood": response_mood, "reachy": reachy_config},
-                        start_to_close_timeout=timedelta(seconds=20),
-                        heartbeat_timeout=timedelta(seconds=10),
-                        retry_policy=RetryPolicy(maximum_attempts=1),
-                        summary="Play Reachy response mood persona",
-                    )
-                except Exception:
-                    workflow.logger.exception("Reachy response mood persona failed")
-
-            try:
-                result = await execute_activity(
-                    synthesize_and_speak_reachy_text,
-                    {"texts": [text], "silence_between_seconds": 0.0, "llm_config": llm_config, "reachy": reachy_config},
-                    start_to_close_timeout=timedelta(seconds=600),
-                    heartbeat_timeout=timedelta(seconds=30),
-                    retry_policy=RetryPolicy(maximum_attempts=1),
-                    summary="Synthesize and speak Reachy response",
+        if text and not self._interrupted:
+            if not self._spoke:
+                await self._run_activity(
+                    play_reachy_mood,
+                    {"mood": response_mood, "reachy": reachy_config},
+                    summary="Play Reachy response mood persona",
                 )
-                if isinstance(result, dict) and result.get("spoken"):
-                    spoke = True
-            except Exception:
-                workflow.logger.exception("Reachy speech failed")
+                if self._interrupted:
+                    return await self._sleep_and_exit(reachy_config)
 
-        if post_speech_sleep_delay > 0 and not interrupted:
+            result = await self._run_activity(
+                synthesize_and_speak_reachy_text,
+                {"texts": [text], "silence_between_seconds": 0.0, "llm_config": llm_config, "reachy": reachy_config},
+                summary="Synthesize and speak Reachy response",
+                timeout=timedelta(seconds=600),
+                heartbeat=timedelta(seconds=30),
+            )
+            if isinstance(result, dict) and result.get("spoken"):
+                self._spoke = True
+
+        if post_speech_sleep_delay > 0 and not self._interrupted:
             await workflow.sleep(timedelta(seconds=post_speech_sleep_delay))
+
+        await self._run_activity(
+            play_reachy_animation,
+            {"name": "sleep", "duration": 1.0, "reachy": reachy_config},
+            summary="Sleep Reachy after speech turn",
+        )
+        return {"spoken": self._spoke}
+
+    async def _sleep_and_exit(self, reachy_config: dict) -> dict:
+        """Play the sleep animation and return immediately (interrupt path)."""
         try:
             await execute_activity(
                 play_reachy_animation,
@@ -308,9 +281,8 @@ class ReachySpeechWorkflow:
                 start_to_close_timeout=timedelta(seconds=20),
                 heartbeat_timeout=timedelta(seconds=10),
                 retry_policy=RetryPolicy(maximum_attempts=1),
-                summary="Sleep Reachy after speech turn",
+                summary="Sleep Reachy after interrupt",
             )
         except Exception:
-            workflow.logger.exception("Reachy sleep failed")
-
-        return {"spoken": spoke}
+            workflow.logger.exception("Reachy sleep after interrupt failed")
+        return {"spoken": self._spoke, "interrupted": True}
