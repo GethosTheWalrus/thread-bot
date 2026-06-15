@@ -29,6 +29,10 @@ def _reachy_config(args: dict) -> dict:
         config["camera_media_backend"] = os.environ.get("REACHY_CAMERA_MEDIA_BACKEND") or "default"
     if os.environ.get("REACHY_DAEMON_URL") is not None:
         config["daemon_url"] = os.environ.get("REACHY_DAEMON_URL") or "http://localhost:8000"
+    if os.environ.get("REACHY_OUTPUT_VOLUME") is not None:
+        config["output_volume"] = int(os.environ.get("REACHY_OUTPUT_VOLUME") or 100)
+    if os.environ.get("REACHY_RESPONSE_MOOD") is not None:
+        config["response_mood"] = os.environ.get("REACHY_RESPONSE_MOOD") or "helpful"
     return config
 
 
@@ -248,6 +252,26 @@ async def play_reachy_animation(args: dict) -> dict:
 
 
 @defn
+async def set_reachy_volume(args: dict) -> dict:
+    """Set Reachy's daemon output volume."""
+    reachy_config = _reachy_config(args)
+    volume = int(args.get("volume") if args.get("volume") is not None else reachy_config.get("output_volume", 100))
+
+    from app.reachy_client import set_output_volume
+
+    print(f"[reachy-volume] setting output volume to {volume}%", flush=True)
+    heartbeat({"step": "reachy_volume", "volume": volume})
+    try:
+        message = await asyncio.to_thread(set_output_volume, reachy_config, volume)
+    except Exception as exc:
+        error = f"Reachy volume set failed: {exc}"
+        print(f"[reachy-volume] {error}", flush=True)
+        return {"set": False, "volume": volume, "error": error}
+    print(f"[reachy-volume] {message}", flush=True)
+    return {"set": True, "volume": volume, "message": message}
+
+
+@defn
 async def speak_reachy_text(args: dict) -> dict:
     """Synthesize a text chunk and play it through Reachy locally."""
     text = str(args.get("text") or "").strip()
@@ -264,7 +288,7 @@ async def speak_reachy_text(args: dict) -> dict:
     )
 
     from app.activities.llm_activities import _synthesize_speech_audio
-    from app.reachy_client import speak_wav
+    from app.reachy_client import run_animation_background, speak_wav
 
     print(f"[reachy-speech] speaking chunk ({len(text)} chars): {text[:80]!r}", flush=True)
     heartbeat({"step": "reachy_speech_tts", "chars": len(text)})
@@ -279,12 +303,17 @@ async def speak_reachy_text(args: dict) -> dict:
         return {"spoken": False, "duration": 0.0, "error": error}
 
     heartbeat({"step": "reachy_speech_playback", "chars": len(text)})
+    stop_talking = asyncio.Event()
+    talking_task = asyncio.create_task(run_animation_background(reachy_config, "talking", stop_talking))
     try:
         duration = await asyncio.to_thread(speak_wav, reachy_config, audio)
     except Exception as exc:
         error = f"Reachy audio playback failed: {exc}"
         print(f"[reachy-speech] {error}", flush=True)
         return {"spoken": False, "duration": 0.0, "error": error}
+    finally:
+        stop_talking.set()
+        await talking_task
     print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
 
     return {"spoken": True, "duration": duration}

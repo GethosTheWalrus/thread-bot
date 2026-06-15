@@ -149,6 +149,8 @@ class Settings(BaseSettings):
     REACHY_DAEMON_URL: str = "http://localhost:8000"
     REACHY_TASK_QUEUE: str = "reachy-local"
     REACHY_SPEECH_ENABLED: bool = True
+    REACHY_OUTPUT_VOLUME: int = 100
+    REACHY_RESPONSE_MOOD: str = "helpful"
 
     model_config = {"extra": "ignore"}
 
@@ -617,6 +619,8 @@ def get_reachy_config() -> dict:
         "daemon_url": get_setting("REACHY_DAEMON_URL") or "http://localhost:8000",
         "task_queue": get_setting("REACHY_TASK_QUEUE") or "reachy-local",
         "speech_enabled": bool(get_setting("REACHY_SPEECH_ENABLED")),
+        "output_volume": int(get_setting("REACHY_OUTPUT_VOLUME") or 100),
+        "response_mood": get_setting("REACHY_RESPONSE_MOOD") or "helpful",
     }
 
 

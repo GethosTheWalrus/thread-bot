@@ -23,10 +23,13 @@ from typing import Any
 
 
 EMOTION_DATASET = "pollen-robotics/reachy-mini-emotions-library"
+DANCE_DATASET = "pollen-robotics/reachy-mini-dances-library"
+DANCE_MOVES = {"dance1", "yeah_nod"}
 
 MOOD_EMOTIONS: dict[str, str] = {
     "neutral": "helpful1",
     "helpful": "helpful1",
+    "loving": "loving1",
     "cheerful": "cheerful1",
     "excited": "enthusiastic1",
     "grateful": "grateful1",
@@ -35,13 +38,30 @@ MOOD_EMOTIONS: dict[str, str] = {
     "curious": "curious1",
     "surprised": "surprised1",
     "confused": "confused1",
+    "yes": "yes1",
+    "no": "no1",
+    "boredom": "boredom1",
+    "bored": "boredom1",
+    "anxiety": "anxiety1",
+    "anxious": "anxiety1",
+    "downcast": "downcast1",
     "sad": "sad1",
+    "reprimand": "reprimand1",
+    "fear": "fear1",
+    "scared": "fear1",
+    "exhausted": "exhausted1",
     "calm": "relief1",
+    "relief": "relief1",
     "relieved": "relief1",
+    "dance": "dance1",
     "welcoming": "welcoming1",
     "laughing": "laughing1",
     "tired": "tired1",
     "concerned": "anxiety1",
+    "speaking": "yeah_nod",
+    "talking": "yeah_nod",
+    "yeah_nod": "yeah_nod",
+    "yeah nod": "yeah_nod",
 }
 
 
@@ -218,11 +238,50 @@ def camera_diagnostics(config: dict | None) -> str:
     )
 
 
-def play_recorded_move(config: dict | None, dataset: str, move: str) -> str:
+def play_recorded_move(config: dict | None, dataset: str, move: str, *, timeout: float = 8.0) -> str:
     dataset_path = "/".join(urllib.parse.quote(part, safe="") for part in dataset.split("/"))
     move_path = urllib.parse.quote(move, safe="")
-    _post_daemon(config, f"/api/move/play/recorded-move-dataset/{dataset_path}/{move_path}")
-    return f"Played Reachy recorded move {dataset}/{move}."
+    response = _post_daemon(config, f"/api/move/play/recorded-move-dataset/{dataset_path}/{move_path}")
+    move_uuid = str(response.get("uuid")) if isinstance(response, dict) and response.get("uuid") else None
+    completed = _wait_for_daemon_move_done(config, move_uuid, timeout=timeout)
+    suffix = "" if completed else " (daemon accepted the command but it did not report completion before timeout)"
+    return f"Played Reachy recorded move {dataset}/{move}.{suffix}"
+
+
+def play_daemon_move(config: dict | None, endpoint: str, *, timeout: float = 10.0) -> str:
+    response = _post_daemon(config, endpoint, timeout=5.0)
+    move_uuid = str(response.get("uuid")) if isinstance(response, dict) and response.get("uuid") else None
+    completed = _wait_for_daemon_move_done(config, move_uuid, timeout=timeout)
+    suffix = "" if completed else " (daemon accepted the command but it did not report completion before timeout)"
+    return f"Played Reachy daemon move {endpoint}.{suffix}"
+
+
+def goto_sleep(config: dict | None) -> str:
+    """Use the SDK/daemon's exact sleep routine."""
+    if not (config or {}).get("prefer_sdk_motion"):
+        try:
+            return play_daemon_move(config, "/api/move/play/goto_sleep", timeout=8.0)
+        except Exception as exc:
+            print(f"[reachy] daemon sleep failed, falling back to SDK: {exc}", flush=True)
+
+    _np, ReachyMini, _create_head_pose = _sdk_imports()
+    with ReachyMini(**_mini_kwargs(config, media_backend=str((config or {}).get("media_backend") or "default"))) as mini:
+        mini.goto_sleep()
+    return "Put Reachy to sleep with SDK goto_sleep()."
+
+
+def wake_up(config: dict | None) -> str:
+    """Use the SDK/daemon's exact wake routine."""
+    if not (config or {}).get("prefer_sdk_motion"):
+        try:
+            return play_daemon_move(config, "/api/move/play/wake_up", timeout=8.0)
+        except Exception as exc:
+            print(f"[reachy] daemon wake failed, falling back to SDK: {exc}", flush=True)
+
+    _np, ReachyMini, _create_head_pose = _sdk_imports()
+    with ReachyMini(**_mini_kwargs(config, media_backend=str((config or {}).get("media_backend") or "default"))) as mini:
+        mini.wake_up()
+    return "Woke Reachy with SDK wake_up()."
 
 
 def play_mood_animation(config: dict | None, mood: str) -> str:
@@ -233,8 +292,19 @@ def play_mood_animation(config: dict | None, mood: str) -> str:
     if emotion is None:
         emotion = MOOD_EMOTIONS["helpful"]
         mood_key = "helpful"
-    play_recorded_move(config, EMOTION_DATASET, emotion)
+    dataset = DANCE_DATASET if emotion in DANCE_MOVES else EMOTION_DATASET
+    play_recorded_move(config, dataset, emotion)
     return f"Played Reachy {mood_key} mood animation ({emotion})."
+
+
+def set_output_volume(config: dict | None, volume: int = 100) -> str:
+    volume = max(0, min(100, int(volume)))
+    from reachy_mini.daemon.app.routers.volume_control import create_volume_control
+
+    volume_control = create_volume_control()
+    if not volume_control.set_output_volume(volume):
+        raise RuntimeError("Reachy local volume control returned failure")
+    return f"Set Reachy output volume to {volume}%."
 
 
 def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
@@ -352,19 +422,9 @@ def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: 
                 )
                 time.sleep(0.12)
         elif name == "wake":
-            mini.goto_target(
-                head=create_head_pose(z=8, pitch=-5, degrees=True, mm=True),
-                antennas=np.deg2rad([35.0, 35.0]),
-                duration=min(duration, 1.2),
-                method="cartoon",
-            )
+            mini.wake_up()
         elif name == "sleep":
-            mini.goto_target(
-                head=create_head_pose(z=-8, pitch=10, degrees=True, mm=True),
-                antennas=np.deg2rad([-10.0, -10.0]),
-                duration=min(duration, 1.5),
-                method="minjerk",
-            )
+            mini.goto_sleep()
         else:
             return f"Error: unknown Reachy animation {name!r}. Use thinking, talking, wake, or sleep."
 
@@ -395,22 +455,11 @@ def _play_animation_via_daemon(config: dict | None, name: str, duration: float =
             time.sleep(0.2)
     elif name == "talking":
         while time.monotonic() - started < duration and not (stop and stop.is_set()):
-            t = time.monotonic() - started
-            move(ReachyPose(
-                pitch=1.6 * math.sin(t * 1.15) + 0.8 * math.sin(t * 2.2),
-                roll=1.0 * math.sin(t * 0.9 + 0.4),
-                yaw=2.6 * math.sin(t * 0.85),
-                z=1.0 * math.sin(t * 1.0 + 0.8),
-                right_antenna=16.0 + 3.5 * math.sin(t * 1.6),
-                left_antenna=16.0 + 3.5 * math.sin(t * 1.6 + 1.1),
-                duration=0.25,
-                head_mode="head_only",
-            ))
-            time.sleep(0.12)
+            play_mood_animation(config, "speaking")
     elif name == "wake":
-        move(ReachyPose(z=8.0, pitch=-5.0, right_antenna=35.0, left_antenna=35.0, duration=min(duration, 1.2)))
+        wake_up(config)
     elif name == "sleep":
-        move(ReachyPose(z=-8.0, pitch=10.0, right_antenna=-10.0, left_antenna=-10.0, duration=min(duration, 1.5)))
+        goto_sleep(config)
     else:
         return f"Error: unknown Reachy animation {name!r}. Use thinking, talking, wake, or sleep."
 
@@ -494,7 +543,7 @@ def _reachy_camera_device(config: dict | None) -> str:
     by_id_dir = "/dev/v4l/by-id"
     try:
         for name in sorted(os.listdir(by_id_dir)):
-            if "Reachy_Mini_Camera" in name and "video-index0" in name:
+            if ("Reachy_Mini_Camera" in name or "Reachy" in name) and "video-index0" in name:
                 return os.path.join(by_id_dir, name)
     except OSError:
         pass
@@ -523,8 +572,10 @@ def _capture_image_with_ffmpeg(config: dict | None) -> tuple[str, str]:
             "-y",
             "-f",
             "v4l2",
+            "-input_format",
+            str(config.get("camera_input_format") or os.environ.get("REACHY_CAMERA_INPUT_FORMAT") or "mjpeg"),
             "-video_size",
-            str(config.get("camera_video_size") or "1920x1080"),
+            str(config.get("camera_video_size") or os.environ.get("REACHY_CAMERA_VIDEO_SIZE") or "3840x2592"),
             "-i",
             device,
             "-frames:v",
@@ -611,6 +662,7 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
 
 async def run_animation_background(config: dict | None, name: str, stop: asyncio.Event) -> None:
     try:
-        await asyncio.to_thread(play_animation, config, name, 60.0, stop)
+        while not stop.is_set():
+            await asyncio.to_thread(play_animation, config, name, 8.0, stop)
     except Exception as exc:
         print(f"[reachy] animation failed: {exc}", flush=True)

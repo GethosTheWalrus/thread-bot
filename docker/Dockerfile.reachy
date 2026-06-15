@@ -7,6 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
     LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    alsa-utils \
     build-essential \
     ca-certificates \
     curl \
@@ -29,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     python3-cairo \
     python3-gi \
+    v4l-utils \
     gstreamer1.0-alsa \
     gstreamer1.0-libav \
     gstreamer1.0-nice \

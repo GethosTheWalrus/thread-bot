@@ -332,6 +332,23 @@ class RunThreadWorkflow:
         reachy_speech_handle = None
 
         try:
+            initial_reachy_config = dict(llm_config.get("reachy") or {})
+            if self._reachy_enabled_for_thread(llm_config, thread_id) and initial_reachy_config.get("speech_enabled", True):
+                reachy_task_queue = initial_reachy_config.get("task_queue") or "reachy-local"
+                reachy_speech_handle = await workflow.start_child_workflow(
+                    ReachySpeechWorkflow.run,
+                    {
+                        "thread_id": thread_id,
+                        "parent_workflow_id": workflow.info().workflow_id,
+                        "llm_config": llm_config,
+                        "reachy": initial_reachy_config,
+                        "start_thinking": True,
+                    },
+                    id=f"reachy-speech-{workflow.info().workflow_id}",
+                    task_queue=reachy_task_queue,
+                    parent_close_policy=ParentClosePolicy.ABANDON,
+                )
+
             # ── Get chat history ─────────────────────────────────────────
             chat_history = await execute_activity(
                 get_messages,
@@ -663,6 +680,8 @@ class RunThreadWorkflow:
                                         "thinking", "talking", "wake", "sleep", "helpful", "cheerful", "excited",
                                         "grateful", "proud", "thoughtful", "curious", "surprised", "confused",
                                         "sad", "calm", "relieved", "welcoming", "laughing", "tired", "concerned",
+                                        "loving", "yes", "no", "boredom", "anxiety", "downcast", "reprimand",
+                                        "fear", "exhausted", "relief", "dance", "yeah_nod",
                                     ],
                                 },
                                 "duration": {"type": "number", "description": "Animation duration in seconds. Defaults to 3."},
@@ -1058,8 +1077,6 @@ class RunThreadWorkflow:
             tool_summary = "\n".join(tool_summary_lines)
 
             system_parts = []
-            if custom_system_prompt:
-                system_parts.append(custom_system_prompt)
 
             # Inject system message when tools are available
             if openai_tools:
@@ -1069,6 +1086,18 @@ class RunThreadWorkflow:
                     "Gather information, verify it, and refine your answer "
                     "before providing a final response. You may call multiple tools in sequence.\n\n"
                     f"{tool_summary}"
+                )
+            reachy_config = dict(llm_config.get("reachy") or {})
+            if reachy_config.get("enabled") and reachy_config.get("speech_enabled", True):
+                system_parts.append(
+                    "This response is for Reachy Mini voice output. Use plain text only. "
+                    "Do not use Markdown formatting, bold/italic markers, bullet markers, tables, code fences, or emoji. "
+                    "Prefer short spoken sentences."
+                )
+            if custom_system_prompt:
+                system_parts.append(
+                    "Highest priority thread-specific instructions:\n"
+                    f"{custom_system_prompt}"
                 )
 
             if system_parts:
@@ -1091,21 +1120,6 @@ class RunThreadWorkflow:
             agent_llm_config = dict(llm_config)
             agent_llm_config["tool_inventory"] = tool_summary
             reachy_config = agent_llm_config.get("reachy") or {}
-            if self._reachy_enabled_for_thread(agent_llm_config, thread_id) and reachy_config.get("speech_enabled", True):
-                reachy_task_queue = reachy_config.get("task_queue") or "reachy-local"
-                reachy_speech_handle = await workflow.start_child_workflow(
-                    ReachySpeechWorkflow.run,
-                    {
-                        "thread_id": thread_id,
-                        "parent_workflow_id": workflow.info().workflow_id,
-                        "llm_config": agent_llm_config,
-                        "reachy": reachy_config,
-                    },
-                    id=f"reachy-speech-{workflow.info().workflow_id}",
-                    task_queue=reachy_task_queue,
-                    parent_close_policy=ParentClosePolicy.ABANDON,
-                )
-                await reachy_speech_handle.signal("start_thinking")
             discord_config = agent_llm_config.get("discord") or {}
             discord_instruction = ""
             if discord_config.get("enabled"):
@@ -1117,11 +1131,21 @@ class RunThreadWorkflow:
                 )
 
             tool_inventory_instruction = f"\n\n{tool_summary}" if tool_summary else ""
-            custom_system_instruction = f"{custom_system_prompt}\n\n" if custom_system_prompt else ""
+            reachy_voice_instruction = ""
+            if reachy_config.get("enabled") and reachy_config.get("speech_enabled", True):
+                reachy_voice_instruction = (
+                    "\n\nThis response is for Reachy Mini voice output. Use plain text only. "
+                    "Do not use Markdown formatting, bold/italic markers, bullet markers, tables, code fences, or emoji. "
+                    "Prefer short spoken sentences."
+                )
+            custom_system_instruction = (
+                "\n\nHighest priority thread-specific instructions:\n"
+                f"{custom_system_prompt}"
+                if custom_system_prompt else ""
+            )
             agent = Agent(
                 name="ThreadBot",
                 instructions=(
-                    f"{custom_system_instruction}"
                     "You are a helpful assistant. Use tools as many times as needed to thoroughly "
                     "answer the user's question. Gather information, verify it, and refine your "
                     "answer before providing a final response. When user messages include Image attachment URLs, "
@@ -1149,6 +1173,8 @@ class RunThreadWorkflow:
                     "Include the generated video link in your final response."
                     f"{discord_instruction}"
                     f"{tool_inventory_instruction}"
+                    f"{reachy_voice_instruction}"
+                    f"{custom_system_instruction}"
                 ),
                 model=encode_agents_model_config(agent_llm_config),
                 model_settings=self._agent_model_settings(agent_llm_config),
@@ -1288,6 +1314,10 @@ class RunThreadWorkflow:
 
             if reachy_speech_handle:
                 await reachy_speech_handle.signal("finish")
+                try:
+                    await reachy_speech_handle.result()
+                except Exception:
+                    workflow.logger.exception("Reachy speech workflow failed while finishing")
 
             # ── Save final assistant response ────────────────────────────
             await execute_activity(
