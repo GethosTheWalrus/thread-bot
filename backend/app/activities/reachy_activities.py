@@ -359,9 +359,20 @@ async def synthesize_and_speak_reachy_text(args: dict) -> dict:
     pcm_sample_width = 0
     total_samples = 0
 
+    sanitize_for_tts = bool(args.get("sanitize_for_tts", True))
+
     for idx, text in enumerate(chunks, start=1):
-        heartbeat({"step": "reachy_speech_tts", "chunk": idx, "chars": len(text)})
-        audio_result = await _synthesize_speech_audio(text, llm_config, {"audio_format": "wav"})
+        tts_text = text
+        if sanitize_for_tts:
+            from app.text_sanitize import strip_markdown_for_tts
+            tts_text = strip_markdown_for_tts(text) or text
+        if tts_text != text:
+            print(
+                f"[reachy-speech] sanitized chunk {idx}: {len(text)} -> {len(tts_text)} chars",
+                flush=True,
+            )
+        heartbeat({"step": "reachy_speech_tts", "chunk": idx, "chars": len(tts_text)})
+        audio_result = await _synthesize_speech_audio(tts_text, llm_config, {"audio_format": "wav"})
         if isinstance(audio_result, str):
             print(f"[reachy-speech] TTS unavailable for chunk {idx}: {audio_result}", flush=True)
             return {"spoken": False, "duration": 0.0, "chunks": idx - 1, "error": audio_result}
