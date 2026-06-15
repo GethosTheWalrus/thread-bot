@@ -137,6 +137,20 @@ class ReachySpeechWorkflow:
                 workflow.logger.exception("Reachy segment speech failed")
 
         while not self._done or self._buffered or self._flush_now:
+            # Yield up front so signal deliveries and the activity result
+            # can drain into the workflow state before we re-evaluate
+            # conditions. This prevents a 2s+ replay loop where multiple
+            # wait_condition() calls back-to-back return immediately
+            # without giving the deadlock detector room to reset.
+            try:
+                await workflow.wait_condition(
+                    lambda: True,
+                    timeout=timedelta(milliseconds=1),
+                    timeout_summary="Yield before re-evaluating Reachy speech loop",
+                )
+            except asyncio.TimeoutError:
+                pass
+
             if self._flush_now:
                 self._flush_now = False
                 await _speak(self._drain(), mood=response_mood)
@@ -177,7 +191,7 @@ class ReachySpeechWorkflow:
                 try:
                     await workflow.wait_condition(
                         lambda: self._done or self._flush_now or bool(self._buffered) or not self._thinking_active,
-                        timeout=timedelta(seconds=2),
+                        timeout=timedelta(milliseconds=1),
                         timeout_summary="Yield between Reachy thinking cycles",
                     )
                 except asyncio.TimeoutError:
