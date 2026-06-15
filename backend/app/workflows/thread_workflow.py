@@ -1186,8 +1186,14 @@ class RunThreadWorkflow:
                             if raw_type in {"response.output_text.delta", "response.refusal.delta"}:
                                 delta = getattr(raw, "delta", "") or ""
                                 full_response_content += delta
-                                if delta and reachy_speech_handle:
-                                    await reachy_speech_handle.signal("add_text", delta)
+                                # Reachy is buffered in the ReachySpeechWorkflow and
+                                # speaks the final response in one segment. We do not
+                                # signal per-token deltas because the signal-per-token
+                                # pattern produces hundreds of events per turn, which
+                                # then forces the speech workflow to replay through
+                                # them on every workflow task and trips the
+                                # TMPRL1101 deadlock detector. The final text is
+                                # delivered after streaming completes (see below).
                             elif raw_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
                                 reasoning_buffer += getattr(raw, "delta", "") or ""
                             elif raw_type == "response.completed":
@@ -1278,8 +1284,6 @@ class RunThreadWorkflow:
                 await self._publish_event(agent_llm_config, {"type": "thinking", "content": reasoning_buffer.strip()})
             if result.final_output and not full_response_content:
                 await self._publish_event(agent_llm_config, {"type": "text", "content": str(result.final_output)})
-                if reachy_speech_handle:
-                    await reachy_speech_handle.signal("add_text", str(result.final_output))
 
             missing_image_markdown = await execute_activity(
                 generated_images_for_latest_turn,
@@ -1292,7 +1296,13 @@ class RunThreadWorkflow:
                 await self._publish_event(agent_llm_config, {"type": "token", "content": image_block})
 
             if reachy_speech_handle:
-                await reachy_speech_handle.signal("finish")
+                # Send the full LLM response text in the finish signal so the
+                # Reachy speech workflow can speak it as one segment. We do
+                # NOT signal per-token deltas (see comment above) because
+                # that pattern produces hundreds of events that force the
+                # speech workflow to replay through them on every task.
+                final_text = (llm_response or "").strip() or (full_response_content or "").strip()
+                await reachy_speech_handle.signal("finish", final_text)
                 try:
                     await reachy_speech_handle.result()
                 except Exception:

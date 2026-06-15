@@ -220,12 +220,29 @@ async def play_reachy_mood(args: dict) -> dict:
 
     print(f"[reachy-mood] playing mood: {mood}", flush=True)
     heartbeat({"step": "reachy_mood", "mood": mood})
+
+    # The blocking call below can take 6+ seconds on a busy daemon. Heartbeat
+    # every 5s in a background task so the workflow's 10s heartbeat_timeout
+    # does not trip while the move is still in flight.
+    stop_heartbeat = asyncio.Event()
+
+    async def _heartbeat_loop() -> None:
+        while not stop_heartbeat.is_set():
+            try:
+                await asyncio.wait_for(stop_heartbeat.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                heartbeat({"step": "reachy_mood_running", "mood": mood})
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
     try:
         message = await asyncio.to_thread(play_mood_animation, reachy_config, mood)
     except Exception as exc:
         error = f"Reachy mood animation failed: {exc}"
         print(f"[reachy-mood] {error}", flush=True)
         return {"played": False, "mood": mood, "error": error}
+    finally:
+        stop_heartbeat.set()
+        await heartbeat_task
     print(f"[reachy-mood] {message}", flush=True)
     return {"played": True, "mood": mood, "message": message}
 
