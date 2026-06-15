@@ -10,29 +10,35 @@ from temporalio.workflow import defn, execute_activity, init, run, signal
 
 @defn
 class ReachySpeechWorkflow:
-    """Incremental speech sink for a single Reachy response.
+    """Single-shot speech sink for one Reachy response.
 
-    The parent ThreadBot workflow signals token chunks here. This workflow runs
-    on the local Reachy task queue and turns complete phrases into local speech
-    activities, so speech can begin before the final LLM response is complete.
+    The parent ThreadBot workflow signals token deltas to ``add_text``. The
+    child buffers all of them into a single response string. When the parent
+    signals ``finish``, the workflow hands the full text to one
+    ``synthesize_and_speak_reachy_text`` activity that runs TTS for the whole
+    response, concatenates the audio, and plays it through a single Reachy
+    audio session. This avoids the per-chunk TTS round-trip, per-chunk
+    activity dispatch, and ``start_playing``/``stop_playing`` per chunk that
+    used to leave multi-second gaps between spoken pieces.
+
+    The child still plays the response mood once and runs a single ``talking``
+    persona loop for the entire combined playback, so the robot looks alive
+    while speaking.
     """
 
     @init
     def __init__(self, input: dict) -> None:
-        self._chunks: list[str] = []
+        self._buffered: list[str] = []
         self._done = False
-        self._flush_requested = False
         self._thinking_active = bool((input or {}).get("start_thinking"))
+        self._spoke = False
+        self._flush_now = False
 
     @signal
     async def add_text(self, text: str) -> None:
         if text:
-            self._chunks.append(text)
+            self._buffered.append(text)
             self._thinking_active = False
-
-    @signal
-    async def flush(self) -> None:
-        self._flush_requested = True
 
     @signal
     async def start_thinking(self) -> None:
@@ -43,41 +49,31 @@ class ReachySpeechWorkflow:
         self._thinking_active = False
 
     @signal
+    async def flush(self) -> None:
+        self._flush_now = True
+
+    @signal
     async def finish(self) -> None:
         self._done = True
         self._thinking_active = False
-        self._flush_requested = True
 
-    def _take_speakable(self, pending: str, *, force: bool = False) -> tuple[str, str]:
-        if not pending:
-            return "", ""
-        if force:
-            text = pending[:700].strip()
-            return text, pending[700:].lstrip()
-
-        split_at = -1
-        scan_limit = min(len(pending), 320)
-        for idx, char in enumerate(pending[:scan_limit]):
-            if char in ".!?\n" and idx >= 24:
-                split_at = idx + 1
-        if split_at < 0 and len(pending) < 80:
-            return "", pending
-        if split_at < 0 and len(pending) >= 220:
-            split_at = pending.rfind(" ", 0, 220)
-        if split_at < 0 and len(pending) >= 700:
-            split_at = 700
-        if split_at <= 0:
-            return "", pending
-        return pending[:split_at].strip(), pending[split_at:].lstrip()
+    def _drain(self) -> str:
+        if not self._buffered:
+            return ""
+        joined = "".join(self._buffered)
+        self._buffered = []
+        return joined
 
     @run
     async def run(self, input: dict) -> dict:
         with workflow.unsafe.imports_passed_through():
-            from app.activities.reachy_activities import play_reachy_animation, play_reachy_mood, set_reachy_volume, speak_reachy_text
+            from app.activities.reachy_activities import (
+                play_reachy_animation,
+                play_reachy_mood,
+                set_reachy_volume,
+                synthesize_and_speak_reachy_text,
+            )
 
-        pending = ""
-        spoken_chunks = 0
-        played_response_mood = False
         llm_config = input.get("llm_config") or {}
         reachy_config = input.get("reachy") or {}
         post_speech_sleep_delay = float(reachy_config.get("post_speech_sleep_delay") or 2.0)
@@ -108,63 +104,15 @@ class ReachySpeechWorkflow:
         except Exception:
             workflow.logger.exception("Reachy wake failed")
 
-        while not self._done or self._chunks or pending.strip():
-            if not self._chunks and not pending.strip():
-                if self._thinking_active:
-                    try:
-                        await execute_activity(
-                            play_reachy_mood,
-                            {"mood": "thoughtful", "reachy": reachy_config},
-                            start_to_close_timeout=timedelta(seconds=20),
-                            heartbeat_timeout=timedelta(seconds=10),
-                            retry_policy=RetryPolicy(maximum_attempts=1),
-                            summary="Play Reachy thinking persona",
-                        )
-                    except Exception:
-                        workflow.logger.exception("Reachy thinking persona failed")
-                    continue
-
-                # Idle wait — give the workflow a chance to receive more
-                # text. We use a longer wait here (60s) and rely on
-                # signals (`add_text`, `finish`, `start_thinking`) to wake
-                # the workflow early. This avoids the tight 2s poll loop
-                # that previously tripped the Temporal deadlock detector
-                # on a fast inner loop.
-                try:
-                    await workflow.wait_condition(
-                        lambda: self._done or bool(self._chunks) or self._thinking_active,
-                        timeout=timedelta(seconds=60),
-                        timeout_summary="Wait for Reachy speech text",
-                    )
-                except asyncio.TimeoutError:
-                    pass
-                # Always re-enter the while loop's top condition check;
-                # `wait_condition` has already yielded, so we're not at
-                # risk of the deadlock detector.
-            if self._chunks:
-                pending += "".join(self._chunks)
-                self._chunks.clear()
-
-            force = self._flush_requested or (self._done and not self._chunks)
-            text, pending = self._take_speakable(pending, force=force)
-            self._flush_requested = False
+        async def _speak(text: str, *, mood: str | None) -> None:
+            text = (text or "").strip()
             if not text:
-                try:
-                    await workflow.wait_condition(
-                        lambda: self._done or self._flush_requested or bool(self._chunks),
-                        timeout=timedelta(seconds=2),
-                        timeout_summary="Wait for more Reachy speech text",
-                    )
-                except asyncio.TimeoutError:
-                    pass
-                continue
-
-            if not played_response_mood:
-                played_response_mood = True
+                return
+            if mood and not self._spoke:
                 try:
                     await execute_activity(
                         play_reachy_mood,
-                        {"mood": response_mood, "reachy": reachy_config},
+                        {"mood": mood, "reachy": reachy_config},
                         start_to_close_timeout=timedelta(seconds=20),
                         heartbeat_timeout=timedelta(seconds=10),
                         retry_policy=RetryPolicy(maximum_attempts=1),
@@ -172,24 +120,53 @@ class ReachySpeechWorkflow:
                     )
                 except Exception:
                     workflow.logger.exception("Reachy response mood persona failed")
-
             try:
                 result = await execute_activity(
-                    speak_reachy_text,
-                    {"text": text, "llm_config": llm_config, "reachy": reachy_config},
-                    start_to_close_timeout=timedelta(seconds=180),
+                    synthesize_and_speak_reachy_text,
+                    {"texts": [text], "silence_between_seconds": 0.0, "llm_config": llm_config, "reachy": reachy_config},
+                    start_to_close_timeout=timedelta(seconds=600),
                     heartbeat_timeout=timedelta(seconds=30),
                     retry_policy=RetryPolicy(maximum_attempts=1),
-                    summary="Speak Reachy response chunk",
+                    summary="Synthesize and speak Reachy response segment",
                 )
                 if isinstance(result, dict) and not result.get("spoken"):
-                    workflow.logger.warning("Reachy speech chunk was not spoken: %s", result.get("error") or result)
+                    workflow.logger.warning("Reachy segment was not spoken: %s", result.get("error") or result)
+                else:
+                    self._spoke = True
             except Exception:
-                # Speech is a side effect; a robot/audio failure should not fail
-                # the ThreadBot response that already streamed to the user.
-                workflow.logger.exception("Reachy speech chunk failed")
+                workflow.logger.exception("Reachy segment speech failed")
+
+        while not self._done or self._buffered or self._flush_now:
+            if self._flush_now:
+                self._flush_now = False
+                await _speak(self._drain(), mood=response_mood)
+                self._thinking_active = True
+                continue
+
+            if self._thinking_active and not self._done:
+                try:
+                    await execute_activity(
+                        play_reachy_mood,
+                        {"mood": "thoughtful", "reachy": reachy_config},
+                        start_to_close_timeout=timedelta(seconds=20),
+                        heartbeat_timeout=timedelta(seconds=10),
+                        retry_policy=RetryPolicy(maximum_attempts=1),
+                        summary="Play Reachy thinking persona",
+                    )
+                except Exception:
+                    workflow.logger.exception("Reachy thinking persona failed")
+                continue
+
+            try:
+                await workflow.wait_condition(
+                    lambda: self._done or self._flush_now or bool(self._buffered) or self._thinking_active,
+                    timeout=timedelta(seconds=60),
+                    timeout_summary="Wait for Reachy speech text",
+                )
+            except asyncio.TimeoutError:
                 pass
-            spoken_chunks += 1
+
+        await _speak(self._drain(), mood=response_mood)
 
         if post_speech_sleep_delay > 0:
             await workflow.sleep(timedelta(seconds=post_speech_sleep_delay))
@@ -205,4 +182,4 @@ class ReachySpeechWorkflow:
         except Exception:
             workflow.logger.exception("Reachy sleep failed")
 
-        return {"spoken_chunks": spoken_chunks}
+        return {"spoken": self._spoke}

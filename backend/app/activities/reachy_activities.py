@@ -317,3 +317,125 @@ async def speak_reachy_text(args: dict) -> dict:
     print(f"[reachy-speech] played chunk in {duration:.2f}s", flush=True)
 
     return {"spoken": True, "duration": duration}
+
+
+@defn
+async def synthesize_and_speak_reachy_text(args: dict) -> dict:
+    """Synthesize all text chunks, concatenate the audio, and play it once.
+
+    Replaces per-chunk TTS + per-chunk activity round-trips so the LLM response
+    plays back as one continuous utterance. Each text chunk is still sent to
+    TTS separately (Piper HTTP is synchronous), but the resulting WAVs are
+    resampled to the SDK's output rate and concatenated with a tiny silence
+    pad between them, then played through a single ``ReachyMini`` audio
+    session. A single ``talking`` animation runs for the entire combined
+    duration.
+    """
+    import io
+    import time
+    import wave
+
+    chunks = [str(t or "").strip() for t in (args.get("texts") or []) if str(t or "").strip()]
+    silence_seconds = float(args.get("silence_between_seconds") or 0.08)
+    if not chunks:
+        return {"spoken": False, "duration": 0.0, "chunks": 0}
+
+    llm_config = args.get("llm_config") or {}
+    reachy_config = _reachy_config(args)
+    reachy_config["media_backend"] = (
+        os.environ.get("REACHY_SPEECH_MEDIA_BACKEND")
+        or os.environ.get("REACHY_MEDIA_BACKEND")
+        or reachy_config.get("media_backend")
+        or "default"
+    )
+
+    from app.activities.llm_activities import _synthesize_speech_audio
+    from app.reachy_client import run_animation_background, speak_wav
+
+    print(f"[reachy-speech] synthesizing {len(chunks)} chunks for one-shot playback", flush=True)
+    pcm_chunks: list[bytes] = []
+    pcm_sample_rate = 0
+    pcm_channels = 0
+    pcm_sample_width = 0
+    total_samples = 0
+
+    for idx, text in enumerate(chunks, start=1):
+        heartbeat({"step": "reachy_speech_tts", "chunk": idx, "chars": len(text)})
+        audio_result = await _synthesize_speech_audio(text, llm_config, {"audio_format": "wav"})
+        if isinstance(audio_result, str):
+            print(f"[reachy-speech] TTS unavailable for chunk {idx}: {audio_result}", flush=True)
+            return {"spoken": False, "duration": 0.0, "chunks": idx - 1, "error": audio_result}
+        audio, content_type, _filename = audio_result
+        if "wav" not in (content_type or "").lower():
+            error = f"TTS returned {content_type} for chunk {idx}; expected WAV."
+            print(f"[reachy-speech] {error}", flush=True)
+            return {"spoken": False, "duration": 0.0, "chunks": idx - 1, "error": error}
+
+        with wave.open(io.BytesIO(audio), "rb") as wav:
+            chunk_channels = wav.getnchannels()
+            chunk_sample_width = wav.getsampwidth()
+            chunk_sample_rate = wav.getframerate()
+            chunk_frames = wav.readframes(wav.getnframes())
+        if chunk_sample_width != 2:
+            error = f"Reachy playback requires 16-bit PCM (got sample width {chunk_sample_width})."
+            print(f"[reachy-speech] {error}", flush=True)
+            return {"spoken": False, "duration": 0.0, "chunks": idx - 1, "error": error}
+        if pcm_sample_rate == 0:
+            pcm_sample_rate = chunk_sample_rate
+            pcm_channels = chunk_channels
+            pcm_sample_width = chunk_sample_width
+        elif chunk_sample_rate != pcm_sample_rate or chunk_channels != pcm_channels:
+            error = (
+                f"TTS chunk {idx} sample params ({chunk_sample_rate}Hz, "
+                f"{chunk_channels}ch) differ from earlier ({pcm_sample_rate}Hz, "
+                f"{pcm_channels}ch); cannot concatenate without a shared rate."
+            )
+            print(f"[reachy-speech] {error}", flush=True)
+            return {"spoken": False, "duration": 0.0, "chunks": idx - 1, "error": error}
+        pcm_chunks.append(chunk_frames)
+        total_samples += len(chunk_frames) // (pcm_channels * pcm_sample_width)
+        if idx < len(chunks) and silence_seconds > 0:
+            silence_samples = int(pcm_sample_rate * silence_seconds)
+            pcm_chunks.append(b"\x00" * silence_samples * pcm_channels * pcm_sample_width)
+            total_samples += silence_samples
+
+    if not pcm_chunks:
+        return {"spoken": False, "duration": 0.0, "chunks": 0}
+
+    combined = b"".join(pcm_chunks)
+    duration = total_samples / float(pcm_sample_rate) if pcm_sample_rate else 0.0
+    print(
+        f"[reachy-speech] combined {len(chunks)} chunks into {len(combined)} bytes "
+        f"({duration:.2f}s @ {pcm_sample_rate}Hz, {pcm_channels}ch)",
+        flush=True,
+    )
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(pcm_channels)
+        out.setsampwidth(pcm_sample_width)
+        out.setframerate(pcm_sample_rate)
+        out.writeframes(combined)
+    wav_bytes = buf.getvalue()
+
+    heartbeat({"step": "reachy_speech_playback", "chunks": len(chunks), "duration": duration})
+    stop_talking = asyncio.Event()
+    talking_task = asyncio.create_task(run_animation_background(reachy_config, "talking", stop_talking))
+    started = time.monotonic()
+    try:
+        await asyncio.to_thread(speak_wav, reachy_config, wav_bytes)
+    except Exception as exc:
+        error = f"Reachy audio playback failed: {exc}"
+        print(f"[reachy-speech] {error}", flush=True)
+        return {"spoken": False, "duration": 0.0, "chunks": len(chunks), "error": error}
+    finally:
+        stop_talking.set()
+        await talking_task
+    elapsed = time.monotonic() - started
+    print(
+        f"[reachy-speech] played {len(chunks)} concatenated chunks in {elapsed:.2f}s "
+        f"(audio duration {duration:.2f}s)",
+        flush=True,
+    )
+
+    return {"spoken": True, "duration": elapsed, "audio_duration": duration, "chunks": len(chunks)}
