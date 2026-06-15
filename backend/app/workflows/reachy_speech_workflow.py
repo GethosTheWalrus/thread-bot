@@ -143,6 +143,22 @@ class ReachySpeechWorkflow:
                 self._thinking_active = True
                 continue
 
+            if self._buffered and not self._done:
+                # Buffer has text but the parent hasn't signaled finish yet.
+                # Don't speak partial responses; keep cycling the thinking
+                # persona until finish (or a flush for a tool call) arrives.
+                if self._thinking_active:
+                    self._thinking_active = False
+                try:
+                    await workflow.wait_condition(
+                        lambda: self._done or self._flush_now or not self._buffered,
+                        timeout=timedelta(seconds=60),
+                        timeout_summary="Wait for finish or flush while buffer is non-empty",
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                continue
+
             if self._thinking_active and not self._done:
                 try:
                     await execute_activity(
@@ -155,6 +171,17 @@ class ReachySpeechWorkflow:
                     )
                 except Exception:
                     workflow.logger.exception("Reachy thinking persona failed")
+                # Yield to the workflow event loop between activity calls so
+                # the deadlock detector does not trip and so we promptly
+                # notice any pending signals (add_text, finish, flush).
+                try:
+                    await workflow.wait_condition(
+                        lambda: self._done or self._flush_now or bool(self._buffered) or not self._thinking_active,
+                        timeout=timedelta(seconds=2),
+                        timeout_summary="Yield between Reachy thinking cycles",
+                    )
+                except asyncio.TimeoutError:
+                    pass
                 continue
 
             try:
