@@ -50,6 +50,7 @@ class ReachySpeechWorkflow:
         self._flush_now = bool((input or {}).get("_flush_now"))
         self._thinking_active = bool((input or {}).get("start_thinking", True))
         self._spoke = bool((input or {}).get("_spoke"))
+        self._interrupted = bool((input or {}).get("_interrupted"))
         self._thinking_mood_played = False
 
     @signal
@@ -76,6 +77,12 @@ class ReachySpeechWorkflow:
         self._thinking_active = False
         if final_text:
             self._buffered.append(final_text)
+
+    @signal
+    async def interrupt(self) -> None:
+        self._done = True
+        self._interrupted = True
+        self._thinking_active = False
 
     def _drain(self) -> str:
         if not self._buffered:
@@ -243,6 +250,7 @@ class ReachySpeechWorkflow:
                     "_phase": "speaking",
                     "_text": text,
                     "_spoke": self._spoke,
+                    "_interrupted": self._interrupted,
                     "llm_config": llm_config,
                     "reachy": reachy_config,
                     "post_speech_sleep_delay": post_speech_sleep_delay,
@@ -261,8 +269,9 @@ class ReachySpeechWorkflow:
     ) -> dict:
         text = input.get("_text", "")
         spoke = bool(input.get("_spoke"))
+        interrupted = bool(input.get("_interrupted"))
 
-        if text:
+        if text and not interrupted:
             if not spoke:
                 try:
                     await execute_activity(
@@ -290,7 +299,7 @@ class ReachySpeechWorkflow:
             except Exception:
                 workflow.logger.exception("Reachy speech failed")
 
-        if post_speech_sleep_delay > 0:
+        if post_speech_sleep_delay > 0 and not interrupted:
             await workflow.sleep(timedelta(seconds=post_speech_sleep_delay))
         try:
             await execute_activity(

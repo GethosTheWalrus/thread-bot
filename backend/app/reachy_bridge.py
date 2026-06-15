@@ -777,7 +777,9 @@ async def _resolve_bound_thread_id(args: argparse.Namespace) -> str | None:
     return str(reachy_config.get("thread_id") or os.environ.get("REACHY_THREAD_ID") or "").strip() or None
 
 
-async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_first_token=None) -> str:
+async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -> tuple[object, str]:
+    """Save the user message, start the Temporal workflow, and return
+    (workflow_handle, speech_workflow_id). Does NOT wait for the result."""
     await _save_user_message(thread_id, prompt)
 
     llm_config = get_llm_config().copy()
@@ -789,7 +791,6 @@ async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_
     }
     llm_config["stream_batch_chars"] = 24
 
-    # Apply per-thread LLM overrides on top of the global config.
     try:
         from uuid import UUID
         from app.database import AsyncSessionLocal
@@ -819,10 +820,16 @@ async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_
         id=workflow_id,
         task_queue=settings.TEMPORAL_TASK_QUEUE,
     )
+    speech_workflow_id = f"reachy-speech-{workflow_id}"
+    return handle, speech_workflow_id
 
+
+async def _stream_turn_response(handle, *, on_first_token=None) -> str:
+    """Stream the workflow response and return the collected text."""
+    client = await connect_temporal_client()
     response = []
     saw_token = False
-    stream = WorkflowStreamClient.create(client, workflow_id)
+    stream = WorkflowStreamClient.create(client, handle.id)
     result_task = asyncio.create_task(handle.result())
     try:
         async for item in stream.subscribe(None, result_type=dict):
@@ -842,9 +849,97 @@ async def _run_thread_turn(thread_id: str, prompt: str, reachy_config: dict, on_
             if result_task.done():
                 break
     finally:
-        await result_task
+        try:
+            await result_task
+        except Exception:
+            pass
     print("", flush=True)
     return "".join(response).strip()
+
+
+async def _stream_turn_response(client, workflow_id: str, handle, *, on_first_token=None) -> AsyncIterator[str]:
+    """Yield response text deltas from a running workflow stream."""
+    response = []
+    saw_token = False
+    stream = WorkflowStreamClient.create(client, workflow_id)
+    result_task = asyncio.create_task(handle.result())
+    try:
+        async for item in stream.subscribe(None, result_type=dict):
+            if item.topic == "threadbot-model-events":
+                raw = item.data
+                if raw.get("type") == "response.output_text.delta" and raw.get("delta"):
+                    if not saw_token and on_first_token:
+                        saw_token = True
+                        await on_first_token()
+                    response.append(raw["delta"])
+                    yield raw["delta"]
+            elif item.topic == "events":
+                event = item.data
+                if event.get("type") in {"tool_call", "tool_result", "thinking"}:
+                    label = event.get("tool") or event.get("content") or event.get("type")
+                    print(f"\n[reachy] {event.get('type')}: {str(label)[:180]}", flush=True)
+            if result_task.done():
+                break
+    finally:
+        try:
+            await result_task
+        except Exception:
+            pass
+
+
+async def _interrupt_active_turn(workflow_handle, speech_workflow_id: str | None, reachy_config: dict) -> None:
+    """Interrupt an active Reachy turn: signal the speech workflow to stop
+    cleanly, then cancel the parent workflow."""
+    client = await connect_temporal_client()
+    if speech_workflow_id:
+        try:
+            from app.workflows.reachy_speech_workflow import ReachySpeechWorkflow
+            speech_handle = client.get_workflow_handle_for(
+                ReachySpeechWorkflow.run,
+                workflow_id=speech_workflow_id,
+            )
+            await speech_handle.signal("interrupt")
+            print("[reachy] Sent interrupt signal to speech workflow", flush=True)
+        except Exception as exc:
+            print(f"[reachy] Failed to signal speech workflow interrupt: {exc}", flush=True)
+    if workflow_handle:
+        try:
+            await workflow_handle.cancel()
+            print("[reachy] Cancelled parent workflow", flush=True)
+        except Exception as exc:
+            print(f"[reachy] Failed to cancel parent workflow: {exc}", flush=True)
+    try:
+        from app.reachy_client import play_animation
+        await asyncio.to_thread(play_animation, reachy_config, "sleep", 1.0)
+    except Exception:
+        pass
+
+
+async def _detect_rewake(args: argparse.Namespace, wake_word: str, reachy_config: dict) -> str | None:
+    """Listen for a re-wake while a turn is active. Returns the new prompt
+    if a wake word is detected, or None if the detection times out or fails.
+    During an active turn the Reachy mic may be in use by the speech
+    workflow for playback; this uses whatever mic the transcriber currently
+    has. Detection failures are non-fatal — the caller will retry."""
+    if args.voice:
+        transcriber = getattr(args, "voice_transcriber", None)
+        if transcriber is not None and args.wake_detector == "openwakeword":
+            try:
+                detected = await transcriber.detect_wake_once(
+                    args.openwakeword_model,
+                    float(args.openwakeword_threshold),
+                    float(args.openwakeword_window_seconds),
+                )
+                if detected:
+                    transcript = await transcriber.read_once(post_wake=True)
+                    prompt = _strip_wake_word(transcript or "", wake_word)
+                    return prompt if prompt else transcript.strip() if transcript else ""
+            except Exception as exc:
+                print(f"[reachy] Re-wake detection error: {exc}", flush=True)
+            return None
+    # For non-voice modes, just wait and return None (no re-wake possible)
+    await asyncio.sleep(5.0)
+    return None
 
 
 async def _speak_response(text: str, reachy_config: dict) -> None:
@@ -1008,7 +1103,66 @@ async def run_bridge(args: argparse.Namespace) -> None:
             except Exception as exc:
                 print(f"[reachy] Failed to reacquire Reachy media before response: {exc}", flush=True)
         robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, False, robot_sleeping)
-        response = await _run_thread_turn(thread_id, prompt, turn_reachy_config)
+
+        # Start the turn workflow and get handles immediately so we can
+        # interrupt if the user re-wakes during thinking/speaking.
+        try:
+            workflow_handle, speech_workflow_id = await _start_thread_turn(thread_id, prompt, turn_reachy_config)
+        except Exception as exc:
+            print(f"[reachy] Failed to start turn: {exc}", flush=True)
+            robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, True, robot_sleeping)
+            continue
+
+        # Stream the response concurrently with re-wake detection.
+        stream_task = asyncio.create_task(
+            _stream_turn_response(workflow_handle),
+            name="reachy-stream",
+        )
+        rewake_prompt = None
+
+        while not stream_task.done():
+            rewake_task = asyncio.create_task(
+                _detect_rewake(args, wake_word, turn_reachy_config),
+                name="reachy-rewake",
+            )
+            done, pending = await asyncio.wait(
+                [stream_task, rewake_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in done:
+                if t is stream_task:
+                    rewake_task.cancel()
+                    try:
+                        await rewake_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                elif t is rewake_task:
+                    try:
+                        new_prompt = rewake_task.result()
+                    except Exception:
+                        new_prompt = None
+                    if new_prompt is not None:
+                        rewake_prompt = new_prompt
+                        print("[reachy] Re-wake detected during active turn — interrupting", flush=True)
+                        await _interrupt_active_turn(workflow_handle, speech_workflow_id, turn_reachy_config)
+                        stream_task.cancel()
+                        try:
+                            await stream_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, True, robot_sleeping)
+                        break
+
+        if rewake_prompt is not None:
+            prompt = rewake_prompt
+            continue
+
+        try:
+            response = stream_task.result()
+        except Exception as exc:
+            print(f"[reachy] Turn failed: {exc}", flush=True)
+            robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, True, robot_sleeping)
+            continue
 
         if args.direct_speak:
             await _speak_response(response, turn_reachy_config)
