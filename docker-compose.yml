@@ -249,3 +249,4 @@ volumes:
 networks:
   chatbot-network:
     driver: bridge
+
