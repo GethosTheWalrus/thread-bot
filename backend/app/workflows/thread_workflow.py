@@ -1076,42 +1076,8 @@ class RunThreadWorkflow:
             ]
             tool_summary = "\n".join(tool_summary_lines)
 
-            system_parts = []
-
-            # Inject system message when tools are available
-            if openai_tools:
-                system_parts.append(
-                    "You are a helpful assistant with access to tools. "
-                    "Use tools as many times as needed to thoroughly answer the user's question. "
-                    "Gather information, verify it, and refine your answer "
-                    "before providing a final response. You may call multiple tools in sequence.\n\n"
-                    f"{tool_summary}"
-                )
             reachy_config = dict(llm_config.get("reachy") or {})
-            if reachy_config.get("enabled") and reachy_config.get("speech_enabled", True):
-                system_parts.append(
-                    "This response is for Reachy Mini voice output. Use plain text only. "
-                    "Do not use Markdown formatting, bold/italic markers, bullet markers, tables, code fences, or emoji. "
-                    "Prefer short spoken sentences."
-                )
-            if custom_system_prompt:
-                system_parts.append(
-                    "Highest priority thread-specific instructions:\n"
-                    f"{custom_system_prompt}"
-                )
-
-            if system_parts:
-                system_instructions = "\n\n".join(system_parts)
-                if current_messages and current_messages[0].get("role") == "system":
-                    current_messages[0] = {
-                        **current_messages[0],
-                        "content": f"{system_instructions}\n\n{current_messages[0].get('content') or ''}",
-                    }
-                else:
-                    current_messages.insert(0, {
-                        "role": "system",
-                        "content": system_instructions,
-                    })
+            is_reachy_voice_turn = reachy_config.get("enabled") and reachy_config.get("speech_enabled", True)
 
             # The OpenAI Agents SDK drives the loop inside the workflow. The
             # OpenAIAgentsPlugin turns model calls into Temporal activities,
@@ -1119,7 +1085,6 @@ class RunThreadWorkflow:
             # normal Temporal activity for per-tool history and retries.
             agent_llm_config = dict(llm_config)
             agent_llm_config["tool_inventory"] = tool_summary
-            reachy_config = agent_llm_config.get("reachy") or {}
             discord_config = agent_llm_config.get("discord") or {}
             discord_instruction = ""
             if discord_config.get("enabled"):
@@ -1130,52 +1095,66 @@ class RunThreadWorkflow:
                     "Respond only to the user's actual request, in a concise style appropriate for Discord."
                 )
 
-            tool_inventory_instruction = f"\n\n{tool_summary}" if tool_summary else ""
-            reachy_voice_instruction = ""
-            if reachy_config.get("enabled") and reachy_config.get("speech_enabled", True):
-                reachy_voice_instruction = (
-                    "\n\nThis response is for Reachy Mini voice output. Use plain text only. "
-                    "Do not use Markdown formatting, bold/italic markers, bullet markers, tables, code fences, or emoji. "
-                    "Prefer short spoken sentences."
+            # The agent's `instructions` is the single source of truth for the
+            # system prompt. Order matters: most important / most specific
+            # constraints first, general capabilities last, so small local
+            # models weight the user's intent and the voice format correctly.
+            instructions_parts: list[str] = []
+            if custom_system_prompt:
+                instructions_parts.append(
+                    "Highest priority thread-specific instructions (follow these over any other guidance below):\n"
+                    f"{custom_system_prompt}"
                 )
-            custom_system_instruction = (
-                "\n\nHighest priority thread-specific instructions:\n"
-                f"{custom_system_prompt}"
-                if custom_system_prompt else ""
+            if is_reachy_voice_turn:
+                instructions_parts.append(
+                    "This response is for Reachy Mini voice output. "
+                    "Output the literal words you want the robot to say — nothing else. "
+                    "HARD RULES: no Markdown formatting, no asterisks or underscores "
+                    "for bold/italic, no leading '#' headings, no '-' or '*' bullet "
+                    "markers, no numbered lists, no tables, no backticks or code fences, "
+                    "no LaTeX, no blockquotes, no emoji, and no action markers like "
+                    "*smiles* or *waves*. Speak in short, natural spoken sentences. "
+                    "If you would normally use a list, write it as a single connected "
+                    "sentence with 'and' or commas. If you would normally use a heading, "
+                    "just start the sentence directly."
+                )
+            instructions_parts.append(
+                "You are a helpful assistant. Use tools as many times as needed to thoroughly "
+                "answer the user's question. Gather information, verify it, and refine your "
+                "answer before providing a final response. When user messages include Image attachment URLs, "
+                "call describe_image before answering questions that depend on visual content; use the tool "
+                "result rather than guessing from the filename or URL. "
+                "When webpage visual content matters, call web_fetch with include_images=true, then call "
+                "describe_image for the relevant image URLs before answering. "
+                "When the user asks to create an image, call generate_image and include the generated "
+                "image link or markdown in your final response. Use iterate_image_generation instead "
+                "when the user wants refinement, precision, iteration, or the best possible match. Choose "
+                "the image tool style_preset that best matches the user's requested medium or intent; use "
+                "auto only when the user's prompt already clearly specifies the visual style. Never say you "
+                "called an image tool or list tool names as a substitute for making the structured tool call. "
+                "When the user asks to create a video, call generate_video. This is the only video tool and handles every case: "
+                "text-to-video, image-to-video (when image_url or image_base64 is provided), and full audio/video (when dialogue, "
+                "ambient_prompt, or sound_effects are provided — in which case ThreadBot synthesizes TTS speech, optionally runs the "
+                "ComfyUI lip-sync stage so the character's mouth moves with the spoken line, generates an ambient/Foley sound bed, "
+                "and muxes the result with ffmpeg). When the scene implies sound (a character speaking, ambient environments, "
+                "ordering coffee, walking outside, combat, etc.) pass the appropriate audio fields so the video is not silent. "
+                "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not claim this "
+                "capability is unavailable and do not recommend external talking-head services instead of using the tool. "
+                "To control video length, say 'a 10 second video' or 'for 8s' in the prompt or pass duration_seconds; the worker "
+                "auto-derives frames = ceil(duration*fps)+1 and clamps to the configured max (default 20s at 16fps = 320 frames). "
+                "Explicit per-call frames/fps/width/height/steps/cfg are still honored but clamped to the same caps. "
+                "Include the generated video link in your final response."
+                f"{discord_instruction}"
             )
+            if tool_summary:
+                instructions_parts.append(
+                    "Available tools for this thread:\n"
+                    f"{tool_summary}"
+                )
+
             agent = Agent(
                 name="ThreadBot",
-                instructions=(
-                    "You are a helpful assistant. Use tools as many times as needed to thoroughly "
-                    "answer the user's question. Gather information, verify it, and refine your "
-                    "answer before providing a final response. When user messages include Image attachment URLs, "
-                    "call describe_image before answering questions that depend on visual content; use the tool "
-                    "result rather than guessing from the filename or URL. "
-                    "When webpage visual content matters, call web_fetch with include_images=true, then call "
-                    "describe_image for the relevant image URLs before answering. "
-                    "When the user asks to create an image, call generate_image and include the generated "
-                    "image link or markdown in your final response. Use iterate_image_generation instead "
-                    "when the user wants refinement, precision, iteration, or the best possible match. Choose "
-                    "the image tool style_preset that best matches the user's requested medium or intent; use "
-                    "auto only when the user's prompt already clearly specifies the visual style. Never say you "
-                    "called an image tool or list tool names as a substitute for making the structured tool call. "
-                    "When the user asks to create a video, call generate_video. This is the only video tool and handles every case: "
-                    "text-to-video, image-to-video (when image_url or image_base64 is provided), and full audio/video (when dialogue, "
-                    "ambient_prompt, or sound_effects are provided — in which case ThreadBot synthesizes TTS speech, optionally runs the "
-                    "ComfyUI lip-sync stage so the character's mouth moves with the spoken line, generates an ambient/Foley sound bed, "
-                    "and muxes the result with ffmpeg). When the scene implies sound (a character speaking, ambient environments, "
-                    "ordering coffee, walking outside, combat, etc.) pass the appropriate audio fields so the video is not silent. "
-                    "ThreadBot has a configured local ComfyUI + Wan lip-sync stage, local TTS, and ffmpeg muxing; do not claim this "
-                    "capability is unavailable and do not recommend external talking-head services instead of using the tool. "
-                    "To control video length, say 'a 10 second video' or 'for 8s' in the prompt or pass duration_seconds; the worker "
-                    "auto-derives frames = ceil(duration*fps)+1 and clamps to the configured max (default 20s at 16fps = 320 frames). "
-                    "Explicit per-call frames/fps/width/height/steps/cfg are still honored but clamped to the same caps. "
-                    "Include the generated video link in your final response."
-                    f"{discord_instruction}"
-                    f"{tool_inventory_instruction}"
-                    f"{reachy_voice_instruction}"
-                    f"{custom_system_instruction}"
-                ),
+                instructions="\n\n".join(instructions_parts),
                 model=encode_agents_model_config(agent_llm_config),
                 model_settings=self._agent_model_settings(agent_llm_config),
                 tools=self._agent_tools(
