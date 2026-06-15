@@ -81,7 +81,9 @@ class RunThreadWorkflow:
         if not reachy_config.get("enabled"):
             return False
         configured_thread = str(reachy_config.get("thread_id") or "").strip()
-        return not configured_thread or configured_thread == str(thread_id)
+        if not configured_thread:
+            return False
+        return configured_thread == str(thread_id)
 
     async def _execute_reachy_tool(
         self,
@@ -1077,7 +1079,7 @@ class RunThreadWorkflow:
             tool_summary = "\n".join(tool_summary_lines)
 
             reachy_config = dict(llm_config.get("reachy") or {})
-            is_reachy_voice_turn = reachy_config.get("enabled") and reachy_config.get("speech_enabled", True)
+            is_reachy_voice_turn = self._reachy_enabled_for_thread(llm_config, thread_id) and reachy_config.get("speech_enabled", True)
 
             # The OpenAI Agents SDK drives the loop inside the workflow. The
             # OpenAIAgentsPlugin turns model calls into Temporal activities,
