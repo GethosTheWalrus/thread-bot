@@ -16,6 +16,38 @@ with workflow.unsafe.imports_passed_through():
     from app.agents_provider import encode_agents_model_config
 
 
+_REACHY_TOOL_ANNOUNCEMENTS = {
+    "duckduckgo_search": "Searching the web for: {query}",
+    "reachy_capture_image": "Taking a picture",
+    "web_fetch": "Checking the internet",
+    "duckduckgo_fetch": "Checking the internet",
+}
+
+_REACHY_TOOL_ANNOUNCEMENT_PREFIXES = {
+    "temporal_": "Checking Temporal",
+}
+
+
+def _reachy_tool_announcement(tool_name: str, args: str) -> str:
+    if tool_name in _REACHY_TOOL_ANNOUNCEMENTS:
+        template = _REACHY_TOOL_ANNOUNCEMENTS[tool_name]
+        if "{query}" in template:
+            try:
+                import json
+                parsed = json.loads(args or "{}")
+                query = parsed.get("query") or parsed.get("keyword") or parsed.get("search_term") or parsed.get("q") or ""
+                if query:
+                    return template.format(query=query)
+            except Exception:
+                pass
+            return template.replace(": {query}", "")
+        return template
+    for prefix, announcement in _REACHY_TOOL_ANNOUNCEMENT_PREFIXES.items():
+        if tool_name.startswith(prefix):
+            return announcement
+    return ""
+
+
 @defn
 class RunThreadWorkflow:
     """Main workflow for handling a chat interaction.
@@ -236,6 +268,9 @@ class RunThreadWorkflow:
 
             async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
                 if reachy_speech_handle:
+                    announcement = _reachy_tool_announcement(name, args)
+                    if announcement:
+                        await reachy_speech_handle.signal("announce", announcement)
                     await reachy_speech_handle.signal("flush")
                     await reachy_speech_handle.signal("start_thinking")
 

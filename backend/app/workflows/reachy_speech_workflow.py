@@ -37,6 +37,7 @@ class ReachySpeechWorkflow:
     @init
     def __init__(self, input: dict) -> None:
         self._buffered: list[str] = []
+        self._announce_queue: list[str] = []
         self._done = False
         self._flush_now = False
         self._thinking_active = bool((input or {}).get("start_thinking", True))
@@ -61,6 +62,12 @@ class ReachySpeechWorkflow:
     @signal
     async def flush(self) -> None:
         self._flush_now = True
+
+    @signal
+    async def announce(self, text: str) -> None:
+        """Queue a short TTS announcement (e.g. tool call narration)."""
+        if text:
+            self._announce_queue.append(text)
 
     @signal
     async def finish(self, final_text: str = "") -> None:
@@ -118,21 +125,19 @@ class ReachySpeechWorkflow:
             cancellation_type=ActivityCancellationType.TRY_CANCEL,
             summary=summary,
         )
-        while not handle.done():
+        try:
+            await workflow.wait_condition(
+                lambda: handle.done() or self._interrupted,
+            )
+        except asyncio.TimeoutError:
+            pass
+        if self._interrupted and not handle.done():
+            handle.cancel()
             try:
-                await workflow.wait_condition(
-                    lambda: handle.done() or self._interrupted,
-                    timeout=timedelta(seconds=1),
-                )
-            except asyncio.TimeoutError:
+                await handle
+            except (asyncio.CancelledError, Exception):
                 pass
-            if self._interrupted:
-                handle.cancel()
-                try:
-                    await handle
-                except (asyncio.CancelledError, Exception):
-                    pass
-                return None
+            return None
         try:
             return handle.result()
         except Exception:
@@ -153,14 +158,6 @@ class ReachySpeechWorkflow:
             summary="Set Reachy output volume",
             timeout=timedelta(seconds=10),
             heartbeat=timedelta(seconds=5),
-        )
-        if self._interrupted:
-            return await self._sleep_and_exit(reachy_config)
-
-        await self._run_activity(
-            play_reachy_animation,
-            {"name": "wake", "duration": 1.0, "reachy": reachy_config},
-            summary="Wake Reachy for speech turn",
         )
         if self._interrupted:
             return await self._sleep_and_exit(reachy_config)
@@ -195,6 +192,21 @@ class ReachySpeechWorkflow:
                 self._thinking_active = True
                 continue
 
+            if self._announce_queue:
+                announcements = list(self._announce_queue)
+                self._announce_queue = []
+                await self._run_activity(
+                    synthesize_and_speak_reachy_text,
+                    {"texts": announcements, "silence_between_seconds": 0.3, "llm_config": llm_config, "reachy": reachy_config},
+                    summary="Speak tool announcement",
+                    timeout=timedelta(seconds=60),
+                    heartbeat=timedelta(seconds=10),
+                )
+                if self._interrupted:
+                    return await self._sleep_and_exit(reachy_config)
+                self._thinking_mood_played = False
+                continue
+
             if self._thinking_active and not self._done:
                 if not self._thinking_mood_played:
                     await self._run_activity(
@@ -221,7 +233,7 @@ class ReachySpeechWorkflow:
                 self._thinking_active = False
                 try:
                     await workflow.wait_condition(
-                        lambda: self._done or self._flush_now or self._interrupted or not self._buffered,
+                        lambda: self._done or self._flush_now or self._interrupted or not self._buffered or bool(self._announce_queue),
                         timeout=timedelta(seconds=60),
                     )
                 except asyncio.TimeoutError:
@@ -232,7 +244,7 @@ class ReachySpeechWorkflow:
 
             try:
                 await workflow.wait_condition(
-                    lambda: self._done or self._flush_now or bool(self._buffered) or self._thinking_active or self._interrupted,
+                    lambda: self._done or self._flush_now or bool(self._buffered) or self._thinking_active or self._interrupted or bool(self._announce_queue),
                     timeout=timedelta(seconds=60),
                 )
             except asyncio.TimeoutError:
