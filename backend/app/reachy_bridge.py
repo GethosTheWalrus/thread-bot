@@ -824,7 +824,7 @@ async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -
     return handle, speech_workflow_id
 
 
-async def _stream_turn_response(handle, *, on_first_token=None) -> str:
+async def _collect_turn_response(handle, *, on_first_token=None) -> str:
     """Stream the workflow response and return the collected text."""
     client = await connect_temporal_client()
     response = []
@@ -1115,7 +1115,7 @@ async def run_bridge(args: argparse.Namespace) -> None:
 
         # Stream the response concurrently with re-wake detection.
         stream_task = asyncio.create_task(
-            _stream_turn_response(workflow_handle),
+            _collect_turn_response(workflow_handle),
             name="reachy-stream",
         )
         rewake_prompt = None
