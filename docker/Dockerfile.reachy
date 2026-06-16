@@ -3,7 +3,7 @@ FROM python:3.10-slim AS reachy
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
-    GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib64 \
+    GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64 \
     LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

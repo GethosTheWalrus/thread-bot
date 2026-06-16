@@ -8,6 +8,7 @@ variables:
   BUILDX_PLATFORMS: "linux/amd64,linux/arm64"
   BACKEND_CACHE_IMAGE: "$CI_REGISTRY_IMAGE/backend:buildcache"
   FRONTEND_CACHE_IMAGE: "$CI_REGISTRY_IMAGE/frontend:buildcache"
+  REACHY_CACHE_IMAGE: "$CI_REGISTRY_IMAGE/reachy:buildcache"
 
 workflow:
   rules:
@@ -34,7 +35,7 @@ build-backend-images:
     - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" --driver docker-container --config /tmp/buildkitd.toml
     - docker buildx inspect --bootstrap
   script:
-    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$BACKEND_CACHE_IMAGE" --cache-to type=registry,ref="$BACKEND_CACHE_IMAGE",mode=max -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" --push ./backend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$BACKEND_CACHE_IMAGE" --cache-to type=registry,ref="$BACKEND_CACHE_IMAGE",mode=max -t "$REGISTRY_IMAGE/backend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/backend:latest" -t "$REGISTRY_IMAGE/worker:$IMAGE_TAG" -t "$REGISTRY_IMAGE/worker:latest" --push ./backend
   after_script:
     - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID" || true
 
@@ -55,9 +56,38 @@ build-frontend-image:
     - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-frontend" --driver docker-container --config /tmp/buildkitd.toml
     - docker buildx inspect --bootstrap
   script:
-    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$FRONTEND_CACHE_IMAGE" --cache-to type=registry,ref="$FRONTEND_CACHE_IMAGE",mode=max -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" --push ./frontend
+    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$FRONTEND_CACHE_IMAGE" --cache-to type=registry,ref="$FRONTEND_CACHE_IMAGE",mode=max -f docker/Dockerfile.frontend -t "$REGISTRY_IMAGE/frontend:$IMAGE_TAG" -t "$REGISTRY_IMAGE/frontend:latest" --push ./frontend
   after_script:
     - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-frontend" || true
+
+build-reachy-image:
+  stage: build
+  image: docker:27
+  rules:
+    - changes:
+        - backend/requirements-reachy.txt
+        - backend/app/reachy*
+        - backend/app/activities/**
+        - backend/app/workflows/**
+        - backend/app/models/**
+        - backend/app/config.py
+        - backend/app/database/**
+        - backend/app/encryption.py
+        - backend/app/mcp_helper.py
+        - docker/Dockerfile.reachy
+        - docker-compose.yml
+        - .gitlab-ci.yml
+  before_script:
+    - docker info
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+    - docker run --privileged --rm tonistiigi/binfmt --install all
+    - printf '[registry."%s"]\n  http = true\n  insecure = true\n' "$CI_REGISTRY" > /tmp/buildkitd.toml
+    - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-reachy" --driver docker-container --config /tmp/buildkitd.toml
+    - docker buildx inspect --bootstrap
+  script:
+    - docker buildx build --platform "$BUILDX_PLATFORMS" --cache-from type=registry,ref="$REACHY_CACHE_IMAGE" --cache-to type=registry,ref="$REACHY_CACHE_IMAGE",mode=max -f docker/Dockerfile.reachy -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG" -t "$REGISTRY_IMAGE/reachy:latest" --push ./backend
+  after_script:
+    - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-reachy" || true
 
 update-k8s-images:
   stage: update-manifests
@@ -66,6 +96,8 @@ update-k8s-images:
     - job: build-backend-images
       optional: true
     - job: build-frontend-image
+      optional: true
+    - job: build-reachy-image
       optional: true
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -98,11 +130,15 @@ update-k8s-images:
 
       want_backend=0
       want_frontend=0
+      want_reachy=0
       if path_changed '^(backend/|frontend/|docker/|docker-compose\.yml$|\.gitlab-ci\.yml$)'; then
         want_backend=1
       fi
       if path_changed '^(frontend/|docker/|docker-compose\.yml$|\.gitlab-ci\.yml$)'; then
         want_frontend=1
+      fi
+      if path_changed '^(backend/requirements-reachy\.txt|backend/app/reachy|backend/app/activities|backend/app/workflows|backend/app/models|backend/app/config\.py|backend/app/database|backend/app/encryption\.py|backend/app/mcp_helper\.py|docker/Dockerfile\.reachy|docker-compose\.yml$|\.gitlab-ci\.yml$)'; then
+        want_reachy=1
       fi
 
       changed=0
@@ -113,6 +149,10 @@ update-k8s-images:
       fi
       if [ "$want_frontend" = "1" ]; then
         sed -i -E "s|image: .*/frontend:.*|image: $REGISTRY_IMAGE/frontend:$IMAGE_TAG|" k8s/deployment.yaml
+        changed=1
+      fi
+      if [ "$want_reachy" = "1" ]; then
+        sed -i -E "s|image: .*/reachy:.*|image: $REGISTRY_IMAGE/reachy:$IMAGE_TAG|" k8s/deployment.yaml
         changed=1
       fi
       if [ "$changed" = "0" ]; then
