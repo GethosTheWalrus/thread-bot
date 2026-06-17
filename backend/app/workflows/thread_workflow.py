@@ -18,9 +18,10 @@ with workflow.unsafe.imports_passed_through():
 
 _REACHY_TOOL_ANNOUNCEMENTS = {
     "duckduckgo_search": "Searching the web for: {query}",
-    "reachy_capture_image": "Taking a picture",
-    "web_fetch": "Checking the internet",
-    "duckduckgo_fetch": "Checking the internet",
+    "web_fetch": "Referencing {domain}",
+    "duckduckgo_fetch": "Referencing {domain}",
+    "search_wikipedia": "Searching Wikipedia for: {query}",
+    "get_transcript": "Scanning {title} on YouTube",
 }
 
 _REACHY_TOOL_ANNOUNCEMENT_PREFIXES = {
@@ -31,22 +32,48 @@ _REACHY_TOOL_ANNOUNCEMENT_PREFIXES = {
 def _reachy_tool_announcement(tool_name: str, args: str) -> str:
     if tool_name in _REACHY_TOOL_ANNOUNCEMENTS:
         template = _REACHY_TOOL_ANNOUNCEMENTS[tool_name]
+        try:
+            import json
+            parsed = json.loads(args or "{}")
+        except Exception:
+            parsed = {}
         if "{query}" in template:
-            try:
-                import json
-                parsed = json.loads(args or "{}")
-                query = parsed.get("query") or parsed.get("keyword") or parsed.get("search_term") or parsed.get("q") or ""
-                if query:
-                    return template.format(query=query)
-            except Exception:
-                pass
-            return template.replace(": {query}", "")
+            query = parsed.get("query") or parsed.get("keyword") or parsed.get("search_term") or parsed.get("q") or ""
+            if query:
+                return template.format(query=query)
+            return template.replace(": {query}", "").replace(" for: {query}", "").strip()
+        if "{domain}" in template:
+            url = parsed.get("url") or ""
+            if url:
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).hostname or ""
+                    if domain.startswith("www."):
+                        domain = domain[4:]
+                    if domain:
+                        return template.format(domain=domain)
+                except Exception:
+                    pass
+            return template.replace(" {domain}", "").strip()
+        if "{title}" in template:
+            # YouTube transcript tools may pass video URL, title, or query
+            title = parsed.get("title") or parsed.get("video_title") or parsed.get("query") or ""
+            url = parsed.get("url") or parsed.get("video_url") or ""
+            if not title and url:
+                try:
+                    from urllib.parse import urlparse, parse_qs
+                    qs = parse_qs(urlparse(url).query)
+                    title = qs.get("v", [""])[0]
+                except Exception:
+                    pass
+            if title:
+                return template.format(title=title)
+            return "Scanning YouTube"
         return template
     for prefix, announcement in _REACHY_TOOL_ANNOUNCEMENT_PREFIXES.items():
         if tool_name.startswith(prefix):
             return announcement
-    # Default announcement for any unmapped tool — convert tool name to spoken phrase
-    return tool_name.replace("_", " ").capitalize()
+    return ""
 
 
 @defn
