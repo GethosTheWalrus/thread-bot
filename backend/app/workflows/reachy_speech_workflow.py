@@ -20,9 +20,9 @@ class ReachySpeechWorkflow:
     """Single-phase Reachy speech workflow with interrupt support.
 
     While the parent LLM workflow is processing (thinking/tools), this
-    workflow loops the thinking persona (mood + animation). When the
-    parent signals ``finish`` with the final text, it plays the response
-    mood, speaks the text, and plays the sleep animation.
+    workflow loops the thinking persona (mood + animation) continuously.
+    When the parent signals ``finish`` with the final text, it plays the
+    response mood, speaks the text, and plays the sleep animation.
 
     The ``interrupt`` signal terminates immediately: it cancels any
     running activity via ``start_activity`` + ``ActivityHandle.cancel()``,
@@ -43,7 +43,6 @@ class ReachySpeechWorkflow:
         self._thinking_active = bool((input or {}).get("start_thinking", True))
         self._spoke = False
         self._interrupted = False
-        self._thinking_mood_played = False
 
     @signal
     async def add_text(self, text: str) -> None:
@@ -188,7 +187,6 @@ class ReachySpeechWorkflow:
                         self._spoke = True
                     if self._interrupted:
                         return await self._sleep_and_exit(reachy_config)
-                    self._thinking_mood_played = False
                 self._thinking_active = True
                 continue
 
@@ -204,19 +202,16 @@ class ReachySpeechWorkflow:
                 )
                 if self._interrupted:
                     return await self._sleep_and_exit(reachy_config)
-                self._thinking_mood_played = False
                 continue
 
             if self._thinking_active and not self._done:
-                if not self._thinking_mood_played:
-                    await self._run_activity(
-                        play_reachy_mood,
-                        {"mood": "thoughtful", "reachy": reachy_config},
-                        summary="Play Reachy thinking mood persona",
-                    )
-                    self._thinking_mood_played = True
-                    if self._interrupted:
-                        return await self._sleep_and_exit(reachy_config)
+                await self._run_activity(
+                    play_reachy_mood,
+                    {"mood": "thoughtful", "reachy": reachy_config},
+                    summary="Play Reachy thinking mood persona",
+                )
+                if self._interrupted:
+                    return await self._sleep_and_exit(reachy_config)
 
                 await self._run_activity(
                     play_reachy_animation,
@@ -255,14 +250,13 @@ class ReachySpeechWorkflow:
         # ── Speaking phase ──────────────────────────────────────────
         text = self._drain().strip()
         if text and not self._interrupted:
-            if not self._spoke:
-                await self._run_activity(
-                    play_reachy_mood,
-                    {"mood": response_mood, "reachy": reachy_config},
-                    summary="Play Reachy response mood persona",
-                )
-                if self._interrupted:
-                    return await self._sleep_and_exit(reachy_config)
+            await self._run_activity(
+                play_reachy_mood,
+                {"mood": response_mood, "reachy": reachy_config},
+                summary="Play Reachy response mood persona",
+            )
+            if self._interrupted:
+                return await self._sleep_and_exit(reachy_config)
 
             result = await self._run_activity(
                 synthesize_and_speak_reachy_text,

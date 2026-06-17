@@ -45,7 +45,8 @@ def _reachy_tool_announcement(tool_name: str, args: str) -> str:
     for prefix, announcement in _REACHY_TOOL_ANNOUNCEMENT_PREFIXES.items():
         if tool_name.startswith(prefix):
             return announcement
-    return ""
+    # Default announcement for any unmapped tool — convert tool name to spoken phrase
+    return tool_name.replace("_", " ").capitalize()
 
 
 @defn
@@ -269,6 +270,7 @@ class RunThreadWorkflow:
             async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
                 if reachy_speech_handle:
                     announcement = _reachy_tool_announcement(name, args)
+                    print(f"[reachy-tool] {name} invoked, announcement={announcement!r}", flush=True)
                     if announcement:
                         await reachy_speech_handle.signal("announce", announcement)
                     await reachy_speech_handle.signal("flush")
