@@ -128,6 +128,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: unless-stopped
@@ -170,6 +171,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: unless-stopped
@@ -241,6 +243,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
+      - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: "no"
