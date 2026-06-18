@@ -176,6 +176,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /etc/asound.conf:/etc/asound.conf:ro
+      - ./backend/app/reachy_client.py:/app/app/reachy_client.py:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     logging:
@@ -259,6 +260,7 @@ services:
       - /dev:/dev
       - /run/udev:/run/udev:ro
       - /etc/asound.conf:/etc/asound.conf:ro
+      - ./backend/app/reachy_client.py:/app/app/reachy_client.py:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     logging:
