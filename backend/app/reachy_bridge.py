@@ -582,6 +582,11 @@ class VoiceTranscriber:
                 )
                 if process.returncode not in (0, -2, -15) and stderr_text and not nonfatal_stderr:
                     print(f"[reachy] ALSA microphone capture failed: {stderr_text}", flush=True)
+            if release_media:
+                try:
+                    self.acquire_reachy_media()
+                except Exception as exc:
+                    print(f"[reachy] Reachy media reacquire after ALSA capture failed: {exc}", flush=True)
 
         if not chunks:
             if self.last_peak <= 0.0001:
