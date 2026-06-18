@@ -109,6 +109,10 @@ class VoiceTranscriber:
     last_rms: float = 0.0
     last_peak: float = 0.0
 
+    def _log_voice_chunk(self, rms: float, peak: float) -> None:
+        if os.environ.get("REACHY_VOICE_LOG_CHUNKS", "false").lower() in {"1", "true", "yes", "on"}:
+            print(f"[reachy] Voice chunk: rms={rms:.5f} peak={peak:.5f}", flush=True)
+
     def _load_model(self):
         if self._model is None:
             from faster_whisper import WhisperModel
@@ -443,7 +447,7 @@ class VoiceTranscriber:
             peak = float(np.max(np.abs(samples))) if samples.size else 0.0
             self.last_rms = rms
             self.last_peak = peak
-            print(f"[reachy] Voice chunk: rms={rms:.5f} peak={peak:.5f}", flush=True)
+            self._log_voice_chunk(rms, peak)
             elapsed += chunk_seconds
 
             is_speech = rms >= self.silence_threshold
@@ -516,10 +520,6 @@ class VoiceTranscriber:
                     str(self.sample_rate),
                     "-c",
                     str(channels),
-                    "--buffer-time",
-                    "1000000",
-                    "--period-time",
-                    "250000",
                     "-t",
                     "raw",
                 ],
@@ -541,7 +541,7 @@ class VoiceTranscriber:
                 peak = float(np.max(np.abs(samples))) if samples.size else 0.0
                 self.last_rms = rms
                 self.last_peak = peak
-                print(f"[reachy] Voice chunk: rms={rms:.5f} peak={peak:.5f}", flush=True)
+                self._log_voice_chunk(rms, peak)
                 elapsed += chunk_seconds
 
                 is_speech = rms >= self.silence_threshold
@@ -634,7 +634,7 @@ class VoiceTranscriber:
                     peak = float(np.max(np.abs(samples))) if samples.size else 0.0
                     self.last_rms = rms
                     self.last_peak = peak
-                    print(f"[reachy] Voice chunk: rms={rms:.5f} peak={peak:.5f}", flush=True)
+                    self._log_voice_chunk(rms, peak)
                     elapsed += chunk_seconds
 
                     is_speech = rms >= self.silence_threshold
