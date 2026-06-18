@@ -976,23 +976,28 @@ async def _speak_response(text: str, reachy_config: dict) -> None:
 async def _set_bridge_sleeping(reachy_config: dict, args: argparse.Namespace, sleeping: bool, current_state: bool | None) -> bool | None:
     if not args.robot_sleep_on_idle or current_state is sleeping:
         return current_state
-    from app.reachy_client import goto_sleep, wake_up
+    from app.reachy_client import goto_sleep, wake_up, _daemon_media_available
 
     action = "sleep" if sleeping else "wake"
     try:
-        def acquire_daemon_media() -> None:
-            daemon_url = str(reachy_config.get("daemon_url") or "http://127.0.0.1:8000").rstrip("/")
-            request = urllib.request.Request(f"{daemon_url}/api/media/acquire", method="POST")
-            with urllib.request.urlopen(request, timeout=4.0):
-                return
+        # Only attempt media acquire if the daemon actually has a media server
+        # (i.e. not running with --no-media). Otherwise this just wastes 4s.
+        if await asyncio.to_thread(_daemon_media_available, reachy_config):
+            def acquire_daemon_media() -> None:
+                daemon_url = str(reachy_config.get("daemon_url") or "http://127.0.0.1:8000").rstrip("/")
+                request = urllib.request.Request(f"{daemon_url}/api/media/acquire", method="POST")
+                with urllib.request.urlopen(request, timeout=4.0):
+                    return
 
-        try:
-            await asyncio.to_thread(acquire_daemon_media)
-        except Exception as exc:
-            print(f"[reachy] Failed to acquire daemon media before {action}: {exc}", flush=True)
+            try:
+                await asyncio.to_thread(acquire_daemon_media)
+            except Exception as exc:
+                print(f"[reachy] Failed to acquire daemon media before {action}: {exc}", flush=True)
         if sleeping:
+            print(f"[reachy] goto_sleep (media available={await asyncio.to_thread(_daemon_media_available, reachy_config)})", flush=True)
             await asyncio.to_thread(goto_sleep, reachy_config)
         else:
+            print(f"[reachy] wake_up (media available={await asyncio.to_thread(_daemon_media_available, reachy_config)})", flush=True)
             await asyncio.to_thread(wake_up, reachy_config)
         return sleeping
     except Exception as exc:

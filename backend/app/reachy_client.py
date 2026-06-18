@@ -666,17 +666,9 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
 
     duration = len(frames) / float(sample_rate * channels * sample_width)
     if not (config or {}).get("prefer_sdk_audio"):
-        # Check if the daemon's media system is actually available before
-        # trusting play_sound — the daemon returns 200 even when its media
-        # server failed to initialize (e.g. missing GStreamer webrtc plugin).
-        daemon_ok = True
-        try:
-            status = _post_daemon(config, "/api/media/status", timeout=3.0)
-            if isinstance(status, dict) and status.get("available") is False:
-                print("[reachy-speech] daemon media not available; using ALSA fallback", flush=True)
-                daemon_ok = False
-        except Exception:
-            daemon_ok = False
+        t0 = time.monotonic()
+        daemon_ok = _daemon_media_available(config)
+        print(f"[reachy-speech] daemon media available={daemon_ok} (check took {time.monotonic()-t0:.2f}s)", flush=True)
 
         if daemon_ok:
             sound_path = f"/tmp/reachy_speech_{os.getpid()}_{int(time.time() * 1000)}.wav"
@@ -699,18 +691,19 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
         # This works when the daemon's media server can't initialize but
         # the ALSA device is present (e.g. Pi without gst-plugins-rs).
         sound_path = f"/tmp/reachy_speech_{os.getpid()}_{int(time.time() * 1000)}.wav"
+        t1 = time.monotonic()
         try:
             with open(sound_path, "wb") as f:
                 f.write(audio)
-            import subprocess
             proc = subprocess.run(
-                ["aplay", "-q", sound_path],
+                ["aplay", "-q", "-D", "reachymini_audio_sink", sound_path],
                 capture_output=True, timeout=duration + 10,
             )
+            elapsed = time.monotonic() - t1
             if proc.returncode != 0:
-                print(f"[reachy-speech] aplay failed: {proc.stderr.decode(errors='replace').strip()}", flush=True)
+                print(f"[reachy-speech] aplay failed in {elapsed:.2f}s: {proc.stderr.decode(errors='replace').strip()}", flush=True)
             else:
-                time.sleep(max(0, duration - 0.1))
+                print(f"[reachy-speech] aplay OK in {elapsed:.2f}s (audio {duration:.2f}s)", flush=True)
             return duration
         except Exception as exc:
             print(f"[reachy-speech] ALSA fallback failed: {exc}", flush=True)
