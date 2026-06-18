@@ -115,8 +115,8 @@ services:
     profiles: ["reachy"]
     image: ${REACHY_IMAGE:-reachy-local}
     build:
-      context: ./backend
-      dockerfile: ../docker/Dockerfile.reachy
+      context: .
+      dockerfile: docker/Dockerfile.reachy
     command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 30,30 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 30 >/dev/null 2>&1 || true && exec nice -n -5 reachy-mini-daemon $${REACHY_DAEMON_ARGS:-}"
     network_mode: host
     privileged: true
@@ -141,8 +141,8 @@ services:
     profiles: ["reachy"]
     image: ${REACHY_IMAGE:-reachy-local}
     build:
-      context: ./backend
-      dockerfile: ../docker/Dockerfile.reachy
+      context: .
+      dockerfile: docker/Dockerfile.reachy
     command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 30,30 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 30 >/dev/null 2>&1 || true && exec nice -n 5 python -m app.reachy_worker"
     network_mode: host
     privileged: true
@@ -189,8 +189,8 @@ services:
     profiles: ["reachy"]
     image: ${REACHY_IMAGE:-reachy-local}
     build:
-      context: ./backend
-      dockerfile: ../docker/Dockerfile.reachy
+      context: .
+      dockerfile: docker/Dockerfile.reachy
     command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 30,30 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 30 >/dev/null 2>&1 || true && exec nice -n 10 python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
     network_mode: host
     privileged: true
