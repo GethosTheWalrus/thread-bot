@@ -258,12 +258,21 @@ def play_daemon_move(config: dict | None, endpoint: str, *, timeout: float = 10.
 
 def _daemon_media_available(config: dict | None) -> bool:
     try:
-        status = _post_daemon(config, "/api/media/status", timeout=3.0)
+        status = _get_daemon_json(config, "/api/media/status", timeout=3.0)
         if isinstance(status, dict):
             return bool(status.get("available"))
     except Exception:
         pass
     return False
+
+
+def _acquire_daemon_media(config: dict | None) -> bool:
+    try:
+        _post_daemon(config, "/api/media/acquire", timeout=8.0)
+        return True
+    except Exception as exc:
+        print(f"[reachy] daemon media acquire failed: {exc}", flush=True)
+        return False
 
 
 def _play_reachy_asset_wav(name: str) -> bool:
@@ -684,6 +693,9 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
     if not (config or {}).get("prefer_sdk_audio"):
         t0 = time.monotonic()
         daemon_ok = _daemon_media_available(config)
+        if not daemon_ok:
+            _acquire_daemon_media(config)
+            daemon_ok = _daemon_media_available(config)
         print(f"[reachy-speech] daemon media available={daemon_ok} (check took {time.monotonic()-t0:.2f}s)", flush=True)
 
         if daemon_ok:
@@ -718,6 +730,7 @@ def speak_wav(config: dict | None, audio: bytes) -> float:
             elapsed = time.monotonic() - t1
             if proc.returncode != 0:
                 print(f"[reachy-speech] aplay failed in {elapsed:.2f}s: {proc.stderr.decode(errors='replace').strip()}", flush=True)
+                raise RuntimeError("Reachy ALSA playback failed")
             else:
                 print(f"[reachy-speech] aplay OK in {elapsed:.2f}s (audio {duration:.2f}s)", flush=True)
             return duration
