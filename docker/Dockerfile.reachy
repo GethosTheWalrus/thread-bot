@@ -1,29 +1,8 @@
-FROM rust:1-slim AS gst-plugins-rs-builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    curl \
-    git \
-    libglib2.0-dev \
-    libgstreamer-plugins-bad1.0-dev \
-    libgstreamer-plugins-base1.0-dev \
-    libgstreamer1.0-dev \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN cargo install cargo-c --locked \
-    && git clone --depth 1 --branch 0.15.2 https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git /tmp/gst-plugins-rs \
-    && cd /tmp/gst-plugins-rs \
-    && cargo cinstall -p gst-plugin-webrtc --prefix=/usr \
-    && mkdir -p /opt/gst-plugin-webrtc \
-    && cp /usr/lib/*/gstreamer-1.0/libgstrswebrtc.so /opt/gst-plugin-webrtc/ \
-    && rm -rf /tmp/gst-plugins-rs /usr/local/cargo/registry /usr/local/cargo/git /usr/local/cargo/bin/cargo-c
-
 FROM python:3.10-slim AS reachy
 
 WORKDIR /app
+
+ARG TARGETARCH
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -66,14 +45,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=gst-plugins-rs-builder /opt/gst-plugin-webrtc/libgstrswebrtc.so /usr/lib/gstreamer-1.0/
+COPY docker/gst-plugins/libgstrswebrtc-${TARGETARCH}.so /usr/lib/gstreamer-1.0/libgstrswebrtc.so
 
-COPY requirements-reachy.txt .
-RUN pip install --no-cache-dir --upgrade pip wheel setuptools \
+COPY backend/requirements-reachy.txt .
+RUN pip install --no-cache-dir --no-compile --upgrade pip wheel setuptools \
     && pip install --no-cache-dir --no-compile --no-deps reachy-mini==1.8.1 libusb_package==1.0.26.1 \
     && pip install --no-cache-dir --no-compile -r requirements-reachy.txt
 
-COPY . .
+COPY backend/ .
 RUN rm -f .env
 
 CMD ["python", "-m", "app.reachy_worker"]

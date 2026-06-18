@@ -75,6 +75,7 @@ build-reachy-image:
         - backend/app/encryption.py
         - backend/app/mcp_helper.py
         - docker/Dockerfile.reachy
+        - docker/gst-plugins/**
         - docker-compose.yml
         - .gitlab-ci.yml
   before_script:
@@ -85,9 +86,9 @@ build-reachy-image:
     - docker buildx create --use --name "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-reachy" --driver docker-container --config /tmp/buildkitd.toml
     - docker buildx inspect --bootstrap
   script:
-    - docker buildx build --platform linux/amd64 --cache-from type=registry,ref="$REACHY_CACHE_IMAGE-amd64" --cache-to type=registry,ref="$REACHY_CACHE_IMAGE-amd64",mode=min -f docker/Dockerfile.reachy -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-amd64" --push ./backend
+    - docker buildx build --platform linux/amd64 --cache-from type=registry,ref="$REACHY_CACHE_IMAGE-amd64" --cache-to type=registry,ref="$REACHY_CACHE_IMAGE-amd64",mode=min -f docker/Dockerfile.reachy -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-amd64" --push .
     - docker buildx prune -af || true
-    - docker buildx build --platform linux/arm64 --cache-from type=registry,ref="$REACHY_CACHE_IMAGE-arm64" --cache-to type=registry,ref="$REACHY_CACHE_IMAGE-arm64",mode=min -f docker/Dockerfile.reachy -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-arm64" --push ./backend
+    - docker buildx build --platform linux/arm64 --cache-from type=registry,ref="$REACHY_CACHE_IMAGE-arm64" --cache-to type=registry,ref="$REACHY_CACHE_IMAGE-arm64",mode=min -f docker/Dockerfile.reachy -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-arm64" --push .
     - docker buildx imagetools create -t "$REGISTRY_IMAGE/reachy:$IMAGE_TAG" -t "$REGISTRY_IMAGE/reachy:latest" "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-amd64" "$REGISTRY_IMAGE/reachy:$IMAGE_TAG-arm64"
   after_script:
     - docker buildx rm "threadbot-builder-$CI_PROJECT_ID-$CI_PIPELINE_ID-reachy" || true
