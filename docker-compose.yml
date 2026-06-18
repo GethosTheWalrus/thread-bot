@@ -117,7 +117,7 @@ services:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile.reachy
-    command: reachy-mini-daemon
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && reachy-mini-daemon"
     network_mode: host
     privileged: true
     environment:
@@ -138,7 +138,7 @@ services:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile.reachy
-    command: python -m app.reachy_worker
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && python -m app.reachy_worker"
     network_mode: host
     privileged: true
     environment:
@@ -180,7 +180,7 @@ services:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile.reachy
-    command: sh -c "python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
     network_mode: host
     privileged: true
     stdin_open: true
@@ -251,7 +251,5 @@ volumes:
 networks:
   chatbot-network:
     driver: bridge
-
-
 
 

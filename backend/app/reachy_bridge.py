@@ -973,6 +973,16 @@ async def _set_bridge_sleeping(reachy_config: dict, args: argparse.Namespace, sl
 
     action = "sleep" if sleeping else "wake"
     try:
+        def acquire_daemon_media() -> None:
+            daemon_url = str(reachy_config.get("daemon_url") or "http://127.0.0.1:8000").rstrip("/")
+            request = urllib.request.Request(f"{daemon_url}/api/media/acquire", method="POST")
+            with urllib.request.urlopen(request, timeout=4.0):
+                return
+
+        try:
+            await asyncio.to_thread(acquire_daemon_media)
+        except Exception as exc:
+            print(f"[reachy] Failed to acquire daemon media before {action}: {exc}", flush=True)
         if sleeping:
             await asyncio.to_thread(goto_sleep, reachy_config)
         else:
