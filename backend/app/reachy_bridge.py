@@ -516,6 +516,10 @@ class VoiceTranscriber:
                     str(self.sample_rate),
                     "-c",
                     str(channels),
+                    "--buffer-time",
+                    "1000000",
+                    "--period-time",
+                    "250000",
                     "-t",
                     "raw",
                 ],
@@ -573,7 +577,10 @@ class VoiceTranscriber:
                     process.kill()
                     _stdout, stderr = process.communicate(timeout=2.0)
                 stderr_text = stderr.decode(errors="ignore").strip() if stderr else ""
-                if process.returncode not in (0, -2, -15) and stderr_text and "Interrupted system call" not in stderr_text:
+                nonfatal_stderr = "Interrupted system call" in stderr_text or (
+                    stderr_text and all("overrun!!!" in line for line in stderr_text.splitlines() if line.strip())
+                )
+                if process.returncode not in (0, -2, -15) and stderr_text and not nonfatal_stderr:
                     print(f"[reachy] ALSA microphone capture failed: {stderr_text}", flush=True)
 
         if not chunks:
