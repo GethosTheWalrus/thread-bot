@@ -518,6 +518,10 @@ class VoiceTranscriber:
         self._reboot_reachy_audio_once()
         if release_media:
             self.release_reachy_media()
+            # The daemon release endpoint can return before the USB audio path is
+            # producing valid samples for a new ALSA reader, especially on the Pi.
+            # Starting arecord immediately can produce all-zero capture windows.
+            time.sleep(float(os.environ.get("REACHY_VOICE_MEDIA_RELEASE_SETTLE_SECONDS", "0.5")))
         try:
             process = subprocess.Popen(
                 [
