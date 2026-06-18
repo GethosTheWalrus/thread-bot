@@ -130,7 +130,7 @@ services:
       - /run/udev:/run/udev:ro
       - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
-      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/tmp/pulse
     logging:
       options:
         max-size: "10m"
@@ -178,7 +178,7 @@ services:
       - /etc/asound.conf:/etc/asound.conf:ro
       - ./backend/app/reachy_client.py:/app/app/reachy_client.py:ro
       - reachy-tmp:/tmp
-      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/tmp/pulse
     logging:
       options:
         max-size: "10m"
@@ -263,7 +263,7 @@ services:
       - ./backend/app/reachy_client.py:/app/app/reachy_client.py:ro
       - ./backend/app/reachy_bridge.py:/app/app/reachy_bridge.py:ro
       - reachy-tmp:/tmp
-      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/tmp/pulse
     logging:
       options:
         max-size: "10m"
