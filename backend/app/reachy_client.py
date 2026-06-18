@@ -299,9 +299,17 @@ def goto_sleep(config: dict | None) -> str:
     """Use the SDK/daemon's exact sleep routine."""
     if not (config or {}).get("prefer_sdk_motion"):
         try:
+            media_ok = _daemon_media_available(config)
+            sound_thread = None
+            if not media_ok:
+                import threading
+                sound_thread = threading.Thread(
+                    target=_play_reachy_asset_wav, args=("go_sleep",), daemon=True
+                )
+                sound_thread.start()
             result = play_daemon_move(config, "/api/move/play/goto_sleep", timeout=8.0)
-            if not _daemon_media_available(config):
-                _play_reachy_asset_wav("go_sleep")
+            if sound_thread:
+                sound_thread.join(timeout=5.0)
             return result
         except Exception as exc:
             print(f"[reachy] daemon sleep failed, falling back to SDK: {exc}", flush=True)
@@ -316,9 +324,17 @@ def wake_up(config: dict | None) -> str:
     """Use the SDK/daemon's exact wake routine."""
     if not (config or {}).get("prefer_sdk_motion"):
         try:
+            media_ok = _daemon_media_available(config)
+            sound_thread = None
+            if not media_ok:
+                import threading
+                sound_thread = threading.Thread(
+                    target=_play_reachy_asset_wav, args=("wake_up",), daemon=True
+                )
+                sound_thread.start()
             result = play_daemon_move(config, "/api/move/play/wake_up", timeout=8.0)
-            if not _daemon_media_available(config):
-                _play_reachy_asset_wav("wake_up")
+            if sound_thread:
+                sound_thread.join(timeout=5.0)
             return result
         except Exception as exc:
             print(f"[reachy] daemon wake failed, falling back to SDK: {exc}", flush=True)
