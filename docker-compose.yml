@@ -121,13 +121,12 @@ services:
     network_mode: host
     privileged: true
     environment:
-      - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
+      - GST_PLUGIN_PATH=/usr/lib/gstreamer-1.0:/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
       - PULSE_SERVER=${PULSE_SERVER:-unix:/tmp/pulse/native}
     volumes:
       - /dev:/dev
       - /run/udev:/run/udev:ro
-      - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
       - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
@@ -164,13 +163,12 @@ services:
       - REACHY_SPEECH_MEDIA_BACKEND=${REACHY_SPEECH_MEDIA_BACKEND:-default}
       - REACHY_OUTPUT_VOLUME=${REACHY_OUTPUT_VOLUME:-100}
       - REACHY_RESPONSE_MOOD=${REACHY_RESPONSE_MOOD:-helpful}
-      - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
+      - GST_PLUGIN_PATH=/usr/lib/gstreamer-1.0:/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
       - PULSE_SERVER=${PULSE_SERVER:-unix:/tmp/pulse/native}
     volumes:
       - /dev:/dev
       - /run/udev:/run/udev:ro
-      - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
       - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
@@ -236,18 +234,16 @@ services:
       - REACHY_POST_SPEECH_SLEEP_DELAY=${REACHY_POST_SPEECH_SLEEP_DELAY:-2.0}
       - REACHY_OUTPUT_VOLUME=${REACHY_OUTPUT_VOLUME:-100}
       - REACHY_RESPONSE_MOOD=${REACHY_RESPONSE_MOOD:-helpful}
-      - GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
+      - GST_PLUGIN_PATH=/usr/lib/gstreamer-1.0:/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64
       - LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
       - PULSE_SERVER=${PULSE_SERVER:-unix:/tmp/pulse/native}
     volumes:
       - /dev:/dev
       - /run/udev:/run/udev:ro
-      - /opt/gst-plugins-rs:/opt/gst-plugins-rs:ro
       - /etc/asound.conf:/etc/asound.conf:ro
       - reachy-tmp:/tmp
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse/native:/tmp/pulse/native
     restart: "no"
-
 volumes:
   postgres-data:
   reachy-tmp:
@@ -255,8 +251,6 @@ volumes:
 networks:
   chatbot-network:
     driver: bridge
-
-
 
 
 

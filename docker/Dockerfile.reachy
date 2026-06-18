@@ -1,9 +1,29 @@
+FROM rust:1-slim AS gst-plugins-rs-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libglib2.0-dev \
+    libgstreamer-plugins-bad1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgstreamer1.0-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install cargo-c --locked
+RUN git clone --depth 1 --branch 0.15.2 https://gitlab.freedesktop.org/gstreamer/gst-plugins-rs.git /tmp/gst-plugins-rs \
+    && cd /tmp/gst-plugins-rs \
+    && cargo cinstall -p gst-plugin-webrtc --prefix=/usr
+
 FROM python:3.10-slim AS reachy
 
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
-    GST_PLUGIN_PATH=/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64 \
+    GST_PLUGIN_PATH=/usr/lib/gstreamer-1.0:/opt/gst-plugins-rs/lib/x86_64-linux-gnu:/opt/gst-plugins-rs/lib/aarch64-linux-gnu:/opt/gst-plugins-rs/lib64 \
     LD_LIBRARY_PATH=/opt/gst-plugins-rs/lib64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -40,6 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gstreamer1.0-pulseaudio \
     gstreamer1.0-tools \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=gst-plugins-rs-builder /usr/lib/*/gstreamer-1.0/libgstrswebrtc.so /usr/lib/gstreamer-1.0/
 
 COPY requirements-reachy.txt .
 RUN pip install --no-cache-dir --upgrade pip wheel setuptools \
