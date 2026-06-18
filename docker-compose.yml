@@ -117,7 +117,7 @@ services:
     build:
       context: ./backend
       dockerfile: ../docker/Dockerfile.reachy
-    command: sh -c "cp /etc/asound.conf /root/.asoundrc && exec nice -n -5 reachy-mini-daemon"
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && exec nice -n -5 reachy-mini-daemon ${REACHY_DAEMON_ARGS:---no-media}"
     network_mode: host
     privileged: true
     cpus: "${REACHY_DAEMON_CPUS:-2.0}"

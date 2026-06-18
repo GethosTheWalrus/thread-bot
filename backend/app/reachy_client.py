@@ -256,11 +256,53 @@ def play_daemon_move(config: dict | None, endpoint: str, *, timeout: float = 10.
     return f"Played Reachy daemon move {endpoint}.{suffix}"
 
 
+def _daemon_media_available(config: dict | None) -> bool:
+    try:
+        status = _post_daemon(config, "/api/media/status", timeout=3.0)
+        if isinstance(status, dict):
+            return bool(status.get("available"))
+    except Exception:
+        pass
+    return False
+
+
+def _play_reachy_asset_wav(name: str) -> bool:
+    """Play a reachy_mini asset WAV directly via aplay on the Reachy ALSA device.
+
+    Used as a fallback when the daemon runs with --no-media (no GStreamer media
+    server) so wake/sleep sounds still play on the Pi. Returns True on success.
+    """
+    import sys
+    candidates = [
+        f"/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/reachy_mini/assets/{name}.wav",
+        f"/usr/local/lib/python3.10/site-packages/reachy_mini/assets/{name}.wav",
+    ]
+    wav_path = next((p for p in candidates if os.path.exists(p)), None)
+    if not wav_path:
+        print(f"[reachy] asset {name}.wav not found in reachy_mini package", flush=True)
+        return False
+    try:
+        proc = subprocess.run(
+            ["aplay", "-q", "-D", "reachymini_audio_sink", wav_path],
+            capture_output=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            print(f"[reachy] aplay {name} failed: {proc.stderr.decode(errors='replace').strip()}", flush=True)
+            return False
+        return True
+    except Exception as exc:
+        print(f"[reachy] aplay {name} exception: {exc}", flush=True)
+        return False
+
+
 def goto_sleep(config: dict | None) -> str:
     """Use the SDK/daemon's exact sleep routine."""
     if not (config or {}).get("prefer_sdk_motion"):
         try:
-            return play_daemon_move(config, "/api/move/play/goto_sleep", timeout=8.0)
+            result = play_daemon_move(config, "/api/move/play/goto_sleep", timeout=8.0)
+            if not _daemon_media_available(config):
+                _play_reachy_asset_wav("go_sleep")
+            return result
         except Exception as exc:
             print(f"[reachy] daemon sleep failed, falling back to SDK: {exc}", flush=True)
 
@@ -274,7 +316,10 @@ def wake_up(config: dict | None) -> str:
     """Use the SDK/daemon's exact wake routine."""
     if not (config or {}).get("prefer_sdk_motion"):
         try:
-            return play_daemon_move(config, "/api/move/play/wake_up", timeout=8.0)
+            result = play_daemon_move(config, "/api/move/play/wake_up", timeout=8.0)
+            if not _daemon_media_available(config):
+                _play_reachy_asset_wav("wake_up")
+            return result
         except Exception as exc:
             print(f"[reachy] daemon wake failed, falling back to SDK: {exc}", flush=True)
 
