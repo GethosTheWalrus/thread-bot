@@ -73,6 +73,17 @@ def _strip_wake_word(text: str, wake_word: str) -> str | None:
         candidate = word.group(0).strip("' -")
         if difflib.get_close_matches(candidate, wake_aliases, n=1, cutoff=0.68):
             return text[word.end():].strip(" ,:;!?.-")
+
+    # In noisy rooms Whisper may prepend unrelated speech before the actual
+    # request. Prefer the last wake-like token so "... Reachy do X" still works.
+    last_match = None
+    for word in re.finditer(r"[a-z][a-z'\-]*", lowered, re.IGNORECASE):
+        candidate = word.group(0).strip("' -")
+        if difflib.get_close_matches(candidate, wake_aliases, n=1, cutoff=0.68):
+            last_match = word
+    if last_match is not None:
+        prompt = text[last_match.end():].strip(" ,:;!?.-")
+        return prompt or ""
     return None
 
 

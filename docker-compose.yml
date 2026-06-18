@@ -117,7 +117,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.reachy
-    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && exec nice -n -5 reachy-mini-daemon $${REACHY_DAEMON_ARGS:-}"
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=10 ${REACHY_CAPTURE_VOLUME:-60},${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && amixer -c Audio cset numid=11 ${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && exec nice -n -5 reachy-mini-daemon $${REACHY_DAEMON_ARGS:-}"
     network_mode: host
     privileged: true
     cpus: "${REACHY_DAEMON_CPUS:-2.0}"
@@ -143,7 +143,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.reachy
-    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && exec nice -n 5 python -m app.reachy_worker"
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=10 ${REACHY_CAPTURE_VOLUME:-60},${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && amixer -c Audio cset numid=11 ${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && exec nice -n 5 python -m app.reachy_worker"
     network_mode: host
     privileged: true
     cpus: "${REACHY_WORKER_CPUS:-1.0}"
@@ -191,7 +191,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.reachy
-    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && exec nice -n 10 python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
+    command: sh -c "cp /etc/asound.conf /root/.asoundrc && amixer -c Audio cset numid=5 60,60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=6 60 >/dev/null 2>&1 || true && amixer -c Audio cset numid=10 ${REACHY_CAPTURE_VOLUME:-60},${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && amixer -c Audio cset numid=11 ${REACHY_CAPTURE_VOLUME:-60} >/dev/null 2>&1 || true && exec nice -n 10 python -m app.reachy_bridge $${REACHY_BRIDGE_ARGS:---voice}"
     network_mode: host
     privileged: true
     cpus: "${REACHY_BRIDGE_CPUS:-1.5}"
