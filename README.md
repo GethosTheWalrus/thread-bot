@@ -1,133 +1,239 @@
 # ThreadBot
 
-Read the blog post about ThreadBot on my website [here](https://miketoscano.com/blog/threadbot-temporal.html)
+ThreadBot is a thread-based AI chatbot backed by **Temporal** durable workflows, a **FastAPI** backend, a **Flutter Web** frontend, and extensible tool execution through **MCP**, built-in tools, Discord, image/video generation, and optional **Reachy Mini** robot integration.
 
-ThreadBot is a thread-based AI chatbot powered by **Temporal** for robust workflow orchestration and **Model Context Protocol (MCP)** for extensible tool support.
+Read the original project write-up here: <https://miketoscano.com/blog/threadbot-temporal.html>. The codebase has evolved since that post; this README describes the current implementation.
 
-It features a responsive Flutter web interface, an asynchronous FastAPI backend, real-time token streaming via Redis pub/sub, and a context-aware memory system that automatically compacts conversation history to stay within LLM token limits.
+## Highlights
 
-## Key Features
+- **Thread-based chat**: Conversations are stored as threads with self-referencing replies for branching, automatic title generation, live sidebar updates, and per-thread metadata.
+- **Durable agent runs**: Each user turn runs as a Temporal `RunThreadWorkflow`, so long tool chains, media generation, Discord interactions, and robot speech can survive process restarts and deploys.
+- **WebSocket streaming**: The frontend sends chat requests to `/api/chat/ws` and receives structured events from Temporal workflow streams. Refresh/reconnect uses `/api/threads/{id}/ws` and Temporal stream offsets.
+- **OpenAI Agents SDK loop**: The workflow uses the OpenAI Agents SDK with a Temporal plugin for model calls. Tool callbacks dispatch Temporal activities for retries, timeouts, DB persistence, and UI event streaming.
+- **MCP tools**: Add MCP servers at runtime, discover/cached tools, pass encrypted env vars/args/registry credentials, and run tools via Docker locally or Kubernetes pods in production.
+- **Built-in tools**: Built-ins include web fetch, image description, image recipe extraction, image/video generation, context compaction helpers, current datetime, calculator, JSON parsing, text counting, and base64 encode/decode.
+- **Media support**: Users can upload images, ask vision questions, generate images through OpenAI-compatible providers or ComfyUI, iterate image generation with critique, and generate video with optional TTS, ambient audio, lip sync, and ffmpeg muxing.
+- **Context management**: Token-estimated compaction summarizes older messages into system context. The agent can also call context overview/compaction tools to compact selected topics.
+- **Per-thread controls**: Threads can override selected LLM settings such as model, provider, system prompt, context limits, vision settings, TTS settings, and media settings. Threads also have per-server/per-tool MCP overrides.
+- **Discord integration**: ThreadBot can create/sync Discord threads, answer slash commands and bot mentions, poll linked Discord threads, index Discord history, sync tool activity, copy image attachments into ThreadBot storage, and apply Discord-server MCP overrides.
+- **Reachy Mini integration**: A local Reachy profile can bind one ThreadBot thread to a robot, listen for a wake word, submit voice prompts, run local hardware tools, speak responses through a child speech workflow, and capture/describe camera images.
 
-- **Thread-Based Conversations**: Organize chats into threads with automatic title generation that updates the sidebar in real time.
-- **MCP Tool Support**: Integrate with any MCP-compatible tool server via Docker sidecars or Kubernetes pods. Tool calls and results are rendered as interactive chips with per-tool status indicators. Discovered tools are cached in the database for instant retrieval.
-- **Per-Thread Tool Overrides**: Enable or disable individual MCP tools or entire servers on a per-thread basis via an in-chat tool configuration panel. Tool-level overrides take precedence over server-level.
-- **Token-by-Token Streaming**: LLM responses stream to the UI token by token via Redis pub/sub, with progressive markdown rendering. Stream reconnect after page refresh replays buffered events seamlessly.
-- **Advanced Memory**: 
-    - **Tool Persistence**: Every tool call and result is saved to the database and replayed to the LLM across turns, maintaining full "tool memory."
-    - **Conversational Compaction**: Automated, token-aware summarization of older history to manage context window limits.
-    - **Tool Result Truncation**: Configurable truncation of large tool results for the LLM context (full results preserved in DB and UI) with LLM-aware notices.
-- **Agent Loop**: Multi-step tool execution with thinking blocks, capped at configurable max iterations (default 25). The LLM can chain multiple tool calls before producing a final response.
-- **Built-in Tools**: 8 tools that execute in-process without MCP containers: `continue_thinking` (extends reasoning), `web_fetch`, `current_datetime`, `calculator`, `json_parse`, `text_count`, `base64_encode`, `base64_decode`. Always available regardless of MCP configuration.
-- **Premium UI**: Dark-themed, Material 3 design with skeleton shimmer loaders, collapsible thinking blocks, per-chip tool pulse animations with loading spinners, expandable tool input/output blocks, response timeline visualization, context consumption donut chart, and rich markdown support.
-- **Response Timeline**: Each assistant message includes a compact horizontal timeline showing the sequence of thinking, tool calls, tool results, compaction, and response steps with animated progress indicators.
-- **Context Awareness**: Real-time context window consumption donut chart in the chat input area (color-coded green/amber/red). Updated after every LLM call and compaction event.
+## Quick Start
 
-## Quick Start (Docker Compose)
+Requirements:
+
+- Docker with Compose v2
+- An OpenAI-compatible chat endpoint, such as Ollama on the host at `http://host.docker.internal:11434/v1`
+
+Start the core web application:
 
 ```bash
-# Start all 7 services: postgres, temporal, temporal-ui, redis, backend, worker, frontend
 docker compose up --build
-
-# Access the app
-open http://localhost:3000        # Frontend
-open http://localhost:8080        # Temporal UI
-curl http://localhost:8000/health # Backend health check
 ```
 
-Requires Docker with Compose v2. Ollama must be installed and running on the host for LLM inference (`http://host.docker.internal:11434`).
+Open:
 
-## Kubernetes Deployment
+- Frontend: <http://localhost:3000>
+- Backend health: <http://localhost:8000/health>
+- Temporal UI: <http://localhost:8080>
 
-ThreadBot assumes Postgres, Temporal, and Redis are external services in production. The interactive deploy script handles configuration and multi-arch image builds:
+The default Compose stack starts the core services: PostgreSQL, Temporal, Temporal UI, backend, worker, and frontend. The optional Reachy services are behind the `reachy` Compose profile.
 
-```bash
-./deploy.sh
-```
+## Configuration
 
-The script prompts for:
-- Container registry prefix and image pull secret
-- PostgreSQL connection details
-- Temporal host, port, namespace, and task queue
-- Redis host, port, and DB number
-- LLM API URL, key, and model
+Most settings can be configured from the UI and are persisted in PostgreSQL. Environment variables and Compose/Kubernetes config values are defaults; DB settings take precedence after startup.
 
-It generates `k8s/configmap.yaml`, builds multi-arch images (amd64 + arm64), pushes to your registry, and applies all Kubernetes manifests. The K8s deployment includes:
-- Backend (2 replicas) and Worker (1 replica) deployments
-- Frontend (2 replicas) served via nginx
-- A dedicated nginx proxy with a LoadBalancer service for routing
-- RBAC for MCP pod management (ServiceAccount, Role, RoleBinding)
-- A CronJob for cleaning up completed/failed MCP pods every 15 minutes
+Important setting groups:
 
-## Architecture
+- **Chat LLM**: provider, API URL, API key, model, temperature, max tokens, stream timeout, max agent iterations.
+- **Context**: context window, compaction threshold, preserved recent messages, tool result truncation.
+- **Vision and images**: vision provider/model/API, image generation provider/model/API, ComfyUI workflow presets and generation defaults.
+- **Video and audio**: ComfyUI video/lip-sync workflows, output dimensions, frame limits, TTS provider/model/voice, audio mux settings.
+- **MCP servers**: Docker image, env vars, args, registry credentials, active state, cached tool definitions.
+- **Discord**: enable flag, bot token, guild ID, default channel ID, poll interval.
+- **Reachy**: enable flag, bound thread ID, wake word, daemon URL, local task queue, media backend, output volume, speech mood.
+
+Per-thread LLM overrides are available from the chat UI and are stored on the `threads.llm_overrides` JSONB column.
+
+## Core Architecture
 
 ```mermaid
 graph TD
     User([User]) <-->|Flutter Web| FE[Frontend]
-    FE <-->|REST / Streaming| BE[FastAPI Backend]
+    FE <-->|REST + WebSocket| BE[FastAPI Backend]
+    FE <-->|Broadcast WS| BE
     BE <-->|Read/Write| DB[(PostgreSQL)]
-    BE <-->|Submit Workflow| T[Temporal Server]
-    BE <-.->|Subscribe| R[(Redis Pub/Sub)]
-    T <-->|Dispatch Tasks| W[Python Worker]
+    BE <-->|Start/Signal/Query| T[Temporal Server]
+    T <-->|Dispatch| W[Python Worker]
     W <-->|Read/Write| DB
-    W <-->|HTTP / SSE| LLM[LLM API]
-    W <-.->|Publish Events| R
-    W <-->|Docker / kubectl| MCP[MCP Tool Containers]
+    W <-->|OpenAI-compatible HTTP| LLM[Chat / Vision / Image APIs]
+    W <-->|ComfyUI + TTS + ffmpeg| Media[Media Services]
+    W <-->|Docker / kubectl| MCP[MCP Containers or Pods]
+    BE <-->|Discord REST/Gateway| Discord[Discord]
+    W <-->|Discord REST| Discord
+    W -. child workflow .-> RW[Reachy Worker]
+    RW <-->|Local SDK / daemon / audio| Reachy[Reachy Mini]
 ```
 
-### Core Components
+### Main Components
 
 | Component | Role |
-|-----------|------|
-| **Frontend** (Flutter) | SPA with token streaming, markdown rendering, tool call UI, response timeline, context donut chart, per-thread tool overrides, smart auto-scroll, and MCP server management |
-| **Backend** (FastAPI) | Gateway between frontend and Temporal. Subscribes to Redis and relays streaming events to the frontend via `StreamingResponse`. Manages MCP server CRUD with encryption at rest |
-| **Worker** (Temporal) | Executes `RunThreadWorkflow`: agent loop with MCP + built-in tool execution, per-thread tool filtering, tool result truncation, token streaming, context usage publishing, auto-title generation |
-| **Redis** | Pub/sub broker bridging worker -> backend for real-time streaming. Also buffers events in Redis lists for stream reconnect after page refresh. Tracks generation status |
-| **PostgreSQL** | Stores threads, messages (user/assistant/thinking/tool_call/tool_result/system), MCP server configs (encrypted), tool overrides, cached tool lists, and persistent settings |
-| **Temporal** | Orchestrates workflows with retry policies and fault tolerance |
-| **MCP Sidecars** | Ephemeral containers providing tools (filesystem, APIs, databases) to the LLM. Uses Docker locally and `kubectl run` pods in Kubernetes |
+| --- | --- |
+| `frontend/` | Flutter Web SPA with chat, sidebar, streaming UI, image upload, MCP management, settings, Discord share controls, Reachy binding, per-thread tool overrides, and per-thread LLM overrides. |
+| `backend/app/main.py` | FastAPI app startup, schema bootstrap, DB-backed settings load, Temporal client/plugin setup, and background Discord poll/gateway tasks. |
+| `backend/app/api/routes.py` | REST/WebSocket API for chat, reconnect, threads, settings, generated images/media, uploads, MCP, Discord, Reachy binding, and overrides. |
+| `backend/app/worker.py` | Main Temporal worker for chat and Discord indexing workflows plus LLM/MCP/media/Discord activities. |
+| `backend/app/workflows/thread_workflow.py` | Main chat workflow: history, compaction, tool discovery, Agents SDK run, tool activity dispatch, streaming events, save final response, media URL recovery, and title generation request. |
+| `backend/app/activities/llm_activities.py` | DB activities, MCP discovery/execution, built-in tools, image/video/TTS helpers, Discord sync, title generation, compaction, and Discord history indexing. |
+| `backend/app/discord_integration.py` and `discord_bot.py` | Discord REST helpers, polling loop, slash command and mention gateway bot, thread creation/linking, history indexing, deduplication, and attachment persistence. |
+| `backend/app/reachy_worker.py` | Local Temporal worker for Reachy hardware/speech task queue. Runs on the machine with robot/audio/camera access. |
+| `backend/app/reachy_bridge.py` | Local voice bridge that listens for wake word or typed input, starts ThreadBot turns, supports interruption, and streams response text to Reachy speech. |
+| PostgreSQL | Stores threads, messages, generated media, MCP servers, settings, Discord links/servers/overrides, and tool/LLM overrides. |
+| Temporal | Durable orchestration for chat, Discord indexing, model calls, tool calls, media generation, and Reachy speech. |
 
-### Streaming Flow
+## Chat Flow
 
-1. User sends a message -> backend saves it to DB, subscribes to a Redis channel, sets generating flag in Redis, starts the Temporal workflow
-2. Worker runs the agent loop: non-streaming LLM calls during tool iterations (MCP and built-in tools), publishing `thinking`, `tool_call`, `tool_result`, `compaction`, and `context` events to Redis (both pub/sub and an event buffer list)
-3. Final LLM call uses `stream: true` -- each SSE token is published to Redis as `{"type":"token","content":"..."}`
-4. Backend relays all Redis events to the frontend via chunked HTTP response
-5. Frontend appends tokens to a placeholder message, rendering markdown progressively
-6. After saving, the worker publishes `title` and `[DONE]` events. The sidebar updates instantly with the generated title
+1. The Flutter frontend opens `/api/chat/ws` and sends a `ChatRequest` JSON payload.
+2. The backend loads DB-backed settings, creates or resolves the thread, saves the user message, applies per-thread tool and LLM overrides, attaches Discord config if the thread is linked, and starts `RunThreadWorkflow`.
+3. The backend sends a `thread` event containing `thread_id` and `workflow_id`, then relays Temporal workflow stream events over the WebSocket.
+4. The workflow fetches history with `get_messages`, compacts context if needed, discovers MCP tools, appends built-in tools, and runs the OpenAI Agents SDK.
+5. Each tool callback starts a Temporal activity. Tool calls/results are saved to the DB and emitted as structured stream events.
+6. Model token deltas are emitted through the Temporal OpenAI Agents plugin topic and relayed to the frontend as `token` events.
+7. The workflow saves the final assistant message, asks for title generation when appropriate, emits terminal state, and returns.
+8. The backend starts title generation as a standalone activity, sends `done`, and the frontend silently reloads the thread from the DB.
 
-### Stream Reconnect
+In-progress thread detection no longer depends on Redis. The backend checks Temporal for running workflow IDs with `thread-*`, `discord-thread-*`, or `reachy-thread-*` prefixes.
 
-If the user refreshes the page mid-response, the frontend detects the thread is still generating (`is_generating` field in the thread response) and reconnects:
+## Stream Events
 
-1. Frontend loads persisted messages from the DB
-2. Connects to `GET /api/threads/{id}/stream` which polls the Redis event buffer list
-3. All buffered events replay from the beginning, rebuilding thinking/tool_call/tool_result bubbles and streaming tokens
-4. New events continue to arrive via polling until `[DONE]`
-5. Standard silent DB reload finalizes the view
+The UI receives JSON events over WebSockets. Common event types are:
 
-## Configuration
+| Type | Meaning |
+| --- | --- |
+| `thread` | Initial event with `thread_id` and `workflow_id`. |
+| `token` | Model output delta. |
+| `thinking` | Intermediate reasoning/thinking content saved for display. |
+| `tool_call` | One or more tools started. |
+| `tool_result` | Tool finished, including success/failure and optional image URL. |
+| `context` | Estimated context usage update. |
+| `compaction` | Context compaction happened. |
+| `continue_prompt` | UI should ask whether the agent should continue. |
+| `title` | Thread title update from title activity/broadcast. |
+| `done` | Workflow completed. |
+| `error` | Workflow or streaming error. |
 
-Settings are persisted in the PostgreSQL database and survive pod/container restarts. Configure via the Settings screen in the UI:
+The frontend also subscribes to `/api/broadcast/ws` for thread-list updates from title changes, Discord indexing, and other background changes.
 
-1. **LLM Config**: API URL, model name, API key, temperature, max tokens (supports Ollama by default)
-2. **Context Management**: Context window size, compaction threshold percentage, number of recent messages to preserve
-3. **Tool Calls**: Maximum characters for tool result truncation (0 = no truncation)
-4. **MCP Servers**: Add and manage tool servers by specifying their Docker image, environment variables, and container arguments. Test connections to discover and cache available tools.
-5. **Per-Thread Tool Overrides**: Use the wrench icon in the chat input to enable/disable specific tools or entire MCP servers for individual threads.
+## MCP Tools
 
-Environment variables (via configmap or `.env`) serve as defaults. Once settings are saved through the UI, DB values take precedence and persist across restarts.
+MCP servers are managed from the MCP screen. Each server stores:
 
+- name and Docker image
+- encrypted environment variables
+- encrypted CLI args
+- encrypted registry credentials
+- active/inactive flag
+- cached tool definitions and cache timestamp
 
-# Development
-Test the whole stack easily with docker
+Discovery reads active servers, starts a temporary MCP connection, caches tools, and applies overrides. Local execution uses Docker; Kubernetes execution uses `kubectl run` pods with RBAC from the deployment manifests. Tool names are exposed to the LLM in OpenAI function format and mapped back to their MCP server at execution time.
+
+## Discord
+
+Discord is optional and enabled with `DISCORD_ENABLED=true` plus a bot token. The backend starts two background tasks on startup:
+
+- `discord_poll_loop`: polls linked Discord threads for new user messages and starts ThreadBot workflows.
+- `run_discord_bot`: connects a `discord.py` gateway bot for `/threadbot` slash commands and bot mentions.
+
+Capabilities:
+
+- Share an existing ThreadBot thread to Discord from the chat UI.
+- Start a new ThreadBot thread from `/threadbot prompt` or by mentioning the bot.
+- Reply inside an existing Discord thread and continue the linked ThreadBot thread.
+- Index Discord thread history through `IndexDiscordThreadWorkflow`.
+- Store links in `discord_thread_links` and server metadata in `discord_servers`.
+- Apply MCP enable/disable overrides per Discord guild through `discord_server_tool_overrides`.
+- Copy Discord image attachments into ThreadBot-generated image storage before CDN URLs expire.
+- Sync assistant responses and selected tool activity back into Discord.
+
+## Reachy Mini
+
+Reachy support is optional and intended to run locally on the machine attached to the robot. Start the profile with:
+
+```bash
+docker compose --profile reachy up --build reachy-daemon reachy-worker reachy-bridge
 ```
-docker compose up --build -d
+
+or use:
+
+```bash
+./run-reachy.sh start
 ```
 
-For detailed developer instructions, architectural deep-dives, and coding rules, see:
-- **[DESIGN.md](./DESIGN.md)**: Full architectural specification, data flow diagrams, and streaming details.
-- **[AGENTS.md](./AGENTS.md)**: Comprehensive guide for AI coding assistants with gotchas and project structure.
+Reachy pieces:
+
+- `reachy-daemon`: local daemon/container with privileged hardware, audio, camera, and GStreamer access.
+- `reachy-worker`: Temporal worker on `REACHY_TASK_QUEUE` for robot hardware and speech activities.
+- `reachy-bridge`: voice/typed bridge that listens for the wake word, starts ThreadBot workflows, handles interruption, and routes response text to speech.
+- `ReachySpeechWorkflow`: child workflow that plays thinking animations while the parent chat workflow is working, speaks flushed/final text, handles announcements, and supports immediate interrupt.
+- Reachy tools exposed only to the bound thread: `reachy_move`, `reachy_animation`, and `reachy_capture_image`.
+
+See `docs/reachy-compose.md` and `scripts/reachy/README.md` for local setup and audio/camera tuning.
+
+## Development
+
+Run all core services:
+
+```bash
+docker compose up --build
+```
+
+Backend local development:
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Frontend local development:
+
+```bash
+cd frontend
+flutter pub get
+flutter build web --release
+flutter analyze
+flutter test
+```
+
+Reachy local dependencies:
+
+```bash
+cd backend
+pip install -r requirements-reachy.txt
+```
+
+## Kubernetes
+
+Production manifests are in `k8s/`, and `deploy.sh` interactively builds/pushes images and generates config. The Kubernetes deployment assumes PostgreSQL, Temporal, and any external model/media services are reachable from the cluster.
+
+The deployment includes:
+
+- backend replicas
+- main worker
+- frontend served by nginx
+- nginx proxy/LoadBalancer
+- MCP pod RBAC
+- MCP cleanup CronJob
+
+Reachy is not a normal cluster workload; run Reachy services on the local robot host and point them at the same Temporal/PostgreSQL deployment.
+
+## Documentation
+
+- `DESIGN.md`: detailed architecture, data model, workflows, routes, and integration notes.
+- `docs/reachy-compose.md`: Reachy Compose profile and local voice/media tuning.
+- `scripts/reachy/README.md`: platform-specific Reachy install scripts.
+- `AGENTS.md`: project-specific guidance for coding assistants.
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+Apache License 2.0. See `LICENSE`.
