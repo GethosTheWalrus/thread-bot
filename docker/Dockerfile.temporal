@@ -1,0 +1,16 @@
+FROM temporalio/server:1.31.0 AS server
+
+FROM temporalio/auto-setup:1.29.7
+
+USER root
+
+COPY --from=server /usr/local/bin/temporal-server /usr/local/bin/temporal-server
+
+RUN curl -fsSL https://github.com/temporalio/temporal/archive/refs/tags/v1.31.0.tar.gz \
+    | tar -xz -C /tmp \
+    && cp -R /tmp/temporal-1.31.0/schema/postgresql/v12/temporal/versioned/. /etc/temporal/schema/postgresql/v12/temporal/versioned/ \
+    && cp -R /tmp/temporal-1.31.0/schema/postgresql/v12/visibility/versioned/. /etc/temporal/schema/postgresql/v12/visibility/versioned/ \
+    && chmod -R a+rX /etc/temporal/schema/postgresql/v12 \
+    && rm -rf /tmp/temporal-1.31.0
+
+USER temporal

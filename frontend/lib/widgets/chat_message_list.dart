@@ -30,11 +30,14 @@ class ChatMessageList extends StatelessWidget {
       if (messages[i].isToolCall) {
         final results = <Message>[];
         for (var j = i + 1; j < messages.length; j++) {
+          if (messages[j].isUser ||
+              messages[j].isAssistant ||
+              messages[j].isToolCall) {
+            break;
+          }
           if (messages[j].isToolResult) {
             results.add(messages[j]);
             claimedResultIndices.add(j);
-          } else {
-            break;
           }
         }
         toolCallResults[i] = results;
@@ -53,7 +56,9 @@ class ChatMessageList extends StatelessWidget {
       // under the THREADBOT header rather than as standalone bubbles above it.
       if (messages[i].isAssistant) {
         final items = <_PreAssistantItem>[];
-        // Walk backwards from the assistant message to collect preceding tool_call/thinking
+        // Walk backwards through the full assistant turn. Tool results can be
+        // separated from their calls by thinking events, so do not require a
+        // contiguous call/result block.
         for (var j = i - 1; j >= 0; j--) {
           if (messages[j].isToolCall) {
             claimedToolCallIndices.add(j);
@@ -69,9 +74,11 @@ class ChatMessageList extends StatelessWidget {
           } else if (messages[j].isThinking) {
             claimedThinkingIndices.add(j);
             items.insert(0, _PreAssistantItem(thinking: messages[j]));
-          } else if (messages[j].isToolResult &&
-              claimedResultIndices.contains(j)) {
-            // Skip — already claimed by a tool_call
+          } else if (messages[j].isToolResult) {
+            claimedResultIndices.add(j);
+            // Skip — tool results render inside their tool_call group.
+            continue;
+          } else if (messages[j].isSystem) {
             continue;
           } else {
             break;

@@ -165,7 +165,16 @@ async def _send_workflow_terminal_event(
     handle = temporal_client.get_workflow_handle(workflow_id)
     try:
         result = await handle.result()
-        await _start_title_activity(temporal_client, workflow_id, result)
+        title_result = await _start_title_activity(temporal_client, workflow_id, result)
+        if isinstance(title_result, dict) and title_result.get("title"):
+            try:
+                await websocket.send_json({
+                    "type": "title",
+                    "thread_id": title_result.get("thread_id"),
+                    "content": title_result["title"],
+                })
+            except Exception:
+                pass
     except Exception as e:
         try:
             await websocket.send_json({"type": "error", "content": str(e)})
@@ -183,12 +192,12 @@ async def _start_title_activity(
     temporal_client: TemporalClient,
     workflow_id: str,
     workflow_result,
-) -> None:
+) -> dict | None:
     if not isinstance(workflow_result, dict):
-        return
+        return None
     title_args = workflow_result.get("title")
     if not title_args:
-        return
+        return None
 
     from temporalio.common import ActivityIDConflictPolicy, ActivityIDReusePolicy
     from temporalio.exceptions import ActivityAlreadyStartedError
@@ -197,7 +206,7 @@ async def _start_title_activity(
     settings = get_settings()
     activity_id = f"title-{workflow_id}"
     try:
-        await temporal_client.start_activity(
+        activity_handle = await temporal_client.start_activity(
             generate_and_update_title,
             title_args,
             id=activity_id,
@@ -208,10 +217,12 @@ async def _start_title_activity(
             id_conflict_policy=ActivityIDConflictPolicy.FAIL,
         )
         print(f"[title] enqueued standalone activity {activity_id}", flush=True)
+        return await activity_handle.result()
     except ActivityAlreadyStartedError:
-        return
+        return None
     except Exception as exc:
         print(f"[title] failed to start standalone activity {activity_id}: {exc}", flush=True)
+        return None
 
 
 async def _relay_workflow_until_complete(

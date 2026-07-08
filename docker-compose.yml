@@ -1,13 +1,17 @@
 services:
   temporal:
-    image: temporalio/auto-setup:1.29.1
+    image: threadbot-temporal:1.31.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.temporal
     environment:
       - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_SEEDS=postgres
       - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
       - POSTGRES_PASSWORD=postgres
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
     volumes:
       - ./backend/config/dynamicconfig:/etc/temporal/config/dynamicconfig:ro
     depends_on:

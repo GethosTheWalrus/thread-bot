@@ -144,7 +144,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     } catch (e) {
       if (mounted && !silent) {
-        setState(() { _error = 'Failed to load threads'; _isLoadingThreads = false; });
+        setState(() {
+          _error = 'Failed to load threads';
+          _isLoadingThreads = false;
+        });
       }
     }
   }
@@ -161,18 +164,30 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
-    setState(() { _isLoadingMessages = true; _activeThreadId = threadId; _error = null; _hasToolOverrides = false; _hasLlmOverrides = false; });
+    setState(() {
+      _isLoadingMessages = true;
+      _activeThreadId = threadId;
+      _error = null;
+      _hasToolOverrides = false;
+      _hasLlmOverrides = false;
+    });
     try {
-      SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$threadId'));
+      SystemNavigator.routeInformationUpdated(
+        uri: Uri.parse('/thread/$threadId'),
+      );
       final thread = await _api.getThread(threadId);
       if (mounted) {
-       setState(() {
+        setState(() {
           _messages = thread.messages;
           _discordLink = thread.discordLink;
           _reachyBinding = ReachyBinding(
             enabled: _reachyBinding?.enabled ?? false,
-            threadId: thread.reachyConnected ? thread.id : _reachyBinding?.threadId,
-            threadTitle: thread.reachyConnected ? thread.title : _reachyBinding?.threadTitle,
+            threadId: thread.reachyConnected
+                ? thread.id
+                : _reachyBinding?.threadId,
+            threadTitle: thread.reachyConnected
+                ? thread.title
+                : _reachyBinding?.threadTitle,
             wakeWord: _reachyBinding?.wakeWord ?? 'Reachy',
             taskQueue: _reachyBinding?.taskQueue ?? 'reachy-local',
           );
@@ -194,7 +209,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      if (mounted) setState(() { _error = 'Failed to load thread'; _isLoadingMessages = false; });
+      if (mounted)
+        setState(() {
+          _error = 'Failed to load thread';
+          _isLoadingMessages = false;
+        });
     }
   }
 
@@ -203,7 +222,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final data = await _api.getThreadToolOverrides(threadId);
       final overrides = data['overrides'] as List<dynamic>? ?? [];
       if (mounted) {
-        setState(() => _hasToolOverrides = overrides.any((o) => o['enabled'] == false));
+        setState(
+          () => _hasToolOverrides = overrides.any((o) => o['enabled'] == false),
+        );
       }
     } catch (_) {
       // Non-critical — don't show error
@@ -266,13 +287,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final placeholderId = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
     tempIds.add(placeholderId);
     setState(() {
-      _messages.add(Message(
-        id: placeholderId,
-        threadId: threadId,
-        role: 'assistant',
-        content: '',
-        createdAt: DateTime.now(),
-      ));
+      _messages.add(
+        Message(
+          id: placeholderId,
+          threadId: threadId,
+          role: 'assistant',
+          content: '',
+          createdAt: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom(force: true);
 
@@ -284,7 +307,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         if (_activeThreadId != null) {
           await _reloadThreadSilently();
         }
-        setState(() { _isSending = false; });
+        setState(() {
+          _isSending = false;
+        });
         _loadThreads();
       }
     } catch (e) {
@@ -323,7 +348,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           if (headerPart.startsWith("THREAD_ID:")) {
             final newId = headerPart.substring(10).trim();
             if (_activeThreadId == null || _activeThreadId != newId) {
-              SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/$newId'));
+              SystemNavigator.routeInformationUpdated(
+                uri: Uri.parse('/thread/$newId'),
+              );
               setState(() => _activeThreadId = newId);
             }
           }
@@ -388,7 +415,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           }
           if (endPos != null) {
             try {
-              event = jsonDecode(chunkBuffer.substring(0, endPos)) as Map<String, dynamic>;
+              event =
+                  jsonDecode(chunkBuffer.substring(0, endPos))
+                      as Map<String, dynamic>;
               consumed = endPos;
             } catch (_) {
               break;
@@ -406,6 +435,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  int _assistantPlaceholderIndex() {
+    return _messages.indexWhere((m) => m.id.startsWith('temp-ast-'));
+  }
+
   void _showToolOverrides() {
     showModalBottomSheet(
       context: context,
@@ -417,7 +450,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       builder: (context) => _ToolOverridesSheet(
         threadId: _activeThreadId,
         api: _api,
-        initialOverrides: _activeThreadId == null ? _pendingToolOverrides : null,
+        initialOverrides: _activeThreadId == null
+            ? _pendingToolOverrides
+            : null,
         onChanged: () {
           if (_activeThreadId != null) {
             _loadToolOverrideStatus(_activeThreadId!);
@@ -482,7 +517,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           content: Text(message),
           backgroundColor: const Color(0xFF27272A),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
         ),
       );
     } catch (e) {
@@ -492,7 +529,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             content: Text('Reachy binding failed: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -501,7 +540,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _sendMessage(String content, [List<String> imageUrls = const []]) async {
+  Future<void> _sendMessage(
+    String content, [
+    List<String> imageUrls = const [],
+  ]) async {
     if (_isSending) return;
 
     setState(() => _isSending = true);
@@ -531,13 +573,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     final placeholderId = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
     tempIds.add(placeholderId);
     setState(() {
-      _messages.add(Message(
-        id: placeholderId,
-        threadId: _activeThreadId ?? '',
-        role: 'assistant',
-        content: '',
-        createdAt: DateTime.now(),
-      ));
+      _messages.add(
+        Message(
+          id: placeholderId,
+          threadId: _activeThreadId ?? '',
+          role: 'assistant',
+          content: '',
+          createdAt: DateTime.now(),
+        ),
+      );
     });
     _scrollToBottom(force: true);
 
@@ -558,7 +602,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
         setState(() {
           _isSending = false;
-          _pendingToolOverrides = null; // Clear pending overrides after first message
+          _pendingToolOverrides =
+              null; // Clear pending overrides after first message
         });
         _loadThreads();
       }
@@ -574,7 +619,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             content: Text('Error: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -593,13 +640,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         // partial assistant text/intermediate events from the failed attempt.
         setState(() {
           final keepIds = tempIds.take(2).toSet();
-          _messages.removeWhere((m) => tempIds.contains(m.id) && !keepIds.contains(m.id));
+          _messages.removeWhere(
+            (m) => tempIds.contains(m.id) && !keepIds.contains(m.id),
+          );
           if (tempIds.length > 2) {
             tempIds.removeRange(2, tempIds.length);
           }
-          final placeholder = _messages.where(
-            (m) => m.id.startsWith('temp-ast-'),
-          ).firstOrNull;
+          final placeholder = _messages
+              .where((m) => m.id.startsWith('temp-ast-'))
+              .firstOrNull;
           if (placeholder != null) {
             placeholder.content = '';
           }
@@ -611,9 +660,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         tempIds.add(id);
         setState(() {
           // Insert before the placeholder assistant message so order is preserved
-          final placeholderIdx = _messages.indexWhere(
-            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
-          );
+          final placeholderIdx = _assistantPlaceholderIndex();
           final msg = Message(
             id: id,
             threadId: _activeThreadId ?? '',
@@ -634,9 +681,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         tempIds.add(id);
         final toolCalls = event['tool_calls'] as List<dynamic>?;
         setState(() {
-          final placeholderIdx = _messages.indexWhere(
-            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
-          );
+          final placeholderIdx = _assistantPlaceholderIndex();
           final msg = Message(
             id: id,
             threadId: _activeThreadId ?? '',
@@ -664,19 +709,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         final id = 'temp-tr-${DateTime.now().millisecondsSinceEpoch}';
         tempIds.add(id);
         setState(() {
-          final placeholderIdx = _messages.indexWhere(
-            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
-          );
+          final placeholderIdx = _assistantPlaceholderIndex();
           final msg = Message(
             id: id,
             threadId: _activeThreadId ?? '',
             role: 'tool_result',
             content: content,
             createdAt: DateTime.now(),
-            metadata: {
-              'tool_name': tool,
-              'success': success,
-            },
+            metadata: {'tool_name': tool, 'success': success},
           );
           if (placeholderIdx >= 0) {
             _messages.insert(placeholderIdx, msg);
@@ -689,9 +729,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'token':
         // Streaming token — append to the placeholder assistant message
         setState(() {
-          final placeholder = _messages.where(
-            (m) => m.id.startsWith('temp-ast-'),
-          ).firstOrNull;
+          final placeholder = _messages
+              .where((m) => m.id.startsWith('temp-ast-'))
+              .firstOrNull;
           if (placeholder != null) {
             placeholder.content += content;
           }
@@ -701,9 +741,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'text':
         // Full text fallback (max-iterations safety, or non-streaming path)
         setState(() {
-          final placeholder = _messages.where(
-            (m) => m.id.startsWith('temp-ast-'),
-          ).firstOrNull;
+          final placeholder = _messages
+              .where((m) => m.id.startsWith('temp-ast-'))
+              .firstOrNull;
           if (placeholder != null) {
             // Only replace if streaming hasn't already filled it
             if (placeholder.content.isEmpty) {
@@ -712,13 +752,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           } else {
             final id = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
             tempIds.add(id);
-            _messages.add(Message(
-              id: id,
-              threadId: _activeThreadId ?? '',
-              role: 'assistant',
-              content: content,
-              createdAt: DateTime.now(),
-            ));
+            _messages.add(
+              Message(
+                id: id,
+                threadId: _activeThreadId ?? '',
+                role: 'assistant',
+                content: content,
+                createdAt: DateTime.now(),
+              ),
+            );
           }
         });
         break;
@@ -726,12 +768,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       case 'title':
         // Update the thread title in the sidebar immediately
         setState(() {
-          final eventThreadId = event['thread_id'] as String? ?? _activeThreadId;
-          final thread = _threads.where((t) => t.id == eventThreadId).firstOrNull;
+          final eventThreadId =
+              event['thread_id'] as String? ?? _activeThreadId;
+          final thread = _threads
+              .where((t) => t.id == eventThreadId)
+              .firstOrNull;
           if (thread != null) {
             thread.title = content;
           }
         });
+        _loadThreads(silent: true);
         break;
 
       case 'compaction':
@@ -739,16 +785,17 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         final id = 'temp-compact-${DateTime.now().millisecondsSinceEpoch}';
         tempIds.add(id);
         setState(() {
-          final placeholderIdx = _messages.indexWhere(
-            (m) => m.id.startsWith('temp-ast-') && m.content.isEmpty,
-          );
+          final placeholderIdx = _assistantPlaceholderIndex();
           final msg = Message(
             id: id,
             threadId: _activeThreadId ?? '',
             role: 'system',
             content: content,
             createdAt: DateTime.now(),
-            metadata: {'type': 'compaction_event', 'compacted_count': compactedCount},
+            metadata: {
+              'type': 'compaction_event',
+              'compacted_count': compactedCount,
+            },
           );
           if (placeholderIdx >= 0) {
             _messages.insert(placeholderIdx, msg);
@@ -787,7 +834,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Continue iterating?'),
         content: Text(
-          event['content'] as String? ?? 'ThreadBot hit its tool/turn limit before finishing.',
+          event['content'] as String? ??
+              'ThreadBot hit its tool/turn limit before finishing.',
           style: TextStyle(color: Colors.white.withValues(alpha: 0.72)),
         ),
         actions: [
@@ -866,7 +914,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               const SizedBox(height: 6),
               Text(
                 'Choose where this conversation should live.',
-                style: TextStyle(fontSize: 13, color: Colors.white.withValues(alpha: 0.45)),
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.white.withValues(alpha: 0.45),
+                ),
               ),
               const SizedBox(height: 18),
               _NewThreadChoiceTile(
@@ -907,12 +958,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final result = await showDialog<Map<String, String?>>(
         context: context,
         builder: (ctx) {
-          final nameController = TextEditingController(text: 'ThreadBot Thread');
-          final guildController = TextEditingController(text: settings['guild_id']);
-          final channelController = TextEditingController(text: settings['channel_id']);
+          final nameController = TextEditingController(
+            text: 'ThreadBot Thread',
+          );
+          final guildController = TextEditingController(
+            text: settings['guild_id'],
+          );
+          final channelController = TextEditingController(
+            text: settings['channel_id'],
+          );
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E2E),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             title: const Text(
               'New Discord Thread',
               style: TextStyle(color: Colors.white),
@@ -963,7 +1022,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx, {
@@ -971,7 +1033,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   'guildId': guildController.text,
                   'channelId': channelController.text,
                 }),
-                child: const Text('Create', style: TextStyle(color: Color(0xFF8B5CF6))),
+                child: const Text(
+                  'Create',
+                  style: TextStyle(color: Color(0xFF8B5CF6)),
+                ),
               ),
             ],
           );
@@ -989,7 +1054,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       );
 
       if (!mounted) return;
-      SystemNavigator.routeInformationUpdated(uri: Uri.parse('/thread/${thread.id}'));
+      SystemNavigator.routeInformationUpdated(
+        uri: Uri.parse('/thread/${thread.id}'),
+      );
       setState(() {
         _activeThreadId = thread.id;
         _messages = [];
@@ -1008,7 +1075,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             content: Text('Failed to create Discord thread: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -1020,14 +1089,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       await _api.deleteThread(threadId);
       if (_activeThreadId == threadId) {
         SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
-        setState(() { _activeThreadId = null; _messages = []; _discordLink = null; });
+        setState(() {
+          _activeThreadId = null;
+          _messages = [];
+          _discordLink = null;
+        });
       }
       _loadThreads();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delete failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
       }
     }
   }
@@ -1036,7 +1109,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       await _api.deleteAllThreads();
       SystemNavigator.routeInformationUpdated(uri: Uri.parse('/'));
-      setState(() { _activeThreadId = null; _messages = []; _discordLink = null; });
+      setState(() {
+        _activeThreadId = null;
+        _messages = [];
+        _discordLink = null;
+      });
       _loadThreads();
     } catch (e) {
       if (mounted) {
@@ -1053,9 +1130,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _loadThreads();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Rename failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Rename failed: $e')));
       }
     }
   }
@@ -1075,15 +1152,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   void _openMCP() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const MCPScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const MCPScreen()));
   }
 
   void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-    );
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
   }
 
   Future<void> _toggleDiscordShare() async {
@@ -1105,16 +1182,27 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         return;
       }
 
-      final title = _threads.where((t) => t.id == _activeThreadId).firstOrNull?.title;
+      final title = _threads
+          .where((t) => t.id == _activeThreadId)
+          .firstOrNull
+          ?.title;
       final result = await showDialog<Map<String, String?>>(
         context: context,
         builder: (ctx) {
-          final nameController = TextEditingController(text: title ?? 'ThreadBot Thread');
-          final guildController = TextEditingController(text: settings['guild_id']);
-          final channelController = TextEditingController(text: settings['channel_id']);
+          final nameController = TextEditingController(
+            text: title ?? 'ThreadBot Thread',
+          );
+          final guildController = TextEditingController(
+            text: settings['guild_id'],
+          );
+          final channelController = TextEditingController(
+            text: settings['channel_id'],
+          );
           return AlertDialog(
             backgroundColor: const Color(0xFF1E1E2E),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             title: const Text(
               'Share Thread to Discord',
               style: TextStyle(color: Colors.white),
@@ -1165,7 +1253,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+                child: const Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.white70),
+                ),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx, {
@@ -1173,7 +1264,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   'guildId': guildController.text,
                   'channelId': channelController.text,
                 }),
-                child: const Text('Share', style: TextStyle(color: Color(0xFF8B5CF6))),
+                child: const Text(
+                  'Share',
+                  style: TextStyle(color: Color(0xFF8B5CF6)),
+                ),
               ),
             ],
           );
@@ -1196,7 +1290,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             content: const Text('Thread shared to Discord'),
             backgroundColor: const Color(0xFF16161E),
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -1207,7 +1303,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             content: Text('Discord sync failed: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -1362,7 +1460,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                _threads.where((t) => t.id == _activeThreadId).firstOrNull?.title ?? 'Thread',
+                _threads
+                        .where((t) => t.id == _activeThreadId)
+                        .firstOrNull
+                        ?.title ??
+                    'Thread',
                 style: TextStyle(
                   fontSize: 14,
                   color: Colors.white.withValues(alpha: 0.5),
@@ -1372,7 +1474,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ),
             ),
             Tooltip(
-              message: _discordLink?.isActive == true ? 'Disable Discord sync' : 'Share to Discord',
+              message: _discordLink?.isActive == true
+                  ? 'Disable Discord sync'
+                  : 'Share to Discord',
               child: IconButton(
                 onPressed: _toggleDiscordShare,
                 icon: _DiscordShareIcon(active: _discordLink?.isActive == true),
@@ -1382,8 +1486,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               message: _reachyBinding?.threadId == _activeThreadId
                   ? 'Disconnect Reachy from this thread'
                   : _reachyBinding?.threadId != null
-                      ? 'Move Reachy connection to this thread'
-                      : 'Connect this thread to Reachy',
+                  ? 'Move Reachy connection to this thread'
+                  : 'Connect this thread to Reachy',
               child: IconButton(
                 onPressed: _isTogglingReachy ? null : _toggleReachyBinding,
                 icon: _ReachyShareIcon(
@@ -1414,7 +1518,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ),
             ),
             SizedBox(height: 16),
-            Text('Loading conversation...', style: TextStyle(color: Color(0xFF71717A))),
+            Text(
+              'Loading conversation...',
+              style: TextStyle(color: Color(0xFF71717A)),
+            ),
           ],
         ),
       );
@@ -1430,7 +1537,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             Text(_error!, style: TextStyle(color: Colors.red.shade300)),
             const SizedBox(height: 16),
             FilledButton.tonal(
-              onPressed: _activeThreadId != null ? () => _loadThread(_activeThreadId!) : _loadThreads,
+              onPressed: _activeThreadId != null
+                  ? () => _loadThread(_activeThreadId!)
+                  : _loadThreads,
               child: const Text('Retry'),
             ),
           ],
@@ -1489,10 +1598,22 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               runSpacing: 12,
               alignment: WrapAlignment.center,
               children: [
-                _buildSuggestionChip('Explain quantum computing', Icons.science_outlined),
-                _buildSuggestionChip('Write a Python script', Icons.code_outlined),
-                _buildSuggestionChip('Plan a trip to Japan', Icons.flight_takeoff_outlined),
-                _buildSuggestionChip('Debug my code', Icons.bug_report_outlined),
+                _buildSuggestionChip(
+                  'Explain quantum computing',
+                  Icons.science_outlined,
+                ),
+                _buildSuggestionChip(
+                  'Write a Python script',
+                  Icons.code_outlined,
+                ),
+                _buildSuggestionChip(
+                  'Plan a trip to Japan',
+                  Icons.flight_takeoff_outlined,
+                ),
+                _buildSuggestionChip(
+                  'Debug my code',
+                  Icons.bug_report_outlined,
+                ),
               ],
             ),
           ],
@@ -1572,7 +1693,9 @@ class _ReachyShareIcon extends StatelessWidget {
     return Icon(
       Icons.smart_toy_rounded,
       size: 17,
-      color: active ? const Color(0xFF34D399) : Colors.white.withValues(alpha: 0.45),
+      color: active
+          ? const Color(0xFF34D399)
+          : Colors.white.withValues(alpha: 0.45),
     );
   }
 }
@@ -1615,14 +1738,22 @@ class _NewThreadChoiceTile extends StatelessWidget {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(11),
                   gradient: badgeText == null
-                      ? const LinearGradient(colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)])
-                      : const LinearGradient(colors: [Color(0xFF5865F2), Color(0xFF4752C4)]),
+                      ? const LinearGradient(
+                          colors: [Color(0xFF8B5CF6), Color(0xFF6366F1)],
+                        )
+                      : const LinearGradient(
+                          colors: [Color(0xFF5865F2), Color(0xFF4752C4)],
+                        ),
                 ),
                 child: badgeText == null
                     ? Icon(icon, size: 18, color: Colors.white)
                     : Text(
                         badgeText!,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
                       ),
               ),
               const SizedBox(width: 12),
@@ -1630,16 +1761,28 @@ class _NewThreadChoiceTile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 3),
                     Text(
                       subtitle,
-                      style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45)),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.45),
+                      ),
                     ),
                   ],
                 ),
               ),
-              Icon(Icons.chevron_right_rounded, color: Colors.white.withValues(alpha: 0.35)),
+              Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white.withValues(alpha: 0.35),
+              ),
             ],
           ),
         ),
@@ -1647,7 +1790,6 @@ class _NewThreadChoiceTile extends StatelessWidget {
     );
   }
 }
-
 
 // ── Tool Overrides Bottom Sheet ──────────────────────────────────────────────
 
@@ -1691,13 +1833,14 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
       }
 
       final servers = (data['servers'] as List<dynamic>? ?? []);
-      final overrides = widget.threadId != null 
+      final overrides = widget.threadId != null
           ? (data['overrides'] as List<dynamic>? ?? [])
           : (widget.initialOverrides ?? []);
 
       // Build override lookup
-      final overrideMap = <String, bool>{};       // "server_id" -> enabled
-      final toolOverrideMap = <String, bool>{};   // "server_id:tool_name" -> enabled
+      final overrideMap = <String, bool>{}; // "server_id" -> enabled
+      final toolOverrideMap =
+          <String, bool>{}; // "server_id:tool_name" -> enabled
       for (final o in overrides) {
         final sid = o['server_id'] as String;
         final toolName = o['tool_name'] as String?;
@@ -1731,7 +1874,11 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
         );
       }).toList();
 
-      if (mounted) setState(() { _servers = serverStates; _isLoading = false; });
+      if (mounted)
+        setState(() {
+          _servers = serverStates;
+          _isLoading = false;
+        });
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1810,7 +1957,11 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             child: Row(
               children: [
-                const Icon(Icons.build_outlined, size: 18, color: Color(0xFF8B5CF6)),
+                const Icon(
+                  Icons.build_outlined,
+                  size: 18,
+                  color: Color(0xFF8B5CF6),
+                ),
                 const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
@@ -1823,13 +1974,22 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF8B5CF6),
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
                   child: _isSaving
                       ? const SizedBox(
-                          width: 14, height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
                       : const Text('Save', style: TextStyle(fontSize: 13)),
                 ),
@@ -1840,7 +2000,10 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Text(
               'Enable or disable MCP servers and individual tools for this thread.',
-              style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.4)),
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withValues(alpha: 0.4),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -1866,7 +2029,8 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                 shrinkWrap: true,
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
                 itemCount: _servers.length,
-                itemBuilder: (context, index) => _buildServerTile(_servers[index]),
+                itemBuilder: (context, index) =>
+                    _buildServerTile(_servers[index]),
               ),
             ),
         ],
@@ -1907,7 +2071,11 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                         colors: [Color(0xFF3B82F6), Color(0xFF6366F1)],
                       ),
                     ),
-                    child: const Icon(Icons.dns_rounded, size: 14, color: Colors.white),
+                    child: const Icon(
+                      Icons.dns_rounded,
+                      size: 14,
+                      color: Colors.white,
+                    ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -1916,7 +2084,10 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                       children: [
                         Text(
                           server.name,
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                         Text(
                           '${server.tools.length} tool${server.tools.length == 1 ? '' : 's'}',
@@ -1940,7 +2111,9 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                       });
                     },
                     activeColor: const Color(0xFF8B5CF6),
-                    activeTrackColor: const Color(0xFF8B5CF6).withValues(alpha: 0.3),
+                    activeTrackColor: const Color(
+                      0xFF8B5CF6,
+                    ).withValues(alpha: 0.3),
                     inactiveThumbColor: Colors.white.withValues(alpha: 0.3),
                     inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
                   ),
@@ -1957,7 +2130,9 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                 ),
               ),
               child: Column(
-                children: server.tools.map((tool) => _buildToolTile(server, tool)).toList(),
+                children: server.tools
+                    .map((tool) => _buildToolTile(server, tool))
+                    .toList(),
               ),
             ),
         ],
@@ -2105,7 +2280,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   Future<void> _save(Map<String, dynamic> next) async {
     setState(() => _isSaving = true);
     try {
-      final updated = await widget.api.setThreadLlmOverrides(widget.threadId, next);
+      final updated = await widget.api.setThreadLlmOverrides(
+        widget.threadId,
+        next,
+      );
       if (!mounted) return;
       setState(() {
         _overrides = updated;
@@ -2143,13 +2321,17 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   }
 
   void _setOverride(String key, dynamic value) {
-    final current = Map<String, dynamic>.from(_overrides?.overrides ?? const {});
+    final current = Map<String, dynamic>.from(
+      _overrides?.overrides ?? const {},
+    );
     current[key] = value;
     _save(current);
   }
 
   void _clearOne(String key) {
-    final current = Map<String, dynamic>.from(_overrides?.overrides ?? const {});
+    final current = Map<String, dynamic>.from(
+      _overrides?.overrides ?? const {},
+    );
     current.remove(key);
     if (current.isEmpty) {
       _clearAll();
@@ -2193,9 +2375,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                     ),
                   )
                 else if (overrides != null)
-                  Expanded(
-                    child: _buildBody(overrides, scrollController),
-                  ),
+                  Expanded(child: _buildBody(overrides, scrollController)),
               ],
             ),
           ),
@@ -2246,16 +2426,24 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
               Expanded(
                 child: TextField(
                   controller: _searchController,
-                  onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
+                  onChanged: (v) =>
+                      setState(() => _search = v.trim().toLowerCase()),
                   style: const TextStyle(color: Colors.white, fontSize: 13),
                   decoration: InputDecoration(
                     isDense: true,
                     hintText: 'Search overrides…',
                     hintStyle: const TextStyle(color: Colors.white38),
-                    prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 16),
+                    prefixIcon: const Icon(
+                      Icons.search,
+                      color: Colors.white38,
+                      size: 16,
+                    ),
                     filled: true,
                     fillColor: const Color(0xFF1E1E2A),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 8,
+                    ),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(10),
                       borderSide: BorderSide.none,
@@ -2267,7 +2455,11 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
               if (hasAny)
                 TextButton.icon(
                   onPressed: _isSaving ? null : _clearAll,
-                  icon: const Icon(Icons.clear_all, color: Color(0xFFEF4444), size: 16),
+                  icon: const Icon(
+                    Icons.clear_all,
+                    color: Color(0xFFEF4444),
+                    size: 16,
+                  ),
                   label: const Text(
                     'Clear all',
                     style: TextStyle(color: Color(0xFFEF4444)),
@@ -2280,7 +2472,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
     );
   }
 
-  Widget _buildBody(ThreadLlmOverrides overrides, ScrollController scrollController) {
+  Widget _buildBody(
+    ThreadLlmOverrides overrides,
+    ScrollController scrollController,
+  ) {
     final keys = overrides.keys.where((k) {
       if (_search.isEmpty) return true;
       final entry = overrides.schema[k];
@@ -2301,7 +2496,8 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: keys.length,
-      separatorBuilder: (_, __) => const Divider(color: Color(0xFF22222D), height: 1),
+      separatorBuilder: (_, __) =>
+          const Divider(color: Color(0xFF22222D), height: 1),
       itemBuilder: (context, index) {
         final key = keys[index];
         final entry = overrides.schema[key];
@@ -2311,7 +2507,11 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
     );
   }
 
-  Widget _buildRow(String key, ThreadLlmOverrideSchemaEntry entry, ThreadLlmOverrides overrides) {
+  Widget _buildRow(
+    String key,
+    ThreadLlmOverrideSchemaEntry entry,
+    ThreadLlmOverrides overrides,
+  ) {
     final effective = overrides.effectiveValue(key);
     final isOverridden = overrides.overrides.containsKey(key);
     final displayValue = isOverridden ? overrides.overrides[key] : effective;
@@ -2340,14 +2540,22 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                     ),
                     if (isOverridden)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
+                          color: const Color(
+                            0xFF8B5CF6,
+                          ).withValues(alpha: 0.15),
                           borderRadius: BorderRadius.circular(6),
                         ),
                         child: const Text(
                           'override',
-                          style: TextStyle(color: Color(0xFF8B5CF6), fontSize: 10),
+                          style: TextStyle(
+                            color: Color(0xFF8B5CF6),
+                            fontSize: 10,
+                          ),
                         ),
                       ),
                   ],
@@ -2371,7 +2579,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                       const SizedBox(width: 4),
                       Text(
                         displayValue == true ? 'On' : 'Off',
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                        ),
                       ),
                       const Spacer(),
                       if (isOverridden)
@@ -2393,14 +2604,17 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                                 isOverridden: isOverridden,
                                 isSaving: _isSaving,
                                 onSubmit: (v) => _setOverride(key, v),
-                                onReset: isOverridden ? () => _clearOne(key) : null,
+                                onReset: isOverridden
+                                    ? () => _clearOne(key)
+                                    : null,
                               )
                             : _StringField(
                                 keyName: key,
                                 initial: displayValue?.toString() ?? '',
                                 isOverridden: isOverridden,
                                 isSaving: _isSaving,
-                                multiline: key == 'system_prompt' ||
+                                multiline:
+                                    key == 'system_prompt' ||
                                     key == 'api_key' ||
                                     key == 'tts_api_key' ||
                                     key == 'vision_api_key',
@@ -2411,7 +2625,9 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                                     _setOverride(key, v);
                                   }
                                 },
-                                onReset: isOverridden ? () => _clearOne(key) : null,
+                                onReset: isOverridden
+                                    ? () => _clearOne(key)
+                                    : null,
                               ),
                       ),
                     ],
@@ -2421,7 +2637,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                     padding: const EdgeInsets.only(top: 4),
                     child: Text(
                       'Default: ${_formatDefault(effective, type)}',
-                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                      ),
                     ),
                   ),
               ],
@@ -2515,7 +2734,10 @@ class _NumberFieldState extends State<_NumberField> {
           child: TextField(
             controller: _controller,
             focusNode: _focusNode,
-            keyboardType: const TextInputType.numberWithOptions(signed: true, decimal: true),
+            keyboardType: const TextInputType.numberWithOptions(
+              signed: true,
+              decimal: true,
+            ),
             style: const TextStyle(color: Colors.white, fontSize: 13),
             onSubmitted: (_) => _commit(),
             onEditingComplete: _commit,
@@ -2524,7 +2746,10 @@ class _NumberFieldState extends State<_NumberField> {
               isDense: true,
               filled: true,
               fillColor: const Color(0xFF1E1E2A),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: BorderSide.none,
@@ -2613,7 +2838,9 @@ class _StringFieldState extends State<_StringField> {
             controller: _controller,
             focusNode: _focusNode,
             minLines: widget.multiline ? 3 : 1,
-            maxLines: widget.keyName == 'system_prompt' ? 8 : (widget.multiline ? 3 : 1),
+            maxLines: widget.keyName == 'system_prompt'
+                ? 8
+                : (widget.multiline ? 3 : 1),
             style: const TextStyle(color: Colors.white, fontSize: 13),
             onSubmitted: (_) => _commit(),
             onEditingComplete: _commit,
@@ -2622,7 +2849,10 @@ class _StringFieldState extends State<_StringField> {
               isDense: true,
               filled: true,
               fillColor: const Color(0xFF1E1E2A),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(8),
                 borderSide: BorderSide.none,
@@ -2637,7 +2867,11 @@ class _StringFieldState extends State<_StringField> {
             children: [
               IconButton(
                 tooltip: 'Save',
-                icon: const Icon(Icons.check, color: Color(0xFF8B5CF6), size: 18),
+                icon: const Icon(
+                  Icons.check,
+                  color: Color(0xFF8B5CF6),
+                  size: 18,
+                ),
                 onPressed: widget.isSaving ? null : _commit,
               ),
               if (widget.onReset != null)

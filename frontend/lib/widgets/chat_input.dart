@@ -63,7 +63,9 @@ class _ChatInputState extends State<ChatInput> {
   }
 
   bool get _canSend =>
-      ( _hasText || _attachments.isNotEmpty ) && !widget.isSending && !_isUploadingImages;
+      (_hasText || _attachments.isNotEmpty) &&
+      !widget.isSending &&
+      !_isUploadingImages;
 
   Future<void> _handlePastedImages(List<WebImageFile> files) async {
     if (files.isEmpty || !mounted) return;
@@ -83,7 +85,9 @@ class _ChatInputState extends State<ChatInput> {
             content: Text('Failed to add image: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -107,7 +111,9 @@ class _ChatInputState extends State<ChatInput> {
             content: Text('Image upload failed: $e'),
             backgroundColor: Colors.red.shade800,
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
           ),
         );
       }
@@ -126,14 +132,16 @@ class _ChatInputState extends State<ChatInput> {
     final text = _controller.text.trim();
     if ((text.isEmpty && _attachments.isEmpty) || !_canSend) return;
 
-    final imageUrls = _attachments.map((attachment) => attachment.url).toList(growable: false);
-    await widget.onSend(text, imageUrls);
-    if (!mounted) return;
+    final imageUrls = _attachments
+        .map((attachment) => attachment.url)
+        .toList(growable: false);
     setState(() {
       _attachments.clear();
       _hasText = false;
     });
     _controller.clear();
+    await widget.onSend(text, imageUrls);
+    if (!mounted) return;
     _focusNode.requestFocus();
   }
 
@@ -157,8 +165,12 @@ class _ChatInputState extends State<ChatInput> {
                       runSpacing: 10,
                       children: List.generate(_attachments.length, (index) {
                         final attachment = _attachments[index];
-                        final resolved = Uri.base.resolve(attachment.url).toString();
-                        final filename = Uri.parse(attachment.url).pathSegments.last;
+                        final resolved = Uri.base
+                            .resolve(attachment.url)
+                            .toString();
+                        final filename = Uri.parse(
+                          attachment.url,
+                        ).pathSegments.last;
                         return Stack(
                           clipBehavior: Clip.none,
                           children: [
@@ -168,7 +180,9 @@ class _ChatInputState extends State<ChatInput> {
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(14),
                                 color: const Color(0xFF111118),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.08),
+                                ),
                               ),
                               clipBehavior: Clip.antiAlias,
                               child: Stack(
@@ -187,7 +201,9 @@ class _ChatInputState extends State<ChatInput> {
                                             textAlign: TextAlign.center,
                                             style: TextStyle(
                                               fontSize: 11,
-                                              color: Colors.white.withValues(alpha: 0.55),
+                                              color: Colors.white.withValues(
+                                                alpha: 0.55,
+                                              ),
                                             ),
                                           ),
                                         ),
@@ -199,16 +215,24 @@ class _ChatInputState extends State<ChatInput> {
                                     right: 6,
                                     bottom: 6,
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 3,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: Colors.black.withValues(alpha: 0.55),
+                                        color: Colors.black.withValues(
+                                          alpha: 0.55,
+                                        ),
                                         borderRadius: BorderRadius.circular(6),
                                       ),
                                       child: Text(
                                         filename,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(fontSize: 10, color: Colors.white),
+                                        style: const TextStyle(
+                                          fontSize: 10,
+                                          color: Colors.white,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -229,9 +253,17 @@ class _ChatInputState extends State<ChatInput> {
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF111118),
                                       shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+                                      border: Border.all(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.08,
+                                        ),
+                                      ),
                                     ),
-                                    child: const Icon(Icons.close_rounded, size: 14, color: Colors.white70),
+                                    child: const Icon(
+                                      Icons.close_rounded,
+                                      size: 14,
+                                      color: Colors.white70,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -271,7 +303,9 @@ class _ChatInputState extends State<ChatInput> {
                               top: 14,
                               child: IgnorePointer(
                                 child: Text(
-                                  _attachments.isEmpty ? 'Message ThreadBot...' : 'Add a note...',
+                                  _attachments.isEmpty
+                                      ? 'Message ThreadBot...'
+                                      : 'Add a note...',
                                   style: TextStyle(
                                     fontSize: 15,
                                     height: 1.5,
@@ -290,7 +324,7 @@ class _ChatInputState extends State<ChatInput> {
                               maxLines: 6,
                               minLines: 1,
                               textInputAction: TextInputAction.send,
-                              onSubmitted: (_) { _handleSend(); },
+                              onSubmitted: (_) => _handleSend(),
                               cursorColor: const Color(0xFF8B5CF6),
                               enableSuggestions: false,
                               autocorrect: false,
@@ -301,7 +335,12 @@ class _ChatInputState extends State<ChatInput> {
                               ),
                               decoration: const InputDecoration(
                                 border: InputBorder.none,
-                                contentPadding: EdgeInsets.fromLTRB(20, 14, 8, 14),
+                                contentPadding: EdgeInsets.fromLTRB(
+                                  20,
+                                  14,
+                                  8,
+                                  14,
+                                ),
                                 filled: false,
                               ),
                             ),
@@ -315,14 +354,19 @@ class _ChatInputState extends State<ChatInput> {
                         color: Colors.transparent,
                         child: InkWell(
                           borderRadius: BorderRadius.circular(12),
-                          onTap: kIsWeb && !_isUploadingImages && !widget.isSending ? _pickImages : null,
+                          onTap:
+                              kIsWeb && !_isUploadingImages && !widget.isSending
+                              ? _pickImages
+                              : null,
                           child: Container(
                             width: 36,
                             height: 36,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(12),
                               color: _isUploadingImages
-                                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                  ? const Color(
+                                      0xFF8B5CF6,
+                                    ).withValues(alpha: 0.15)
                                   : Colors.transparent,
                             ),
                             child: _isUploadingImages
@@ -330,7 +374,9 @@ class _ChatInputState extends State<ChatInput> {
                                     padding: EdgeInsets.all(10),
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation(Colors.white),
+                                      valueColor: AlwaysStoppedAnimation(
+                                        Colors.white,
+                                      ),
                                     ),
                                   )
                                 : Icon(
@@ -368,7 +414,9 @@ class _ChatInputState extends State<ChatInput> {
                                 decoration: BoxDecoration(
                                   borderRadius: BorderRadius.circular(12),
                                   color: widget.hasLlmOverrides
-                                      ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                      ? const Color(
+                                          0xFF8B5CF6,
+                                        ).withValues(alpha: 0.15)
                                       : Colors.transparent,
                                 ),
                                 child: Icon(
@@ -397,7 +445,9 @@ class _ChatInputState extends State<ChatInput> {
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
                                 color: widget.hasToolOverrides
-                                    ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                                    ? const Color(
+                                        0xFF8B5CF6,
+                                      ).withValues(alpha: 0.15)
                                     : Colors.transparent,
                               ),
                               child: Icon(
@@ -420,26 +470,36 @@ class _ChatInputState extends State<ChatInput> {
                           color: Colors.transparent,
                           child: InkWell(
                             borderRadius: BorderRadius.circular(12),
-                            onTap: _canSend ? () { _handleSend(); } : null,
+                            onTap: _canSend
+                                ? () {
+                                    _handleSend();
+                                  }
+                                : null,
                             child: Container(
                               width: 36,
                               height: 36,
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
-                                color: _canSend ? const Color(0xFF8B5CF6) : Colors.white.withValues(alpha: 0.06),
+                                color: _canSend
+                                    ? const Color(0xFF8B5CF6)
+                                    : Colors.white.withValues(alpha: 0.06),
                               ),
                               child: widget.isSending
                                   ? const Padding(
                                       padding: EdgeInsets.all(10),
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        valueColor: AlwaysStoppedAnimation(Colors.white),
+                                        valueColor: AlwaysStoppedAnimation(
+                                          Colors.white,
+                                        ),
                                       ),
                                     )
                                   : Icon(
                                       Icons.arrow_upward_rounded,
                                       size: 18,
-                                      color: _canSend ? Colors.white : Colors.white.withValues(alpha: 0.2),
+                                      color: _canSend
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.2),
                                     ),
                             ),
                           ),
@@ -470,7 +530,6 @@ class _AttachedImage {
 
   const _AttachedImage({required this.url});
 }
-
 
 /// Small donut chart showing context window consumption.
 class _ContextDonut extends StatelessWidget {
@@ -512,10 +571,7 @@ class _ContextDonut extends StatelessWidget {
         width: 36,
         height: 36,
         child: CustomPaint(
-          painter: _DonutPainter(
-            ratio: ratio,
-            arcColor: arcColor,
-          ),
+          painter: _DonutPainter(ratio: ratio, arcColor: arcColor),
           child: Center(
             child: Text(
               '$percentage%',
@@ -531,7 +587,6 @@ class _ContextDonut extends StatelessWidget {
     );
   }
 }
-
 
 class _DonutPainter extends CustomPainter {
   final double ratio;

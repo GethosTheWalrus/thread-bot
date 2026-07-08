@@ -1,3 +1,12 @@
 limit.maxIDLEQueries:
   - value: 20
     constraints: {}
+history.enableTransitionHistory:
+  - value: true
+    constraints: {}
+history.enableChasm:
+  - value: true
+    constraints: {}
+activity.enableStandalone:
+  - value: true
+    constraints: {}
