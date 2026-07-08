@@ -293,6 +293,7 @@ def _agents_model_settings(config: dict, *, temperature: float | None = None, ma
         temperature=config.get("temperature", 0.7) if temperature is None else temperature,
         max_tokens=config.get("max_tokens", 2048) if max_tokens is None else max_tokens,
         include_usage=True,
+        extra_body=config.get("extra_body"),
     )
 
 
@@ -4384,6 +4385,13 @@ async def generate_title(args: dict) -> dict:
     title_config = dict(config)
     title_config["temperature"] = float(args.get("temperature", 0.3))
     title_config["max_tokens"] = int(args.get("max_tokens", 512))
+    title_config["extra_body"] = {
+        **(title_config.get("extra_body") or {}),
+        "chat_template_kwargs": {
+            **((title_config.get("extra_body") or {}).get("chat_template_kwargs") or {}),
+            "enable_thinking": False,
+        },
+    }
     completion = await _agents_chat_completion(messages, title_config)
     return {"content": completion.get("content", "")}
 
