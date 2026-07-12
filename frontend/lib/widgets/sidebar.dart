@@ -152,7 +152,26 @@ class Sidebar extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       child: Row(
                         children: [
-                          Icon(Icons.extension_rounded, size: 18, color: const Color(0xFF8B5CF6).withValues(alpha: 0.7)),
+                          Container(
+                            width: 18,
+                            height: 18,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF8B5CF6).withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(5),
+                              border: Border.all(
+                                color: const Color(0xFF8B5CF6).withValues(alpha: 0.55),
+                              ),
+                            ),
+                            child: const Text(
+                              'S',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFFC4B5FD),
+                              ),
+                            ),
+                          ),
                           const SizedBox(width: 10),
                           const Text(
                             'Skills',
