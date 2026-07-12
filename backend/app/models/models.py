@@ -78,7 +78,7 @@ class MCPServer(Base):
 class Skill(Base):
     __tablename__ = "skills"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid())
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True, default="")
     content = Column(Text, nullable=False)
@@ -149,7 +149,7 @@ class ThreadSkillOverride(Base):
     __tablename__ = "thread_skill_overrides"
     __table_args__ = (UniqueConstraint("thread_id", "skill_id"),)
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, server_default=func.gen_random_uuid())
     thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
     skill_id = Column(UUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False)
     enabled = Column(Boolean, nullable=False, default=True)

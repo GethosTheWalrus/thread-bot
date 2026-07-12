@@ -90,6 +90,9 @@ async def ensure_database_schema() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        await conn.execute(text(
+            "ALTER TABLE skills ALTER COLUMN id SET DEFAULT gen_random_uuid()"
+        ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS thread_skill_overrides (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -100,12 +103,16 @@ async def ensure_database_schema() -> None:
             )
         """))
         await conn.execute(text(
+            "ALTER TABLE thread_skill_overrides ALTER COLUMN id SET DEFAULT gen_random_uuid()"
+        ))
+        await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS idx_thread_skill_overrides_thread_id "
             "ON thread_skill_overrides(thread_id)"
         ))
         await conn.execute(text("""
-            INSERT INTO skills (name, description, content, is_active)
+            INSERT INTO skills (id, name, description, content, is_active)
             SELECT
+                gen_random_uuid(),
                 'Statistical probability analysis',
                 'Research event rates online and calculate probabilities, odds, and dry-streak questions.',
                 $skill$
