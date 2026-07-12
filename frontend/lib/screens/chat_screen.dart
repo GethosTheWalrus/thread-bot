@@ -10,9 +10,6 @@ import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
-import 'package:threadbot/screens/settings_screen.dart';
-import 'package:threadbot/screens/mcp_screen.dart';
-import 'package:threadbot/screens/skills_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -1153,21 +1150,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   void _openMCP() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const MCPScreen()));
+    Navigator.of(context).pushNamed('/mcp');
   }
 
   void _openSkills() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SkillsScreen()));
+    Navigator.of(context).pushNamed('/skills');
   }
 
   void _openSettings() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+    Navigator.of(context).pushNamed('/settings');
   }
 
   Future<void> _toggleDiscordShare() async {

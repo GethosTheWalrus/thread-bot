@@ -152,7 +152,7 @@ class Sidebar extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       child: Row(
                         children: [
-                          Icon(Icons.school_outlined, size: 18, color: const Color(0xFF8B5CF6).withValues(alpha: 0.7)),
+                          Icon(Icons.extension_rounded, size: 18, color: const Color(0xFF8B5CF6).withValues(alpha: 0.7)),
                           const SizedBox(width: 10),
                           const Text(
                             'Skills',

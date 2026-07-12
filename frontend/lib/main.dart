@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:threadbot/screens/chat_screen.dart';
+import 'package:threadbot/screens/mcp_screen.dart';
+import 'package:threadbot/screens/settings_screen.dart';
+import 'package:threadbot/screens/skills_screen.dart';
 import 'package:threadbot/services/view_registry.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 
@@ -54,7 +57,28 @@ class ThreadBotApp extends StatelessWidget {
             settings: settings,
           );
         }
-        
+
+        if (uri.path == '/skills') {
+          return MaterialPageRoute(
+            builder: (_) => const SkillsScreen(),
+            settings: settings,
+          );
+        }
+
+        if (uri.path == '/mcp') {
+          return MaterialPageRoute(
+            builder: (_) => const MCPScreen(),
+            settings: settings,
+          );
+        }
+
+        if (uri.path == '/settings') {
+          return MaterialPageRoute(
+            builder: (_) => const SettingsScreen(),
+            settings: settings,
+          );
+        }
+
         return MaterialPageRoute(
           builder: (_) => const ChatScreen(),
           settings: settings,
