@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean, LargeBinary
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean, LargeBinary, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 import uuid
@@ -75,6 +75,17 @@ class MCPServer(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class Skill(Base):
+    __tablename__ = "skills"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True, default="")
+    content = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class DiscordThreadLink(Base):
     __tablename__ = "discord_thread_links"
 
@@ -122,6 +133,7 @@ class DiscordServerToolOverride(Base):
 
 class ThreadToolOverride(Base):
     __tablename__ = "thread_tool_overrides"
+    __table_args__ = (UniqueConstraint("thread_id", "server_id", "tool_name"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
@@ -131,3 +143,16 @@ class ThreadToolOverride(Base):
 
     thread = relationship("Thread", foreign_keys=[thread_id])
     server = relationship("MCPServer", foreign_keys=[server_id])
+
+
+class ThreadSkillOverride(Base):
+    __tablename__ = "thread_skill_overrides"
+    __table_args__ = (UniqueConstraint("thread_id", "skill_id"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    thread_id = Column(UUID(as_uuid=True), ForeignKey("threads.id", ondelete="CASCADE"), nullable=False)
+    skill_id = Column(UUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+
+    thread = relationship("Thread", foreign_keys=[thread_id])
+    skill = relationship("Skill", foreign_keys=[skill_id])

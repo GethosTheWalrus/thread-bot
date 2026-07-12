@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:threadbot/utils/web_image_io.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
+import 'package:threadbot/models/skill.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -433,6 +434,94 @@ class ApiService {
 
     if (response.statusCode != 200) {
       throw Exception('Failed to save tool overrides: ${response.statusCode}');
+    }
+  }
+
+  // ── Skills ────────────────────────────────────────────────────────
+
+  Future<List<Skill>> getSkills() async {
+    final response = await http.get(Uri.parse('$baseUrl/api/skills'));
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as List<dynamic>;
+      return data.map((s) => Skill.fromJson(s as Map<String, dynamic>)).toList();
+    }
+    throw Exception('Failed to load skills: ${response.statusCode}');
+  }
+
+  Future<Skill> createSkill({
+    required String name,
+    String description = '',
+    required String content,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/skills'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'description': description,
+        'content': content,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return Skill.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to create skill: ${response.statusCode}');
+  }
+
+  Future<Skill> updateSkill(
+    String skillId, {
+    required String name,
+    String description = '',
+    required String content,
+  }) async {
+    final response = await http.patch(
+      Uri.parse('$baseUrl/api/skills/$skillId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'description': description,
+        'content': content,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return Skill.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to update skill: ${response.statusCode}');
+  }
+
+  Future<Skill> toggleSkill(String skillId) async {
+    final response = await http.patch(Uri.parse('$baseUrl/api/skills/$skillId/toggle'));
+    if (response.statusCode == 200) {
+      return Skill.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to toggle skill: ${response.statusCode}');
+  }
+
+  Future<void> deleteSkill(String skillId) async {
+    final response = await http.delete(Uri.parse('$baseUrl/api/skills/$skillId'));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete skill: ${response.statusCode}');
+    }
+  }
+
+  Future<Map<String, dynamic>> getThreadSkillOverrides(String threadId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/threads/$threadId/skill-overrides'),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    }
+    throw Exception('Failed to load skill overrides: ${response.statusCode}');
+  }
+
+  Future<void> setThreadSkillOverrides(String threadId, List<Map<String, dynamic>> overrides) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/api/threads/$threadId/skill-overrides'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'overrides': overrides}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to save skill overrides: ${response.statusCode}');
     }
   }
 

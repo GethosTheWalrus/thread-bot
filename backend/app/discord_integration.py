@@ -670,6 +670,13 @@ def _tool_input_lines(tool_name: str, args: dict) -> list[str]:
     if isinstance(query, str) and query.strip():
         label = "Search" if "search" in name or "duck" in name else "Query"
         lines.append(f"{label}: `{_preview(query, 160)}`")
+    if name == "use_skill":
+        skill_name = args.get("skill_name") or args.get("skill_id")
+        reason = args.get("reason")
+        if isinstance(skill_name, str) and skill_name.strip():
+            lines.append(f"Skill: `{_preview(skill_name, 120)}`")
+        if isinstance(reason, str) and reason.strip():
+            lines.append(f"Reason: `{_preview(reason, 160)}`")
     if not lines and ("search" in name or "duck" in name):
         for key, value in args.items():
             if isinstance(value, str) and value.strip():
@@ -767,10 +774,14 @@ async def sync_discord_tool_activity(
                 args = json.loads(function.get("arguments") or "{}")
             except Exception:
                 args = {}
+            display_tool = tool_name
+            if tool_name == "use_skill":
+                skill_name = str(args.get("skill_name") or args.get("skill_id") or "skill").strip() or "skill"
+                display_tool = f"skill:{skill_name}"
             if call_id not in state["order"]:
                 state["order"].append(call_id)
             state["steps"][call_id] = {
-                "tool": tool_name,
+                "tool": display_tool,
                 "status": "running",
                 "details": _tool_input_lines(tool_name, args),
             }
@@ -1416,7 +1427,7 @@ async def start_discord_reply_workflow(
     config = await _load_fresh_discord_config()
     llm_config = get_llm_config().copy()
     from app.database import AsyncSessionLocal
-    from app.database.crud import get_thread_tool_overrides
+    from app.database.crud import get_enabled_thread_skills, get_thread_tool_overrides
 
     async with AsyncSessionLocal() as db:
         thread_overrides = await get_thread_tool_overrides(db, thread_id)
@@ -1428,6 +1439,18 @@ async def start_discord_reply_workflow(
                     "enabled": o.enabled,
                 }
                 for o in thread_overrides
+            ]
+        enabled_skills = await get_enabled_thread_skills(db, thread_id)
+        if enabled_skills:
+            llm_config["skills"] = [
+                {
+                    "id": str(skill.id),
+                    "name": skill.name,
+                    "description": skill.description or "",
+                    "content": skill.content,
+                }
+                for skill in enabled_skills
+                if skill.content and skill.content.strip()
             ]
         from app.database.crud import get_thread_llm_overrides
         from app.config import apply_thread_llm_overrides

@@ -740,7 +740,7 @@ async def _execute_agent_tool(
     stream_channel = config.get("stream_channel")
     await _typing_pulse(config.get("discord"))
     builtin_tools = {
-        "continue_thinking", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
+        "continue_thinking", "use_skill", "web_fetch", "describe_image", "extract_image_recipe", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "generate_video",
         "context_overview", "compact_context_topic",
@@ -758,6 +758,13 @@ async def _execute_agent_tool(
 
     if tool_name in builtin_tools:
         display_name = f"built-in:{tool_name}"
+        if tool_name == "use_skill":
+            try:
+                skill_args = json.loads(arguments or "{}")
+            except Exception:
+                skill_args = {}
+            skill_label = str(skill_args.get("skill_name") or skill_args.get("skill_id") or "skill").strip() or "skill"
+            display_name = f"skill:{skill_label}"
         if tool_name != "continue_thinking":
             await _save_inline(
                 thread_id,
@@ -1445,6 +1452,38 @@ async def _execute_builtin(
             await _publish(redis_url, stream_channel, {"type": "thinking", "content": reasoning_text})
         return "Acknowledged. Continue your analysis."
 
+    if tool_name == "use_skill":
+        requested_id = str(tool_args.get("skill_id") or "").strip().lower()
+        requested_name = str(tool_args.get("skill_name") or "").strip().lower()
+        reason = str(tool_args.get("reason") or "").strip()
+        for skill in config.get("skills") or []:
+            if not isinstance(skill, dict):
+                continue
+            skill_id = str(skill.get("id") or "").strip().lower()
+            skill_name = str(skill.get("name") or "").strip()
+            if requested_id and requested_id == skill_id:
+                matched = True
+            elif requested_name and requested_name == skill_name.lower():
+                matched = True
+            else:
+                matched = False
+            if not matched:
+                continue
+            description = str(skill.get("description") or "").strip()
+            content = str(skill.get("content") or "").strip()
+            header = f"Using skill: {skill_name}"
+            if description:
+                header += f"\nDescription: {description}"
+            if reason:
+                header += f"\nReason: {reason}"
+            return f"{header}\n\nSkill instructions:\n{content}"
+        available = ", ".join(
+            str(skill.get("name") or "Untitled skill")
+            for skill in config.get("skills") or []
+            if isinstance(skill, dict)
+        )
+        return f"Skill not found. Available skills: {available or 'none'}."
+
     if tool_name == "web_fetch":
         import aiohttp
         import html as html_mod
@@ -1696,21 +1735,342 @@ async def _execute_builtin(
         )
 
     if tool_name == "calculator":
+        import ast
+        import json as _json
         import math
-        expression = tool_args.get("expression", "")
-        # Whitelist of safe names for eval
+
         safe_names = {
-            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
-            "tan": math.tan, "log": math.log, "log10": math.log10,
-            "abs": abs, "round": round, "ceil": math.ceil,
-            "floor": math.floor, "pi": math.pi, "e": math.e,
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2,
+            "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
+            "exp": math.exp, "log": math.log, "ln": math.log, "log10": math.log10, "log2": math.log2,
+            "abs": abs, "round": round, "ceil": math.ceil, "floor": math.floor,
+            "factorial": math.factorial, "gamma": math.gamma, "lgamma": math.lgamma,
+            "comb": math.comb, "perm": math.perm, "gcd": math.gcd, "lcm": math.lcm,
+            "degrees": math.degrees, "radians": math.radians, "erf": math.erf, "erfc": math.erfc,
+            "pi": math.pi, "e": math.e, "tau": math.tau,
             "pow": pow, "min": min, "max": max,
         }
+
+        allowed_nodes = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call, ast.Name, ast.Load, ast.Constant,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow, ast.USub, ast.UAdd,
+        )
+
+        def _safe_eval(expression: str, variables: dict | None = None) -> float:
+            tree = ast.parse(str(expression), mode="eval")
+            names = dict(safe_names)
+            names.update(variables or {})
+            for node in ast.walk(tree):
+                if not isinstance(node, allowed_nodes):
+                    raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+                if isinstance(node, ast.Call):
+                    if not isinstance(node.func, ast.Name) or node.func.id not in safe_names:
+                        raise ValueError("Only whitelisted math functions may be called")
+                if isinstance(node, ast.Name) and node.id not in names:
+                    raise ValueError(f"Unknown name: {node.id}")
+            return eval(compile(tree, "<calculator>", "eval"), {"__builtins__": {}}, names)  # noqa: S307
+
+        def _as_float(name: str, default=None):
+            value = tool_args.get(name, default)
+            if value is None:
+                raise ValueError(f"Missing required parameter: {name}")
+            return float(value)
+
+        def _as_int(name: str, default=None):
+            value = tool_args.get(name, default)
+            if value is None:
+                raise ValueError(f"Missing required parameter: {name}")
+            return int(value)
+
+        def _normal_cdf(x: float, mean: float = 0.0, sd: float = 1.0) -> float:
+            if sd <= 0:
+                raise ValueError("standard deviation must be positive")
+            return 0.5 * (1.0 + math.erf((x - mean) / (sd * math.sqrt(2.0))))
+
+        def _regularized_gamma_p(a: float, x: float) -> float:
+            if a <= 0:
+                raise ValueError("gamma shape parameter must be positive")
+            if x < 0:
+                raise ValueError("gamma x must be non-negative")
+            if x == 0:
+                return 0.0
+            eps = 1e-14
+            max_iterations = 1000
+            gln = math.lgamma(a)
+            if x < a + 1.0:
+                ap = a
+                delta = 1.0 / a
+                total = delta
+                for _ in range(max_iterations):
+                    ap += 1.0
+                    delta *= x / ap
+                    total += delta
+                    if abs(delta) < abs(total) * eps:
+                        break
+                return total * math.exp(-x + a * math.log(x) - gln)
+
+            # Continued fraction for Q(a, x), then return P(a, x) = 1 - Q(a, x).
+            tiny = 1e-300
+            b = x + 1.0 - a
+            c = 1.0 / tiny
+            d = 1.0 / max(b, tiny)
+            h = d
+            for i in range(1, max_iterations + 1):
+                an = -i * (i - a)
+                b += 2.0
+                d = an * d + b
+                if abs(d) < tiny:
+                    d = tiny
+                c = b + an / c
+                if abs(c) < tiny:
+                    c = tiny
+                d = 1.0 / d
+                delta = d * c
+                h *= delta
+                if abs(delta - 1.0) < eps:
+                    break
+            q = math.exp(-x + a * math.log(x) - gln) * h
+            return max(0.0, min(1.0, 1.0 - q))
+
+        def _chi_square_cdf(x: float, df: int) -> float:
+            if df <= 0:
+                raise ValueError("df must be positive")
+            if x < 0:
+                raise ValueError("x must be non-negative")
+            return _regularized_gamma_p(df / 2.0, x / 2.0)
+
+        def _numeric_list(name: str) -> list[float]:
+            values = tool_args.get(name)
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"{name} must be a non-empty numeric array")
+            return [float(v) for v in values]
+
+        def _format(payload: dict) -> str:
+            return _json.dumps(payload, indent=2, sort_keys=True)
+
+        operation = str(tool_args.get("operation") or "expression").strip().lower()
         try:
-            result = eval(expression, {"__builtins__": {}}, safe_names)  # noqa: S307
-            return str(result)
+            if operation == "expression":
+                expression = tool_args.get("expression", "")
+                result = _safe_eval(expression)
+                return _format({"operation": operation, "expression": expression, "result": result})
+
+            if operation in {"factorial", "combination", "permutation"}:
+                n = _as_int("n")
+                if operation == "factorial":
+                    result = math.factorial(n)
+                else:
+                    k = _as_int("k")
+                    result = math.comb(n, k) if operation == "combination" else math.perm(n, k)
+                return _format({"operation": operation, "n": n, "k": tool_args.get("k"), "result": result})
+
+            if operation in {"binomial_pmf", "binomial_cdf", "binomial_at_least", "binomial_at_most"}:
+                n = _as_int("n")
+                k = _as_int("k")
+                p = _as_float("p")
+                if not 0 <= p <= 1:
+                    raise ValueError("p must be between 0 and 1")
+                def pmf(i: int) -> float:
+                    return math.comb(n, i) * (p ** i) * ((1 - p) ** (n - i))
+                if operation == "binomial_pmf":
+                    result = pmf(k)
+                elif operation == "binomial_cdf" or operation == "binomial_at_most":
+                    result = sum(pmf(i) for i in range(0, k + 1))
+                else:
+                    result = sum(pmf(i) for i in range(k, n + 1))
+                return _format({"operation": operation, "n": n, "k": k, "p": p, "result": result, "percent": result * 100})
+
+            if operation == "at_least_one":
+                p = _as_float("p")
+                n = _as_int("n")
+                if not 0 <= p <= 1:
+                    raise ValueError("p must be between 0 and 1")
+                result = 1 - ((1 - p) ** n)
+                return _format({"operation": operation, "formula": "1 - (1 - p)^n", "p": p, "n": n, "result": result, "percent": result * 100})
+
+            if operation == "geometric_cdf":
+                p = _as_float("p")
+                n = _as_int("n")
+                result = 1 - ((1 - p) ** n)
+                return _format({"operation": operation, "description": "P(first success occurs within n trials)", "p": p, "n": n, "result": result, "percent": result * 100})
+
+            if operation == "geometric_pmf":
+                p = _as_float("p")
+                k = _as_int("k")
+                result = ((1 - p) ** (k - 1)) * p
+                return _format({"operation": operation, "description": "P(first success occurs on trial k)", "p": p, "k": k, "result": result, "percent": result * 100})
+
+            if operation in {"poisson_pmf", "poisson_cdf"}:
+                lam = _as_float("lambda", tool_args.get("lam"))
+                k = _as_int("k")
+                def pmf(i: int) -> float:
+                    return math.exp(-lam) * (lam ** i) / math.factorial(i)
+                result = pmf(k) if operation == "poisson_pmf" else sum(pmf(i) for i in range(0, k + 1))
+                return _format({"operation": operation, "lambda": lam, "k": k, "result": result, "percent": result * 100})
+
+            if operation in {"normal_pdf", "normal_cdf", "z_score"}:
+                x = _as_float("x")
+                mean = _as_float("mean", 0.0)
+                sd = _as_float("sd", tool_args.get("stddev", 1.0))
+                if operation == "z_score":
+                    result = (x - mean) / sd
+                elif operation == "normal_cdf":
+                    result = _normal_cdf(x, mean, sd)
+                else:
+                    result = math.exp(-0.5 * ((x - mean) / sd) ** 2) / (sd * math.sqrt(2 * math.pi))
+                return _format({"operation": operation, "x": x, "mean": mean, "sd": sd, "result": result})
+
+            if operation in {"chi_square_cdf", "chi_square_survival"}:
+                x = _as_float("x")
+                df = _as_int("df")
+                cdf = _chi_square_cdf(x, df)
+                result = 1.0 - cdf if operation == "chi_square_survival" else cdf
+                return _format({"operation": operation, "x": x, "df": df, "result": result, "percent": result * 100})
+
+            if operation in {"chi_square_stat", "chi_square_gof"}:
+                observed = _numeric_list("observed")
+                expected = _numeric_list("expected")
+                if len(observed) != len(expected):
+                    raise ValueError("observed and expected must have the same length")
+                if any(e <= 0 for e in expected):
+                    raise ValueError("all expected counts must be positive")
+                statistic = sum(((o - e) ** 2) / e for o, e in zip(observed, expected))
+                df = _as_int("df", len(observed) - 1)
+                p_value = 1.0 - _chi_square_cdf(statistic, df)
+                return _format({
+                    "operation": operation,
+                    "observed": observed,
+                    "expected": expected,
+                    "chi_square": statistic,
+                    "df": df,
+                    "p_value": p_value,
+                    "p_value_percent": p_value * 100,
+                })
+
+            if operation == "chi_square_independence":
+                table_raw = tool_args.get("table")
+                if not isinstance(table_raw, list) or not table_raw or not all(isinstance(row, list) and row for row in table_raw):
+                    raise ValueError("table must be a non-empty 2D numeric array")
+                table = [[float(v) for v in row] for row in table_raw]
+                column_count = len(table[0])
+                if any(len(row) != column_count for row in table):
+                    raise ValueError("all table rows must have the same length")
+                if len(table) < 2 or column_count < 2:
+                    raise ValueError("table must have at least 2 rows and 2 columns")
+                row_totals = [sum(row) for row in table]
+                col_totals = [sum(table[r][c] for r in range(len(table))) for c in range(column_count)]
+                total = sum(row_totals)
+                if total <= 0:
+                    raise ValueError("table total must be positive")
+                expected = [[row_total * col_total / total for col_total in col_totals] for row_total in row_totals]
+                if any(e <= 0 for row in expected for e in row):
+                    raise ValueError("all expected counts must be positive")
+                statistic = sum(
+                    ((table[r][c] - expected[r][c]) ** 2) / expected[r][c]
+                    for r in range(len(table))
+                    for c in range(column_count)
+                )
+                df = (len(table) - 1) * (column_count - 1)
+                p_value = 1.0 - _chi_square_cdf(statistic, df)
+                return _format({
+                    "operation": operation,
+                    "observed": table,
+                    "expected": expected,
+                    "row_totals": row_totals,
+                    "column_totals": col_totals,
+                    "chi_square": statistic,
+                    "df": df,
+                    "p_value": p_value,
+                    "p_value_percent": p_value * 100,
+                })
+
+            if operation == "descriptive_stats":
+                values = _numeric_list("values")
+                n = len(values)
+                mean = sum(values) / n
+                sorted_values = sorted(values)
+                median = sorted_values[n // 2] if n % 2 else (sorted_values[n // 2 - 1] + sorted_values[n // 2]) / 2
+                pop_var = sum((v - mean) ** 2 for v in values) / n
+                sample_var = sum((v - mean) ** 2 for v in values) / (n - 1) if n > 1 else None
+                return _format({
+                    "operation": operation,
+                    "count": n,
+                    "mean": mean,
+                    "median": median,
+                    "min": min(values),
+                    "max": max(values),
+                    "population_variance": pop_var,
+                    "population_sd": math.sqrt(pop_var),
+                    "sample_variance": sample_var,
+                    "sample_sd": math.sqrt(sample_var) if sample_var is not None else None,
+                })
+
+            if operation == "confidence_interval_mean_z":
+                mean = _as_float("mean")
+                sd = _as_float("sd", tool_args.get("stddev"))
+                n = _as_int("n")
+                confidence = _as_float("confidence", 0.95)
+                z_lookup = {0.80: 1.2815515655, 0.90: 1.644853627, 0.95: 1.9599639845, 0.98: 2.326347874, 0.99: 2.575829304}
+                z = z_lookup.get(round(confidence, 2), _as_float("z", 1.9599639845))
+                margin = z * sd / math.sqrt(n)
+                return _format({"operation": operation, "mean": mean, "sd": sd, "n": n, "confidence": confidence, "z": z, "margin": margin, "low": mean - margin, "high": mean + margin})
+
+            if operation in {"derivative", "second_derivative"}:
+                expression = str(tool_args.get("expression") or "")
+                x = _as_float("x")
+                h = _as_float("h", 1e-5)
+                if operation == "derivative":
+                    result = (_safe_eval(expression, {"x": x + h}) - _safe_eval(expression, {"x": x - h})) / (2 * h)
+                else:
+                    result = (_safe_eval(expression, {"x": x + h}) - 2 * _safe_eval(expression, {"x": x}) + _safe_eval(expression, {"x": x - h})) / (h ** 2)
+                return _format({"operation": operation, "expression": expression, "x": x, "h": h, "result": result})
+
+            if operation == "definite_integral":
+                expression = str(tool_args.get("expression") or "")
+                a = _as_float("a")
+                b = _as_float("b")
+                intervals = _as_int("intervals", 1000)
+                if intervals < 2:
+                    intervals = 2
+                if intervals % 2:
+                    intervals += 1
+                h = (b - a) / intervals
+                total = _safe_eval(expression, {"x": a}) + _safe_eval(expression, {"x": b})
+                for i in range(1, intervals):
+                    total += (4 if i % 2 else 2) * _safe_eval(expression, {"x": a + i * h})
+                result = total * h / 3
+                return _format({"operation": operation, "method": "Simpson's rule", "expression": expression, "a": a, "b": b, "intervals": intervals, "result": result})
+
+            if operation == "root_bisection":
+                expression = str(tool_args.get("expression") or "")
+                a = _as_float("a")
+                b = _as_float("b")
+                tolerance = _as_float("tolerance", 1e-10)
+                max_iterations = _as_int("max_iterations", 100)
+                fa = _safe_eval(expression, {"x": a})
+                fb = _safe_eval(expression, {"x": b})
+                if fa * fb > 0:
+                    raise ValueError("f(a) and f(b) must have opposite signs")
+                mid = a
+                fm = fa
+                iterations = 0
+                for iterations in range(1, max_iterations + 1):
+                    mid = (a + b) / 2
+                    fm = _safe_eval(expression, {"x": mid})
+                    if abs(fm) < tolerance or abs(b - a) / 2 < tolerance:
+                        break
+                    if fa * fm <= 0:
+                        b = mid
+                        fb = fm
+                    else:
+                        a = mid
+                        fa = fm
+                return _format({"operation": operation, "expression": expression, "root": mid, "f_root": fm, "iterations": iterations})
+
+            return f"Error: unknown calculator operation '{operation}'"
         except Exception as e:
-            return f"Error evaluating expression: {str(e)}"
+            return f"Error evaluating calculator operation '{operation}': {str(e)}"
 
     if tool_name == "reachy_move":
         if not (config.get("reachy") or {}).get("enabled"):
@@ -4093,7 +4453,7 @@ async def execute_tools(args: dict) -> dict:
 
     # Names of built-in tools that don't require MCP containers
     BUILTIN_TOOLS = {
-        "continue_thinking", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
+        "continue_thinking", "use_skill", "web_fetch", "describe_image", "inspect_image_url", "current_datetime", "calculator",
         "json_parse", "text_count", "base64_decode", "base64_encode", "generate_image", "iterate_image_generation",
         "generate_video",
         "context_overview", "compact_context_topic",

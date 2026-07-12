@@ -13,6 +13,14 @@ from app.database.crud import (
     delete_mcp_server,
     toggle_mcp_server,
     update_mcp_server,
+    create_skill,
+    get_skills,
+    update_skill,
+    delete_skill,
+    toggle_skill,
+    get_enabled_thread_skills,
+    get_thread_skill_overrides,
+    set_thread_skill_overrides,
     upsert_settings,
     get_thread_tool_overrides,
     set_thread_tool_overrides,
@@ -44,6 +52,11 @@ from app.models.schemas import (
     ToolOverrideRequest,
     ToolOverridesResponse,
     ToolOverrideItem,
+    SkillCreate,
+    SkillResponse,
+    SkillOverrideRequest,
+    SkillOverridesResponse,
+    SkillOverrideItem,
     AvailableServer,
     AvailableTool,
     DiscordSettingsRequest,
@@ -96,6 +109,19 @@ def get_temporal_client():
 
 def set_temporal_client(client: TemporalClient):
     router._temporal_client = client
+
+
+def _skills_for_llm(skills) -> list[dict]:
+    return [
+        {
+            "id": str(skill.id),
+            "name": skill.name,
+            "description": skill.description or "",
+            "content": skill.content,
+        }
+        for skill in skills
+        if skill.content and skill.content.strip()
+    ]
 
 
 async def _active_thread_workflow_id(client: TemporalClient, thread_id: UUID) -> str | None:
@@ -475,6 +501,16 @@ async def create_thread_endpoint(
             for o in request.tool_overrides
         ]
         await set_thread_tool_overrides(db, thread.id, overrides)
+    if request.skill_overrides:
+        skill_overrides = [
+            {
+                "skill_id": UUID(o.skill_id),
+                "enabled": o.enabled,
+            }
+            for o in request.skill_overrides
+        ]
+        await set_thread_skill_overrides(db, thread.id, skill_overrides)
+    if request.tool_overrides or request.skill_overrides:
         await db.commit()
     return _build_thread_response(thread)
 
@@ -547,6 +583,12 @@ async def chat_websocket(websocket: WebSocket):
                     for o in request.tool_overrides
                 ]
                 await set_thread_tool_overrides(setup_db, thread_id, overrides)
+            if request.skill_overrides:
+                skill_overrides = [
+                    {"skill_id": UUID(o.skill_id), "enabled": o.enabled}
+                    for o in request.skill_overrides
+                ]
+                await set_thread_skill_overrides(setup_db, thread_id, skill_overrides)
         else:
             thread = await create_thread(setup_db, "New Thread", parent_id=None)
             thread_id = thread.id
@@ -560,6 +602,12 @@ async def chat_websocket(websocket: WebSocket):
                     for o in request.tool_overrides
                 ]
                 await set_thread_tool_overrides(setup_db, thread_id, overrides)
+            if request.skill_overrides:
+                skill_overrides = [
+                    {"skill_id": UUID(o.skill_id), "enabled": o.enabled}
+                    for o in request.skill_overrides
+                ]
+                await set_thread_skill_overrides(setup_db, thread_id, skill_overrides)
 
         image_attachments = _image_attachments_from_urls(request.image_urls)
         message_metadata = {"image_attachments": image_attachments} if image_attachments else None
@@ -577,6 +625,10 @@ async def chat_websocket(websocket: WebSocket):
                 }
                 for o in thread_overrides
             ]
+
+        enabled_skills = await get_enabled_thread_skills(setup_db, thread_id)
+        if enabled_skills:
+            llm_config["skills"] = _skills_for_llm(enabled_skills)
 
         # Apply per-thread LLM overrides on top of the global config.
         thread_llm_overrides = await get_thread_llm_overrides(setup_db, thread_id)
@@ -1635,6 +1687,59 @@ async def list_mcp_servers_endpoint(db: AsyncSession = Depends(get_db)):
     return result
 
 
+@router.get("/skills", response_model=list[SkillResponse])
+async def list_skills_endpoint(db: AsyncSession = Depends(get_db)):
+    return await get_skills(db)
+
+
+@router.post("/skills", response_model=SkillResponse)
+async def create_skill_endpoint(request: SkillCreate, db: AsyncSession = Depends(get_db)):
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="Skill content is required")
+    return await create_skill(db, request.name.strip(), request.description or "", request.content)
+
+
+@router.patch("/skills/{skill_id}", response_model=SkillResponse)
+async def update_skill_endpoint(
+    skill_id: UUID,
+    request: SkillCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="Skill content is required")
+    skill = await update_skill(
+        db,
+        skill_id,
+        name=request.name.strip(),
+        description=request.description or "",
+        content=request.content,
+    )
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return skill
+
+
+@router.patch("/skills/{skill_id}/toggle", response_model=SkillResponse)
+async def toggle_skill_endpoint(skill_id: UUID, db: AsyncSession = Depends(get_db)):
+    skill = await toggle_skill(db, skill_id)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return skill
+
+
+@router.delete("/skills/{skill_id}")
+async def delete_skill_endpoint(skill_id: UUID, db: AsyncSession = Depends(get_db)):
+    deleted = await delete_skill(db, skill_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return {"detail": "Skill deleted"}
+
+
+@router.get("/skills/thread-overrides", response_model=SkillOverridesResponse)
+async def get_global_skill_overrides(db: AsyncSession = Depends(get_db)):
+    return SkillOverridesResponse(skills=await get_skills(db), overrides=[])
+
+
 @router.post("/mcp", response_model=MCPServerResponse)
 async def create_mcp_server_endpoint(request: MCPServerCreate, db: AsyncSession = Depends(get_db)):
     from app.encryption import decrypt_dict
@@ -1816,3 +1921,33 @@ async def put_tool_overrides(
     await set_thread_tool_overrides(db, thread_id, overrides)
     await db.commit()
     return {"detail": "Overrides saved"}
+
+
+# ── Thread Skill Overrides ────────────────────────────────────────────
+
+
+@router.get("/threads/{thread_id}/skill-overrides", response_model=SkillOverridesResponse)
+async def get_skill_overrides(thread_id: UUID, db: AsyncSession = Depends(get_db)):
+    overrides = await get_thread_skill_overrides(db, thread_id)
+    return SkillOverridesResponse(
+        skills=await get_skills(db),
+        overrides=[
+            SkillOverrideItem(skill_id=str(o.skill_id), enabled=o.enabled)
+            for o in overrides
+        ],
+    )
+
+
+@router.put("/threads/{thread_id}/skill-overrides")
+async def put_skill_overrides(
+    thread_id: UUID,
+    request: SkillOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    overrides = [
+        {"skill_id": UUID(o.skill_id), "enabled": o.enabled}
+        for o in request.overrides
+    ]
+    await set_thread_skill_overrides(db, thread_id, overrides)
+    await db.commit()
+    return {"detail": "Skill overrides saved"}

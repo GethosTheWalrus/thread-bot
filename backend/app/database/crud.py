@@ -7,8 +7,10 @@ from app.models.models import (
     Thread,
     Message,
     MCPServer,
+    Skill,
     Setting,
     ThreadToolOverride,
+    ThreadSkillOverride,
     DiscordThreadLink,
     DiscordServer,
     DiscordServerToolOverride,
@@ -473,3 +475,107 @@ async def set_thread_tool_overrides(
     for o in new_overrides:
         await db.refresh(o)
     return new_overrides
+
+
+# ── Skills ────────────────────────────────────────────────────────────
+
+async def create_skill(
+    db: AsyncSession,
+    name: str,
+    description: str | None,
+    content: str,
+) -> Skill:
+    skill = Skill(name=name, description=description or "", content=content)
+    db.add(skill)
+    await db.flush()
+    await db.refresh(skill)
+    return skill
+
+
+async def get_skills(db: AsyncSession) -> list[Skill]:
+    result = await db.execute(select(Skill).order_by(Skill.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def update_skill(
+    db: AsyncSession,
+    skill_id: UUID,
+    name: str | None = None,
+    description: str | None = None,
+    content: str | None = None,
+) -> Skill | None:
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if skill:
+        if name is not None:
+            skill.name = name
+        if description is not None:
+            skill.description = description
+        if content is not None:
+            skill.content = content
+        await db.flush()
+        await db.refresh(skill)
+    return skill
+
+
+async def toggle_skill(db: AsyncSession, skill_id: UUID) -> Skill | None:
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if skill:
+        skill.is_active = not skill.is_active
+        await db.flush()
+        await db.refresh(skill)
+    return skill
+
+
+async def delete_skill(db: AsyncSession, skill_id: UUID) -> bool:
+    result = await db.execute(select(Skill).where(Skill.id == skill_id))
+    skill = result.scalar_one_or_none()
+    if skill:
+        await db.delete(skill)
+        await db.flush()
+        return True
+    return False
+
+
+async def get_thread_skill_overrides(db: AsyncSession, thread_id: UUID) -> list[ThreadSkillOverride]:
+    result = await db.execute(
+        select(ThreadSkillOverride).where(ThreadSkillOverride.thread_id == thread_id)
+    )
+    return list(result.scalars().all())
+
+
+async def set_thread_skill_overrides(
+    db: AsyncSession, thread_id: UUID, overrides: list[dict]
+) -> list[ThreadSkillOverride]:
+    from sqlalchemy import delete
+    await db.execute(
+        delete(ThreadSkillOverride).where(ThreadSkillOverride.thread_id == thread_id)
+    )
+
+    new_overrides = []
+    for o in overrides:
+        override = ThreadSkillOverride(
+            thread_id=thread_id,
+            skill_id=o["skill_id"],
+            enabled=o["enabled"],
+        )
+        db.add(override)
+        new_overrides.append(override)
+
+    await db.flush()
+    for o in new_overrides:
+        await db.refresh(o)
+    return new_overrides
+
+
+async def get_enabled_thread_skills(db: AsyncSession, thread_id: UUID) -> list[Skill]:
+    skills = await get_skills(db)
+    overrides = await get_thread_skill_overrides(db, thread_id)
+    override_map = {str(o.skill_id): bool(o.enabled) for o in overrides}
+    enabled = []
+    for skill in skills:
+        is_enabled = override_map.get(str(skill.id), bool(skill.is_active))
+        if is_enabled:
+            enabled.append(skill)
+    return enabled

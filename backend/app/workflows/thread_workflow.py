@@ -651,20 +651,139 @@ class RunThreadWorkflow:
                     "function": {
                         "name": "calculator",
                         "description": (
-                            "Evaluate a mathematical expression and return the result. Supports "
-                            "arithmetic (+, -, *, /, **), parentheses, and common math functions "
-                            "(sqrt, sin, cos, tan, log, log10, abs, round, ceil, floor, pi, e). "
-                            "Use this instead of doing mental math."
+                            "Deterministic math calculator. Use this instead of mental math for arithmetic, "
+                            "probability, statistics, and numerical single-variable calculus. Supports expression "
+                            "evaluation plus structured operations: factorial, combination, permutation, "
+                            "binomial_pmf, binomial_cdf/binomial_at_most, binomial_at_least, at_least_one, "
+                            "geometric_pmf/geometric_cdf, poisson_pmf/poisson_cdf, normal_pdf/normal_cdf, "
+                            "z_score, chi_square_cdf/chi_square_survival, chi_square_stat, chi_square_gof, "
+                            "chi_square_independence, descriptive_stats, confidence_interval_mean_z, "
+                            "derivative, second_derivative, definite_integral, and root_bisection."
                         ),
                         "parameters": {
                             "type": "object",
                             "properties": {
+                                "operation": {
+                                    "type": "string",
+                                    "enum": [
+                                        "expression",
+                                        "factorial",
+                                        "combination",
+                                        "permutation",
+                                        "binomial_pmf",
+                                        "binomial_cdf",
+                                        "binomial_at_most",
+                                        "binomial_at_least",
+                                        "at_least_one",
+                                        "geometric_pmf",
+                                        "geometric_cdf",
+                                        "poisson_pmf",
+                                        "poisson_cdf",
+                                        "normal_pdf",
+                                        "normal_cdf",
+                                        "z_score",
+                                        "chi_square_cdf",
+                                        "chi_square_survival",
+                                        "chi_square_stat",
+                                        "chi_square_gof",
+                                        "chi_square_independence",
+                                        "descriptive_stats",
+                                        "confidence_interval_mean_z",
+                                        "derivative",
+                                        "second_derivative",
+                                        "definite_integral",
+                                        "root_bisection",
+                                    ],
+                                    "description": "Calculator mode. Defaults to expression.",
+                                },
                                 "expression": {
                                     "type": "string",
-                                    "description": "The math expression to evaluate, e.g. '(3.14 * 5**2) / 2'.",
+                                    "description": "Expression to evaluate. For calculus operations, use x as the variable, e.g. 'sin(x) / x' or 'x**3 - 2*x - 5'. Supports +, -, *, /, //, %, ** and math functions like sqrt, sin, cos, tan, exp, log, log10, abs, round, ceil, floor, factorial, gamma, comb, perm, erf, pi, e.",
+                                },
+                                "p": {
+                                    "type": "number",
+                                    "description": "Probability of success per trial for binomial/geometric/at_least_one operations, between 0 and 1.",
+                                },
+                                "n": {
+                                    "type": "integer",
+                                    "description": "Number of trials, sample size, or n for factorial/combination/permutation.",
+                                },
+                                "k": {
+                                    "type": "integer",
+                                    "description": "Count of successes/events or k for combinations/permutations/distributions.",
+                                },
+                                "lambda": {
+                                    "type": "number",
+                                    "description": "Poisson rate parameter. You may also pass lam.",
+                                },
+                                "x": {
+                                    "type": "number",
+                                    "description": "Point at which to evaluate normal/chi-squared distribution, derivative, or z-score.",
+                                },
+                                "df": {
+                                    "type": "integer",
+                                    "description": "Degrees of freedom for chi-squared operations. Defaults to len(observed)-1 for chi_square_gof/stat.",
+                                },
+                                "mean": {
+                                    "type": "number",
+                                    "description": "Mean for normal/z-score/confidence interval operations.",
+                                },
+                                "sd": {
+                                    "type": "number",
+                                    "description": "Standard deviation for normal/z-score/confidence interval operations.",
+                                },
+                                "values": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "description": "Numeric array for descriptive_stats.",
+                                },
+                                "observed": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "description": "Observed counts for chi_square_stat or chi_square_gof.",
+                                },
+                                "expected": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "description": "Expected counts for chi_square_stat or chi_square_gof. Must match observed length and all values must be positive.",
+                                },
+                                "table": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "array",
+                                        "items": {"type": "number"},
+                                    },
+                                    "description": "2D observed contingency table for chi_square_independence.",
+                                },
+                                "confidence": {
+                                    "type": "number",
+                                    "description": "Confidence level for confidence_interval_mean_z, e.g. 0.95.",
+                                },
+                                "a": {
+                                    "type": "number",
+                                    "description": "Lower bound for definite_integral or root_bisection.",
+                                },
+                                "b": {
+                                    "type": "number",
+                                    "description": "Upper bound for definite_integral or root_bisection.",
+                                },
+                                "h": {
+                                    "type": "number",
+                                    "description": "Step size for numerical derivative. Defaults to 1e-5.",
+                                },
+                                "intervals": {
+                                    "type": "integer",
+                                    "description": "Even interval count for Simpson definite integration. Defaults to 1000.",
+                                },
+                                "tolerance": {
+                                    "type": "number",
+                                    "description": "Tolerance for root_bisection. Defaults to 1e-10.",
+                                },
+                                "max_iterations": {
+                                    "type": "integer",
+                                    "description": "Maximum iterations for root_bisection. Defaults to 100.",
                                 },
                             },
-                            "required": ["expression"],
                         },
                     },
                 },
@@ -1117,6 +1236,42 @@ class RunThreadWorkflow:
                     tool for tool in builtin_tools
                     if tool.get("function", {}).get("name") not in reachy_tools
                 ]
+            active_skills = [
+                skill for skill in (llm_config.get("skills") or [])
+                if isinstance(skill, dict) and str(skill.get("content") or "").strip()
+            ]
+            if active_skills:
+                skill_names = [str(skill.get("name") or "Untitled skill") for skill in active_skills]
+                builtin_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": "use_skill",
+                        "description": (
+                            "Record that you are using one of ThreadBot's enabled skills and load its exact instructions. "
+                            "Call this before applying a skill so the user can see skill usage in the timeline. "
+                            f"Enabled skills: {', '.join(skill_names)}."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "skill_name": {
+                                    "type": "string",
+                                    "enum": skill_names,
+                                    "description": "Name of the enabled skill to use.",
+                                },
+                                "skill_id": {
+                                    "type": "string",
+                                    "description": "Optional skill id if known.",
+                                },
+                                "reason": {
+                                    "type": "string",
+                                    "description": "Short explanation of why this skill is relevant to the user's request.",
+                                },
+                            },
+                            "required": ["skill_name", "reason"],
+                        },
+                    },
+                })
             openai_tools.extend(builtin_tools)
 
             # ── Build initial message list ───────────────────────────────
@@ -1170,6 +1325,21 @@ class RunThreadWorkflow:
                 instructions_parts.append(
                     "Highest priority thread-specific instructions (follow these over any other guidance below):\n"
                     f"{custom_system_prompt}"
+                )
+            if active_skills:
+                skill_sections = []
+                for skill in active_skills:
+                    name = str(skill.get("name") or "Untitled skill").strip()
+                    description = str(skill.get("description") or "").strip()
+                    content = str(skill.get("content") or "").strip()
+                    header = f"Skill: {name}"
+                    if description:
+                        header = f"{header} - {description}"
+                    skill_sections.append(f"{header}\n{content}")
+                instructions_parts.append(
+                    "Enabled ThreadBot skills. Apply these reusable procedures, preferences, and domain guidance when relevant:\n"
+                    "When a skill is relevant, call use_skill before applying it so the skill usage appears in the timeline and Discord activity.\n"
+                    + "\n\n".join(skill_sections)
                 )
             if is_reachy_voice_turn:
                 instructions_parts.append(

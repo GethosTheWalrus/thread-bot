@@ -12,6 +12,7 @@ import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/screens/settings_screen.dart';
 import 'package:threadbot/screens/mcp_screen.dart';
+import 'package:threadbot/screens/skills_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -1157,6 +1158,12 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     ).push(MaterialPageRoute(builder: (_) => const MCPScreen()));
   }
 
+  void _openSkills() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SkillsScreen()));
+  }
+
   void _openSettings() {
     Navigator.of(
       context,
@@ -1346,6 +1353,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               onRename: _renameThread,
               onDeleteAll: _deleteAllThreads,
               onMCP: _openMCP,
+              onSkills: _openSkills,
               onSettings: _openSettings,
             ),
 
@@ -1397,6 +1405,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   onMCP: () {
                     Navigator.pop(context);
                     _openMCP();
+                  },
+                  onSkills: () {
+                    Navigator.pop(context);
+                    _openSkills();
                   },
                   onSettings: () {
                     Navigator.pop(context);

@@ -10,6 +10,11 @@ class ToolOverrideItem(BaseModel):
     enabled: bool
 
 
+class SkillOverrideItem(BaseModel):
+    skill_id: str
+    enabled: bool
+
+
 class MessageCreate(BaseModel):
     role: str = Field(..., description="Role: user or assistant")
     content: str = Field(..., description="Message content")
@@ -19,6 +24,7 @@ class ThreadCreateRequest(BaseModel):
     title: str = Field(default="New Thread", description="Thread title")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
     tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides")
+    skill_overrides: Optional[list[SkillOverrideItem]] = Field(None, description="Initial skill overrides")
 
 
 class ChatRequest(BaseModel):
@@ -26,6 +32,7 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = Field(None, description="Existing thread ID to continue conversation")
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
     tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides for new threads")
+    skill_overrides: Optional[list[SkillOverrideItem]] = Field(None, description="Initial skill overrides for new threads")
     image_urls: Optional[list[str]] = Field(None, description="Optional image URLs to include in the user message")
 
 
@@ -141,8 +148,29 @@ class MCPTestResponse(BaseModel):
     error: Optional[str] = None
 
 
+class SkillCreate(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    content: str
+
+
+class SkillResponse(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = ""
+    content: str
+    is_active: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class ToolOverrideRequest(BaseModel):
     overrides: list[ToolOverrideItem]
+
+
+class SkillOverrideRequest(BaseModel):
+    overrides: list[SkillOverrideItem]
 
 
 class AvailableTool(BaseModel):
@@ -159,6 +187,11 @@ class AvailableServer(BaseModel):
 class ToolOverridesResponse(BaseModel):
     servers: list[AvailableServer] = []
     overrides: list[ToolOverrideItem] = []
+
+
+class SkillOverridesResponse(BaseModel):
+    skills: list[SkillResponse] = []
+    overrides: list[SkillOverrideItem] = []
 
 
 class DiscordSettingsResponse(BaseModel):

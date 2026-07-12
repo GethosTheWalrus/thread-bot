@@ -11,6 +11,7 @@ class Sidebar extends StatelessWidget {
   final Function(String, String) onRename;
   final VoidCallback onDeleteAll;
   final VoidCallback onMCP;
+  final VoidCallback onSkills;
   final VoidCallback onSettings;
 
   const Sidebar({
@@ -24,6 +25,7 @@ class Sidebar extends StatelessWidget {
     required this.onRename,
     required this.onDeleteAll,
     required this.onMCP,
+    required this.onSkills,
     required this.onSettings,
   });
 
@@ -142,6 +144,27 @@ class Sidebar extends StatelessWidget {
                         ),
                       ),
                     ),
+                  const SizedBox(height: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: onSkills,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          Icon(Icons.school_outlined, size: 18, color: const Color(0xFF8B5CF6).withValues(alpha: 0.7)),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'Skills',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFFE4E4E7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                   const SizedBox(height: 4),
                   InkWell(
                     borderRadius: BorderRadius.circular(10),
