@@ -13,6 +13,7 @@ class Thread {
   final int estimatedTokens;
   final int contextWindow;
   final bool hasLlmOverrides;
+  final bool isPinned;
 
   Thread({
     required this.id,
@@ -27,6 +28,7 @@ class Thread {
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
     this.hasLlmOverrides = false,
+    this.isPinned = false,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -44,12 +46,15 @@ class Thread {
       messages: messages,
       isGenerating: json['is_generating'] as bool? ?? false,
       discordLink: json['discord_link'] != null
-          ? DiscordThreadLink.fromJson(json['discord_link'] as Map<String, dynamic>)
+          ? DiscordThreadLink.fromJson(
+              json['discord_link'] as Map<String, dynamic>,
+            )
           : null,
       reachyConnected: json['reachy_connected'] as bool? ?? false,
       estimatedTokens: json['estimated_tokens'] as int? ?? 0,
       contextWindow: json['context_window'] as int? ?? 8192,
       hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
+      isPinned: json['is_pinned'] as bool? ?? false,
     );
   }
 
@@ -71,6 +76,7 @@ class ThreadListItem {
   final String? discordServerName;
   final bool isReachyThread;
   final bool hasLlmOverrides;
+  bool isPinned;
 
   ThreadListItem({
     required this.id,
@@ -83,6 +89,7 @@ class ThreadListItem {
     this.discordServerName,
     this.isReachyThread = false,
     this.hasLlmOverrides = false,
+    this.isPinned = false,
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
@@ -97,6 +104,7 @@ class ThreadListItem {
       discordServerName: json['discord_server_name'] as String?,
       isReachyThread: json['is_reachy_thread'] as bool? ?? false,
       hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
+      isPinned: json['is_pinned'] as bool? ?? false,
     );
   }
 }
@@ -138,8 +146,12 @@ class ThreadLlmOverrides {
     }
     return ThreadLlmOverrides(
       threadId: json['thread_id'] as String,
-      overrides: Map<String, dynamic>.from(json['overrides'] as Map<String, dynamic>? ?? const {}),
-      defaults: Map<String, dynamic>.from(json['defaults'] as Map<String, dynamic>? ?? const {}),
+      overrides: Map<String, dynamic>.from(
+        json['overrides'] as Map<String, dynamic>? ?? const {},
+      ),
+      defaults: Map<String, dynamic>.from(
+        json['defaults'] as Map<String, dynamic>? ?? const {},
+      ),
       schema: schema,
     );
   }

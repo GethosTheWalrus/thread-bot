@@ -7,6 +7,7 @@ from app.database.crud import (
     get_child_threads,
     add_message,
     update_thread_title,
+    set_thread_pinned,
     delete_thread,
     create_mcp_server,
     get_mcp_servers,
@@ -46,6 +47,7 @@ from app.models.schemas import (
     ThreadListItem,
     ThreadListResponse,
     RenameRequest,
+    ThreadPinRequest,
     MCPServerCreate,
     MCPServerResponse,
     MCPTestResponse,
@@ -456,6 +458,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         estimated_tokens=_estimate_context_tokens(msgs),
         context_window=config.get("context_window", 8192),
         has_llm_overrides=bool(overrides),
+        is_pinned=bool(thread.is_pinned),
     )
 
 
@@ -810,7 +813,7 @@ async def upload_images_endpoint(
 @router.get("/threads", response_model=ThreadListResponse)
 async def list_threads_endpoint(
     db: AsyncSession = Depends(get_db),
-    limit: int = 50,
+    limit: int = 200,
     offset: int = 0,
 ):
     threads = await get_root_threads(db, limit=limit, offset=offset)
@@ -834,6 +837,7 @@ async def list_threads_endpoint(
             discord_server_name=discord_server_name,
             is_reachy_thread=reachy_thread_id == str(t.id),
             has_llm_overrides=bool(t.llm_overrides),
+            is_pinned=bool(t.is_pinned),
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -948,6 +952,7 @@ async def get_thread_replies_endpoint(
             discord_server_name=discord_server_name,
             is_reachy_thread=reachy_thread_id == str(t.id),
             has_llm_overrides=bool(t.llm_overrides),
+            is_pinned=bool(t.is_pinned),
         ))
     return items
 
@@ -971,6 +976,23 @@ async def update_thread_endpoint(
     await broadcast_thread_updated(str(thread_id))
 
     discord_link = await _get_discord_link_for_thread(db, thread_id)
+    return _build_thread_response(thread, messages, discord_link=discord_link)
+
+
+@router.patch("/threads/{thread_id}/pin", response_model=ThreadResponse)
+async def pin_thread_endpoint(
+    thread_id: UUID,
+    request: ThreadPinRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    thread = await set_thread_pinned(db, thread_id, request.is_pinned)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    msg_result = await db.execute(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at))
+    messages = list(msg_result.scalars().all())
+    discord_link = await _get_discord_link_for_thread(db, thread_id)
+    await broadcast_thread_updated(str(thread_id))
     return _build_thread_response(thread, messages, discord_link=discord_link)
 
 

@@ -46,6 +46,9 @@ async def ensure_database_schema() -> None:
         await conn.execute(text(
             "ALTER TABLE threads ADD COLUMN IF NOT EXISTS llm_overrides JSONB DEFAULT NULL"
         ))
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS generated_images (
                 filename VARCHAR(255) PRIMARY KEY,

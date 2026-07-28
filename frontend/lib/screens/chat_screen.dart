@@ -1135,6 +1135,30 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _setThreadPinned(String threadId, bool isPinned) async {
+    final index = _threads.indexWhere((thread) => thread.id == threadId);
+    if (index == -1) return;
+    final previous = _threads[index].isPinned;
+
+    setState(() => _threads[index].isPinned = isPinned);
+    try {
+      await _api.setThreadPinned(threadId, isPinned);
+      _loadThreads(silent: true);
+    } catch (e) {
+      if (mounted) {
+        final currentIndex = _threads.indexWhere(
+          (thread) => thread.id == threadId,
+        );
+        if (currentIndex != -1) {
+          setState(() => _threads[currentIndex].isPinned = previous);
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Pin update failed: $e')));
+      }
+    }
+  }
+
   void _scrollToBottom({bool force = false}) {
     if (!force && !_isAtBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1342,6 +1366,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               onNewChat: _startNewChat,
               onDelete: _deleteThread,
               onRename: _renameThread,
+              onPin: _setThreadPinned,
               onDeleteAll: _deleteAllThreads,
               onMCP: _openMCP,
               onSkills: _openSkills,
@@ -1392,6 +1417,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   },
                   onDelete: _deleteThread,
                   onRename: _renameThread,
+                  onPin: _setThreadPinned,
                   onDeleteAll: _deleteAllThreads,
                   onMCP: () {
                     Navigator.pop(context);

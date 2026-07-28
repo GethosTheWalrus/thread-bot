@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS threads (
     parent_id UUID REFERENCES threads(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    llm_overrides JSONB DEFAULT NULL
+    llm_overrides JSONB DEFAULT NULL,
+    is_pinned BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS messages (

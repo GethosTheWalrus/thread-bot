@@ -82,7 +82,7 @@ async def get_root_threads(db: AsyncSession, limit: int = 50, offset: int = 0) -
     result = await db.execute(
         select(Thread)
         .where(Thread.parent_id.is_(None))
-        .order_by(Thread.updated_at.desc())
+        .order_by(Thread.is_pinned.desc(), Thread.updated_at.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -140,6 +140,15 @@ async def update_thread_title(db: AsyncSession, thread_id: UUID, title: str) -> 
     thread = await get_thread(db, thread_id)
     if thread:
         thread.title = title
+        await db.flush()
+        await db.refresh(thread)
+    return thread
+
+
+async def set_thread_pinned(db: AsyncSession, thread_id: UUID, is_pinned: bool) -> Thread | None:
+    thread = await get_thread(db, thread_id)
+    if thread:
+        thread.is_pinned = is_pinned
         await db.flush()
         await db.refresh(thread)
     return thread

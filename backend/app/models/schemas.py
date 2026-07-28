@@ -75,6 +75,7 @@ class ThreadResponse(BaseModel):
     estimated_tokens: int = 0
     context_window: int = 8192
     has_llm_overrides: bool = False
+    is_pinned: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -90,6 +91,7 @@ class ThreadListItem(BaseModel):
     discord_server_name: Optional[str] = None
     is_reachy_thread: bool = False
     has_llm_overrides: bool = False
+    is_pinned: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -119,6 +121,10 @@ class SettingsResponse(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str
+
+
+class ThreadPinRequest(BaseModel):
+    is_pinned: bool
 
 
 class MCPServerCreate(BaseModel):
