@@ -19,6 +19,7 @@ huggingface-hub>=1.17.0,<2.0.0
 jinja2
 log-throttling==0.0.3
 openai-agents==0.17.1
+openai<2.45.0
 openai-agents-python-providers==1.0.0
 temporalio[openai-agents]==1.27.2
 cryptography
