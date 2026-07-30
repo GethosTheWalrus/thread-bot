@@ -279,17 +279,16 @@ async def _relay_workflow_until_complete(
         {relay_task, completion_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
-    relay_failed = False
     for task in done:
         try:
             task.result()
         except (WebSocketDisconnect, RuntimeError):
             if task is relay_task:
-                relay_failed = True
+                pass
             else:
                 raise
 
-    if relay_failed and not completion_task.done():
+    if relay_task in done and not completion_task.done():
         await completion_task
 
     for task in pending:
