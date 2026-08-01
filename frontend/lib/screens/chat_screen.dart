@@ -437,59 +437,48 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     return _messages.indexWhere((m) => m.id.startsWith('temp-ast-'));
   }
 
-  void _showToolOverrides() {
+  void _showThreadControls() {
+    final threadId = _activeThreadId;
+    final sheetHeight = MediaQuery.sizeOf(context).height * .94;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF16161E),
+      constraints: BoxConstraints(maxWidth: 780, maxHeight: sheetHeight),
+      clipBehavior: Clip.antiAlias,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => _ToolOverridesSheet(
-        threadId: _activeThreadId,
+      builder: (context) => _ThreadControlsSheet(
+        threadId: threadId,
         api: _api,
-        initialOverrides: _activeThreadId == null
-            ? _pendingToolOverrides
-            : null,
-        onChanged: () {
-          if (_activeThreadId != null) {
-            _loadToolOverrideStatus(_activeThreadId!);
+        estimatedTokens: _contextEstimatedTokens,
+        contextWindow: _contextWindow,
+        hasLlmOverrides: _hasLlmOverrides,
+        hasToolOverrides: _hasToolOverrides,
+        initialOverrides: threadId == null ? _pendingToolOverrides : null,
+        onToolChanged: (hasOverrides) {
+          if (threadId != null && _activeThreadId == threadId) {
+            setState(() => _hasToolOverrides = hasOverrides);
+            _loadToolOverrideStatus(threadId);
           }
         },
-        onOverridesSelected: (overrides) {
-          if (_activeThreadId == null) {
+        onPendingToolsChanged: (overrides) {
+          if (threadId == null && mounted) {
             setState(() {
               _pendingToolOverrides = overrides;
               _hasToolOverrides = overrides.any((o) => o['enabled'] == false);
             });
           }
         },
-      ),
-    );
-  }
-
-  void _showLlmOverrides() {
-    final threadId = _activeThreadId;
-    if (threadId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Open a thread first to set per-thread LLM overrides.'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF16161E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => _LlmOverridesSheet(
-        threadId: threadId,
-        api: _api,
-        onChanged: () => _loadLlmOverrideStatus(threadId),
+        onLlmChanged: threadId == null
+            ? null
+            : (hasOverrides) {
+                if (_activeThreadId == threadId) {
+                  setState(() => _hasLlmOverrides = hasOverrides);
+                  _loadLlmOverrideStatus(threadId);
+                }
+              },
       ),
     );
   }
@@ -1384,13 +1373,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   ChatInput(
                     onSend: _sendMessage,
                     isSending: _isSending,
-                    onToolsPressed: _showToolOverrides,
+                    onThreadControlsPressed: _showThreadControls,
                     hasToolOverrides: _hasToolOverrides,
-                    onLlmOverridesPressed: _showLlmOverrides,
                     hasLlmOverrides: _hasLlmOverrides,
                     estimatedTokens: _contextEstimatedTokens,
                     contextWindow: _contextWindow,
-                    hasThread: _activeThreadId != null,
                   ),
                 ],
               ),
@@ -1821,19 +1808,439 @@ class _NewThreadChoiceTile extends StatelessWidget {
   }
 }
 
-// ── Tool Overrides Bottom Sheet ──────────────────────────────────────────────
+class _ThreadControlsSheet extends StatefulWidget {
+  final String? threadId;
+  final ApiService api;
+  final int estimatedTokens;
+  final int contextWindow;
+  final bool hasLlmOverrides;
+  final bool hasToolOverrides;
+  final List<Map<String, dynamic>>? initialOverrides;
+  final ValueChanged<bool>? onToolChanged;
+  final ValueChanged<List<Map<String, dynamic>>>? onPendingToolsChanged;
+  final ValueChanged<bool>? onLlmChanged;
+
+  const _ThreadControlsSheet({
+    required this.threadId,
+    required this.api,
+    required this.estimatedTokens,
+    required this.contextWindow,
+    required this.hasLlmOverrides,
+    required this.hasToolOverrides,
+    this.initialOverrides,
+    this.onToolChanged,
+    this.onPendingToolsChanged,
+    this.onLlmChanged,
+  });
+
+  @override
+  State<_ThreadControlsSheet> createState() => _ThreadControlsSheetState();
+}
+
+class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
+    with SingleTickerProviderStateMixin {
+  int _tab = 0;
+  final Set<int> _visitedTabs = {0};
+  late bool _hasLlmOverrides = widget.hasLlmOverrides;
+  late bool _hasToolOverrides = widget.hasToolOverrides;
+  late final TabController _tabController;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _selectTab(int tab, {bool animate = true}) {
+    if (animate) _tabController.animateTo(tab);
+    setState(() {
+      _tab = tab;
+      _visitedTabs.add(tab);
+    });
+  }
+
+  void _onLlmChanged(bool value) {
+    setState(() => _hasLlmOverrides = value);
+    widget.onLlmChanged?.call(value);
+  }
+
+  void _onToolChanged(bool value) {
+    setState(() => _hasToolOverrides = value);
+    widget.onToolChanged?.call(value);
+  }
+
+  void _onPendingToolsChanged(List<Map<String, dynamic>> overrides) {
+    setState(
+      () => _hasToolOverrides = overrides.any((o) => o['enabled'] == false),
+    );
+    widget.onPendingToolsChanged?.call(overrides);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    final targetHeight = screenHeight * .94;
+    final availableHeight = (screenHeight - bottom - 12).clamp(
+      180.0,
+      double.infinity,
+    );
+    final height = targetHeight < availableHeight
+        ? targetHeight
+        : availableHeight;
+    return SafeArea(
+      child: AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        padding: EdgeInsets.only(bottom: bottom),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: 780,
+              maxHeight: availableHeight,
+            ),
+            child: SizedBox(
+              height: height,
+              child: Column(
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 28,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 8, 2),
+                    child: Row(
+                      children: [
+                        const Expanded(
+                          child: Text(
+                            'Thread controls',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          tooltip: 'Close',
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final compact = constraints.maxWidth < 430;
+                        return TabBar(
+                          controller: _tabController,
+                          onTap: (index) => _selectTab(index, animate: false),
+                          labelPadding: EdgeInsets.symmetric(
+                            horizontal: compact ? 4 : 12,
+                          ),
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          indicatorWeight: 2,
+                          dividerColor: Colors.white10,
+                          labelColor: Colors.white,
+                          unselectedLabelColor: Colors.white54,
+                          tabs: [
+                            const Tab(text: 'Context'),
+                            Tab(
+                              child: _TabLabel(
+                                text: 'Response',
+                                active: _hasLlmOverrides,
+                              ),
+                            ),
+                            Tab(
+                              child: _TabLabel(
+                                text: 'MCP Tools',
+                                active: _hasToolOverrides,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Expanded(
+                    child: IndexedStack(
+                      index: _tab,
+                      children: [
+                        _ContextTab(
+                          estimatedTokens: widget.estimatedTokens,
+                          contextWindow: widget.contextWindow,
+                          canCustomize: widget.threadId != null,
+                          onResponse: () => _selectTab(1),
+                        ),
+                        if (_visitedTabs.contains(1))
+                          widget.threadId == null
+                              ? const _DisabledResponseTab()
+                              : _LlmOverridesSheet(
+                                  threadId: widget.threadId!,
+                                  api: widget.api,
+                                  onChanged: _onLlmChanged,
+                                )
+                        else
+                          const SizedBox.shrink(),
+                        if (_visitedTabs.contains(2))
+                          _ToolOverridesSheet(
+                            threadId: widget.threadId,
+                            api: widget.api,
+                            initialOverrides: widget.initialOverrides,
+                            onChanged: _onToolChanged,
+                            onOverridesSelected: _onPendingToolsChanged,
+                          )
+                        else
+                          const SizedBox.shrink(),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ActiveDot extends StatelessWidget {
+  final bool active;
+  const _ActiveDot({required this.active});
+  @override
+  Widget build(BuildContext context) => Container(
+    width: 6,
+    height: 6,
+    decoration: BoxDecoration(
+      color: active ? const Color(0xFF8B5CF6) : Colors.white24,
+      shape: BoxShape.circle,
+    ),
+  );
+}
+
+class _TabLabel extends StatelessWidget {
+  final String text;
+  final bool active;
+
+  const _TabLabel({required this.text, required this.active});
+
+  @override
+  Widget build(BuildContext context) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(text),
+      if (active) ...[const SizedBox(width: 5), const _ActiveDot(active: true)],
+    ],
+  );
+}
+
+class _ContextTab extends StatelessWidget {
+  final int estimatedTokens;
+  final int contextWindow;
+  final bool canCustomize;
+  final VoidCallback onResponse;
+  const _ContextTab({
+    required this.estimatedTokens,
+    required this.contextWindow,
+    required this.canCustomize,
+    required this.onResponse,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final ratio = contextWindow > 0
+        ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
+        : 0.0;
+    final percent = (ratio * 100).round();
+    final color = ratio < .5
+        ? const Color(0xFF10B981)
+        : ratio < .75
+        ? const Color(0xFFF59E0B)
+        : const Color(0xFFEF4444);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final horizontal = constraints.maxWidth >= 520;
+        final visualization = horizontal ? 104.0 : 112.0;
+        const bodyPadding = 26.0;
+        final details = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: horizontal
+              ? CrossAxisAlignment.start
+              : CrossAxisAlignment.center,
+          children: [
+            Text(
+              estimatedTokens > 0
+                  ? '$estimatedTokens / $contextWindow tokens'
+                  : 'No usage reported yet',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              textAlign: horizontal ? TextAlign.start : TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              estimatedTokens > 0
+                  ? 'Estimated from this conversation.'
+                  : 'Usage will appear after the first response is generated.',
+              textAlign: horizontal ? TextAlign.start : TextAlign.center,
+              style: const TextStyle(color: Colors.white54, height: 1.35),
+            ),
+            if (canCustomize)
+              TextButton.icon(
+                onPressed: onResponse,
+                icon: const Icon(Icons.tune_rounded, size: 16),
+                label: const Text('Customize response'),
+              ),
+          ],
+        );
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: constraints.hasBoundedHeight
+                  ? (constraints.maxHeight - bodyPadding).clamp(
+                      0.0,
+                      double.infinity,
+                    )
+                  : 0,
+            ),
+            child: Center(
+              child: horizontal
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _ContextGauge(
+                          ratio: ratio,
+                          color: color,
+                          percent: percent,
+                          size: visualization,
+                        ),
+                        const SizedBox(width: 24),
+                        Flexible(child: details),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _ContextGauge(
+                          ratio: ratio,
+                          color: color,
+                          percent: percent,
+                          size: visualization,
+                        ),
+                        const SizedBox(height: 12),
+                        details,
+                      ],
+                    ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ContextGauge extends StatelessWidget {
+  final double ratio;
+  final Color color;
+  final int percent;
+  final double size;
+
+  const _ContextGauge({
+    required this.ratio,
+    required this.color,
+    required this.percent,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: size,
+    height: size,
+    child: Stack(
+      alignment: Alignment.center,
+      children: [
+        Positioned.fill(
+          child: CircularProgressIndicator(
+            value: ratio,
+            strokeWidth: 9,
+            backgroundColor: Colors.white10,
+            color: color,
+          ),
+        ),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$percent%',
+              style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w700),
+            ),
+            Text(
+              percent == 0 ? 'waiting' : 'in use',
+              style: const TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+class _DisabledResponseTab extends StatelessWidget {
+  const _DisabledResponseTab();
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.tune_rounded, size: 42, color: Colors.white24),
+          const SizedBox(height: 14),
+          const Text(
+            'Response settings are ready when your thread is created',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Start a conversation first, then customize the model and response behavior for this thread.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white54),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ── Tool Overrides ────────────────────────────────────────────────────────────
 
 class _ToolOverridesSheet extends StatefulWidget {
   final String? threadId;
   final ApiService api;
-  final VoidCallback onChanged;
+  final ValueChanged<bool>? onChanged;
   final List<Map<String, dynamic>>? initialOverrides;
   final Function(List<Map<String, dynamic>>)? onOverridesSelected;
 
   const _ToolOverridesSheet({
     required this.threadId,
     required this.api,
-    required this.onChanged,
+    this.onChanged,
     this.initialOverrides,
     this.onOverridesSelected,
   });
@@ -1971,12 +2378,23 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
 
       if (widget.threadId != null) {
         await widget.api.setThreadToolOverrides(widget.threadId!, overrides);
-        widget.onChanged();
+        widget.onChanged?.call(overrides.isNotEmpty);
       } else if (widget.onOverridesSelected != null) {
         widget.onOverridesSelected!(overrides);
       }
 
-      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.threadId == null
+                  ? 'MCP tool preferences ready for the new thread'
+                  : 'MCP tool preferences saved',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1993,151 +2411,107 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final maxHeight = MediaQuery.of(context).size.height * 0.7;
-    return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxHeight),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Handle bar
-          Padding(
-            padding: const EdgeInsets.only(top: 12, bottom: 8),
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(2),
-                color: Colors.white.withValues(alpha: 0.2),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Enable or disable MCP servers and individual tools for this thread.',
+                  style: TextStyle(fontSize: 12, color: Colors.white54),
+                ),
               ),
-            ),
+              FilledButton(
+                onPressed: _isLoading || _isSaving || _loadError != null
+                    ? null
+                    : _save,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF8B5CF6),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: _isSaving
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Save', style: TextStyle(fontSize: 13)),
+              ),
+            ],
           ),
-          // Header
+        ),
+        if (_loadError != null)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.redAccent),
+                const SizedBox(height: 6),
+                const Text('Could not load MCP tools'),
+                TextButton(onPressed: _load, child: const Text('Retry')),
+              ],
+            ),
+          )
+        else ...[
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(
               children: [
-                const Icon(
-                  Icons.build_outlined,
-                  size: 18,
-                  color: Color(0xFF8B5CF6),
-                ),
-                const SizedBox(width: 8),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    'Thread Tools',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    _toolSummary,
+                    style: const TextStyle(color: Colors.white54, fontSize: 12),
                   ),
                 ),
-                FilledButton(
-                  onPressed: _isLoading || _isSaving || _loadError != null
-                      ? null
-                      : _save,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF8B5CF6),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: _isSaving
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Text('Save', style: TextStyle(fontSize: 13)),
+                TextButton(
+                  onPressed: _isLoading || _isSaving ? null : _restoreDefaults,
+                  child: const Text('Restore defaults'),
                 ),
               ],
             ),
           ),
+        ],
+        const SizedBox(height: 12),
+        // Server list
+        if (_isLoading)
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
+            ),
+          )
+        else if (_loadError != null)
+          const SizedBox.shrink()
+        else if (_servers.isEmpty)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20),
+            padding: const EdgeInsets.all(32),
             child: Text(
-              'Enable or disable MCP servers and individual tools for this thread.',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.white.withValues(alpha: 0.4),
-              ),
+              'No active MCP servers configured.',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.4)),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              itemCount: _servers.length,
+              itemBuilder: (context, index) =>
+                  _buildServerTile(_servers[index]),
             ),
           ),
-          if (_loadError != null)
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                children: [
-                  const Icon(Icons.error_outline, color: Colors.redAccent),
-                  const SizedBox(height: 6),
-                  const Text('Could not load MCP tools'),
-                  TextButton(onPressed: _load, child: const Text('Retry')),
-                ],
-              ),
-            )
-          else ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _toolSummary,
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _isLoading || _isSaving
-                        ? null
-                        : _restoreDefaults,
-                    child: const Text('Restore defaults'),
-                  ),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Close'),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 12),
-          // Server list
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.all(32),
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
-              ),
-            )
-          else if (_loadError != null)
-            const SizedBox.shrink()
-          else if (_servers.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(32),
-              child: Text(
-                'No active MCP servers configured.',
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.4)),
-              ),
-            )
-          else
-            Flexible(
-              child: ListView.builder(
-                shrinkWrap: true,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                itemCount: _servers.length,
-                itemBuilder: (context, index) =>
-                    _buildServerTile(_servers[index]),
-              ),
-            ),
-        ],
-      ),
+      ],
     );
   }
 
@@ -2344,7 +2718,7 @@ class _ToolState {
 class _LlmOverridesSheet extends StatefulWidget {
   final String threadId;
   final ApiService api;
-  final VoidCallback? onChanged;
+  final ValueChanged<bool>? onChanged;
 
   const _LlmOverridesSheet({
     required this.threadId,
@@ -2362,7 +2736,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   bool _isSaving = false;
   String? _error;
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _bodyScrollController = ScrollController();
+  final ScrollController _categoryScrollController = ScrollController();
   String _search = '';
+  String _selectedCategory = 'Basic';
   final Map<String, bool> _expandedCategories = {};
 
   @override
@@ -2374,6 +2751,8 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   @override
   void dispose() {
     _searchController.dispose();
+    _bodyScrollController.dispose();
+    _categoryScrollController.dispose();
     super.dispose();
   }
 
@@ -2408,7 +2787,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
         _isSaving = false;
         _error = null;
       });
-      widget.onChanged?.call();
+      widget.onChanged?.call(updated.overrides.isNotEmpty);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -2448,7 +2827,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
         _isSaving = false;
         _error = null;
       });
-      widget.onChanged?.call();
+      widget.onChanged?.call(updated.overrides.isNotEmpty);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -2480,117 +2859,34 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final mediaQuery = MediaQuery.of(context);
     final overrides = _overrides;
-
-    return DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.9,
-      minChildSize: 0.4,
-      maxChildSize: 0.95,
-      builder: (context, scrollController) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: mediaQuery.viewInsets.bottom),
-          child: Container(
-            decoration: const BoxDecoration(
-              color: Color(0xFF16161E),
-              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            ),
-            child: Column(
-              children: [
-                _buildHeader(),
-                if (_isLoading)
-                  const Padding(
-                    padding: EdgeInsets.all(32),
-                    child: CircularProgressIndicator(),
-                  )
-                else if (_error != null)
-                  Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(
-                      _error!,
-                      style: const TextStyle(color: Colors.redAccent),
-                    ),
-                  )
-                else if (overrides != null)
-                  Expanded(child: _buildBody(overrides, scrollController)),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildHeader() {
-    final overrides = _overrides;
-    final hasAny = overrides != null && overrides.overrides.isNotEmpty;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: Color(0xFF22222D))),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Per-thread LLM overrides',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.close, color: Colors.white70),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            hasAny
-                ? '${overrides.overrides.length} override${overrides.overrides.length == 1 ? '' : 's'} set on this thread. Anything not set falls back to the global LLM settings.'
-                : 'Anything you set here overrides the global LLM settings for this thread only. Anything you leave unset falls back to the global LLM settings.',
-            style: const TextStyle(color: Colors.white54, fontSize: 12),
-          ),
-          const SizedBox(height: 10),
-          Row(
+    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    if (_error != null)
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+            TextButton(onPressed: _load, child: const Text('Retry')),
+          ],
+        ),
+      );
+    if (overrides == null) return const SizedBox.shrink();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Row(
             children: [
               Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  onChanged: (v) =>
-                      setState(() => _search = v.trim().toLowerCase()),
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                  decoration: InputDecoration(
-                    isDense: true,
-                    hintText: 'Search overrides…',
-                    hintStyle: const TextStyle(color: Colors.white38),
-                    prefixIcon: const Icon(
-                      Icons.search,
-                      color: Colors.white38,
-                      size: 16,
-                    ),
-                    filled: true,
-                    fillColor: const Color(0xFF1E1E2A),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 8,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: BorderSide.none,
-                    ),
-                  ),
+                child: Text(
+                  overrides.overrides.isEmpty
+                      ? 'Falls back to global LLM settings.'
+                      : '${overrides.overrides.length} custom setting${overrides.overrides.length == 1 ? '' : 's'} on this thread.',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
                 ),
               ),
-              const SizedBox(width: 8),
-              if (hasAny)
+              if (overrides.overrides.isNotEmpty)
                 TextButton.icon(
                   onPressed: _isSaving ? null : _clearAll,
                   icon: const Icon(
@@ -2605,14 +2901,56 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                 ),
             ],
           ),
-        ],
-      ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: TextField(
+            controller: _searchController,
+            onChanged: (v) => setState(() {
+              _search = v.trim().toLowerCase();
+              if (_search.isNotEmpty) _selectedCategory = 'Search results';
+            }),
+            style: const TextStyle(color: Colors.white, fontSize: 13),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Search overrides…',
+              hintStyle: const TextStyle(color: Colors.white38),
+              prefixIcon: const Icon(
+                Icons.search,
+                color: Colors.white38,
+                size: 16,
+              ),
+              filled: true,
+              fillColor: const Color(0xFF1E1E2A),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 8,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide.none,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) => _buildBody(
+              overrides,
+              _bodyScrollController,
+              constraints.maxWidth,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
   Widget _buildBody(
     ThreadLlmOverrides overrides,
     ScrollController scrollController,
+    double width,
   ) {
     final categories = <String, List<String>>{
       'Basic': ['system_prompt', 'model', 'temperature', 'max_tokens'],
@@ -2676,6 +3014,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
       );
     }
 
+    if (width >= 600) {
+      return _buildDesktopBody(overrides, categories, matching);
+    }
+
     final activeKeys = overrides.overrides.keys
         .where((key) => matching.values.expand((value) => value).contains(key))
         .toList();
@@ -2723,6 +3065,141 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildDesktopBody(
+    ThreadLlmOverrides overrides,
+    Map<String, List<String>> categories,
+    Map<String, List<String>> matching,
+  ) {
+    final searching = _search.isNotEmpty;
+    final selected = searching
+        ? 'Search results'
+        : matching.containsKey(_selectedCategory)
+        ? _selectedCategory
+        : 'Basic';
+    final selectedKeys = searching
+        ? matching.values.expand((keys) => keys).toList()
+        : (matching[selected] ?? const <String>[]);
+    final activeCount = overrides.overrides.length;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: 176,
+          child: ListView(
+            controller: _categoryScrollController,
+            padding: const EdgeInsets.only(bottom: 8),
+            children: [
+              if (activeCount > 0)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 2),
+                  child: Text(
+                    '$activeCount active override${activeCount == 1 ? '' : 's'}',
+                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ),
+              if (searching)
+                _buildCategoryRailItem(
+                  'Search results',
+                  selected,
+                  selectedKeys.length,
+                  activeCount,
+                ),
+              ...categories.entries.map(
+                (category) => _buildCategoryRailItem(
+                  category.key,
+                  selected,
+                  category.value.length,
+                  category.value.where(overrides.overrides.containsKey).length,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const VerticalDivider(width: 1, color: Colors.white12),
+        Expanded(
+          child: ListView(
+            controller: _bodyScrollController,
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+            children: [
+              if (searching)
+                ...matching.entries.expand(
+                  (category) => [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+                      child: Text(
+                        category.key,
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    ...category.value.map(
+                      (key) =>
+                          _buildRow(key, overrides.schema[key]!, overrides),
+                    ),
+                  ],
+                )
+              else ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
+                  child: Text(
+                    selected,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                ...selectedKeys.map(
+                  (key) => _buildRow(key, overrides.schema[key]!, overrides),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCategoryRailItem(
+    String title,
+    String selected,
+    int count,
+    int activeCount,
+  ) {
+    final isSelected = title == selected;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        selected: isSelected,
+        selectedTileColor: const Color(0xFF8B5CF6).withValues(alpha: .14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12),
+        ),
+        subtitle: Text(
+          '$count setting${count == 1 ? '' : 's'}',
+          style: const TextStyle(color: Colors.white38, fontSize: 10),
+        ),
+        trailing: activeCount > 0 ? const _ActiveDot(active: true) : null,
+        onTap: () => setState(() {
+          _selectedCategory = title;
+          if (_search.isNotEmpty && title != 'Search results') {
+            _searchController.clear();
+            _search = '';
+          }
+        }),
+      ),
     );
   }
 
@@ -2813,6 +3290,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                       Expanded(
                         child: type == 'number'
                             ? _NumberField(
+                                key: ValueKey<String>(key),
                                 keyName: key,
                                 initial: displayValue,
                                 isOverridden: isOverridden,
@@ -2823,6 +3301,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                                     : null,
                               )
                             : _StringField(
+                                key: ValueKey<String>(key),
                                 keyName: key,
                                 initial: _isSecret(key)
                                     ? ''
@@ -2924,6 +3403,7 @@ class _NumberField extends StatefulWidget {
   final VoidCallback? onReset;
 
   const _NumberField({
+    super.key,
     required this.keyName,
     required this.initial,
     required this.isOverridden,
@@ -3035,6 +3515,7 @@ class _StringField extends StatefulWidget {
   final VoidCallback? onReset;
 
   const _StringField({
+    super.key,
     required this.keyName,
     required this.initial,
     required this.isOverridden,

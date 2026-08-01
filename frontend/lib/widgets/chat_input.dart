@@ -9,11 +9,9 @@ import 'package:threadbot/utils/web_image_io.dart';
 class ChatInput extends StatefulWidget {
   final Future<void> Function(String content, List<String> imageUrls) onSend;
   final bool isSending;
-  final VoidCallback? onToolsPressed;
+  final VoidCallback? onThreadControlsPressed;
   final bool hasToolOverrides;
-  final VoidCallback? onLlmOverridesPressed;
   final bool hasLlmOverrides;
-  final bool hasThread;
   final int estimatedTokens;
   final int contextWindow;
 
@@ -21,11 +19,9 @@ class ChatInput extends StatefulWidget {
     super.key,
     required this.onSend,
     this.isSending = false,
-    this.onToolsPressed,
+    this.onThreadControlsPressed,
     this.hasToolOverrides = false,
-    this.onLlmOverridesPressed,
     this.hasLlmOverrides = false,
-    this.hasThread = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
   });
@@ -147,105 +143,11 @@ class _ChatInputState extends State<ChatInput> {
     _focusNode.requestFocus();
   }
 
-  void _showThreadControls(BuildContext sourceContext) {
-    showModalBottomSheet<void>(
-      context: sourceContext,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF16161E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) => SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 640),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(3),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Thread Controls',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 8),
-                  _ControlsRow(
-                    icon: Icons.data_usage_rounded,
-                    title: 'Context usage',
-                    subtitle: _contextSummary,
-                  ),
-                  _ControlsRow(
-                    icon: Icons.tune_rounded,
-                    title: 'Response settings',
-                    subtitle: widget.hasThread
-                        ? (widget.hasLlmOverrides ? 'Custom' : 'Default')
-                        : 'Available after this thread is created',
-                    enabled:
-                        widget.hasThread &&
-                        widget.onLlmOverridesPressed != null,
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                        (_) => widget.onLlmOverridesPressed?.call(),
-                      );
-                    },
-                  ),
-                  _ControlsRow(
-                    icon: Icons.build_outlined,
-                    title: 'MCP tools',
-                    subtitle: widget.hasToolOverrides
-                        ? 'Customized'
-                        : 'All enabled',
-                    enabled: widget.onToolsPressed != null,
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      WidgetsBinding.instance.addPostFrameCallback(
-                        (_) => widget.onToolsPressed?.call(),
-                      );
-                    },
-                  ),
-                  if (!widget.hasThread)
-                    Padding(
-                      padding: const EdgeInsets.only(
-                        left: 52,
-                        top: 0,
-                        bottom: 4,
-                      ),
-                      child: Text(
-                        'Response settings apply to an existing thread. MCP tool choices can be prepared now.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.45),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
+  Widget _buildThreadControls(BuildContext context) {
+    return _ThreadControlsButton(
+      hasOverrides: widget.hasLlmOverrides || widget.hasToolOverrides,
+      onPressed: widget.onThreadControlsPressed ?? () {},
     );
-  }
-
-  String get _contextSummary {
-    if (widget.estimatedTokens <= 0) return 'No usage reported yet';
-    final percent = widget.contextWindow > 0
-        ? (widget.estimatedTokens / widget.contextWindow * 100).round()
-        : 0;
-    return '${widget.estimatedTokens} / ${widget.contextWindow} tokens ($percent%)';
   }
 
   @override
@@ -478,15 +380,17 @@ class _ChatInputState extends State<ChatInput> {
                               ),
                       ),
                     ),
+                    if (widget.estimatedTokens > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: _ContextDonut(
+                          estimatedTokens: widget.estimatedTokens,
+                          contextWindow: widget.contextWindow,
+                        ),
+                      ),
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
-                      child: _ThreadControlsButton(
-                        hasOverrides:
-                            widget.hasLlmOverrides || widget.hasToolOverrides,
-                        estimatedTokens: widget.estimatedTokens,
-                        contextWindow: widget.contextWindow,
-                        onPressed: () => _showThreadControls(context),
-                      ),
+                      child: _buildThreadControls(context),
                     ),
                     Padding(
                       padding: const EdgeInsets.only(right: 8, bottom: 6),
@@ -534,59 +438,17 @@ class _AttachedImage {
   const _AttachedImage({required this.url});
 }
 
-class _ControlsRow extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool enabled;
-  final VoidCallback? onTap;
-
-  const _ControlsRow({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    this.enabled = true,
-    this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: onTap != null,
-    enabled: enabled,
-    label: '$title, $subtitle',
-    child: ListTile(
-      enabled: enabled,
-      minVerticalPadding: 8,
-      leading: Icon(
-        icon,
-        color: enabled ? const Color(0xFF8B5CF6) : Colors.white24,
-      ),
-      title: Text(title),
-      subtitle: Text(subtitle),
-      trailing: onTap == null ? null : const Icon(Icons.chevron_right_rounded),
-      onTap: enabled ? onTap : null,
-    ),
-  );
-}
-
 class _ThreadControlsButton extends StatelessWidget {
   final bool hasOverrides;
-  final int estimatedTokens;
-  final int contextWindow;
   final VoidCallback onPressed;
 
   const _ThreadControlsButton({
     required this.hasOverrides,
-    required this.estimatedTokens,
-    required this.contextWindow,
     required this.onPressed,
   });
 
   @override
   Widget build(BuildContext context) {
-    final ratio = contextWindow > 0
-        ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
-        : 0.0;
     return Tooltip(
       message: 'Thread controls',
       child: Semantics(
@@ -602,18 +464,6 @@ class _ThreadControlsButton extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                if (estimatedTokens > 0)
-                  CustomPaint(
-                    size: const Size(28, 28),
-                    painter: _DonutPainter(
-                      ratio: ratio,
-                      arcColor: ratio > .75
-                          ? Colors.redAccent
-                          : ratio > .5
-                          ? Colors.amber
-                          : Colors.greenAccent,
-                    ),
-                  ),
                 Icon(
                   Icons.tune_rounded,
                   size: 17,
@@ -635,6 +485,64 @@ class _ThreadControlsButton extends StatelessWidget {
                     ),
                   ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ContextDonut extends StatelessWidget {
+  final int estimatedTokens;
+  final int contextWindow;
+
+  const _ContextDonut({
+    required this.estimatedTokens,
+    required this.contextWindow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = contextWindow > 0
+        ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
+        : 0.0;
+    final percentage = (ratio * 100).round();
+    final Color arcColor;
+    if (ratio < 0.5) {
+      arcColor = const Color(0xFF10B981);
+    } else if (ratio < 0.75) {
+      arcColor = const Color(0xFFF59E0B);
+    } else {
+      arcColor = const Color(0xFFEF4444);
+    }
+
+    final tokenLabel = estimatedTokens >= 1000
+        ? '${(estimatedTokens / 1000).toStringAsFixed(1)}k'
+        : '$estimatedTokens';
+    final windowLabel = contextWindow >= 1000
+        ? '${(contextWindow / 1000).toStringAsFixed(0)}k'
+        : '$contextWindow';
+
+    return Tooltip(
+      message: '$tokenLabel / $windowLabel tokens ($percentage%)',
+      child: Semantics(
+        label:
+            'Context usage: $tokenLabel of $windowLabel tokens, $percentage percent',
+        child: SizedBox(
+          width: 36,
+          height: 36,
+          child: CustomPaint(
+            painter: _DonutPainter(ratio: ratio, arcColor: arcColor),
+            child: Center(
+              child: Text(
+                '$percentage%',
+                style: TextStyle(
+                  fontSize: 8,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white.withValues(alpha: 0.5),
+                ),
+              ),
             ),
           ),
         ),
