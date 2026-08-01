@@ -1390,6 +1390,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     hasLlmOverrides: _hasLlmOverrides,
                     estimatedTokens: _contextEstimatedTokens,
                     contextWindow: _contextWindow,
+                    hasThread: _activeThreadId != null,
                   ),
                 ],
               ),
@@ -1844,7 +1845,9 @@ class _ToolOverridesSheet extends StatefulWidget {
 class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
   bool _isLoading = true;
   bool _isSaving = false;
+  String? _loadError;
   List<_ServerState> _servers = [];
+  final Map<String, List<bool>> _previousToolStates = {};
 
   @override
   void initState() {
@@ -1853,6 +1856,11 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
   }
 
   Future<void> _load() async {
+    if (mounted)
+      setState(() {
+        _isLoading = true;
+        _loadError = null;
+      });
     try {
       final Map<String, dynamic> data;
       if (widget.threadId != null) {
@@ -1907,11 +1915,33 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
         setState(() {
           _servers = serverStates;
           _isLoading = false;
+          _loadError = null;
         });
     } catch (e) {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted)
+        setState(() {
+          _isLoading = false;
+          _loadError = e.toString();
+        });
     }
   }
+
+  String get _toolSummary {
+    final disabledServers = _servers.where((s) => !s.enabled).length;
+    final disabledTools = _servers.fold<int>(
+      0,
+      (n, s) => n + s.tools.where((t) => !t.enabled).length,
+    );
+    if (disabledServers == 0 && disabledTools == 0) return 'All tools enabled';
+    return '${disabledTools} tool${disabledTools == 1 ? '' : 's'} disabled${disabledServers > 0 ? ' · $disabledServers server${disabledServers == 1 ? '' : 's'} disabled' : ''}';
+  }
+
+  void _restoreDefaults() => setState(() {
+    for (final server in _servers) {
+      server.enabled = true;
+      for (final tool in server.tools) tool.enabled = true;
+    }
+  });
 
   Future<void> _save() async {
     setState(() => _isSaving = true);
@@ -1999,7 +2029,9 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                   ),
                 ),
                 FilledButton(
-                  onPressed: _isSaving ? null : _save,
+                  onPressed: _isLoading || _isSaving || _loadError != null
+                      ? null
+                      : _save,
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF8B5CF6),
                     foregroundColor: Colors.white,
@@ -2035,6 +2067,46 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
               ),
             ),
           ),
+          if (_loadError != null)
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.redAccent),
+                  const SizedBox(height: 6),
+                  const Text('Could not load MCP tools'),
+                  TextButton(onPressed: _load, child: const Text('Retry')),
+                ],
+              ),
+            )
+          else ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _toolSummary,
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _isLoading || _isSaving
+                        ? null
+                        : _restoreDefaults,
+                    child: const Text('Restore defaults'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Close'),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           // Server list
           if (_isLoading)
@@ -2044,6 +2116,8 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                 valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
               ),
             )
+          else if (_loadError != null)
+            const SizedBox.shrink()
           else if (_servers.isEmpty)
             Padding(
               padding: const EdgeInsets.all(32),
@@ -2119,7 +2193,9 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                           ),
                         ),
                         Text(
-                          '${server.tools.length} tool${server.tools.length == 1 ? '' : 's'}',
+                          server.tools.isEmpty
+                              ? 'No tools'
+                              : '${server.tools.where((t) => t.enabled).length} of ${server.tools.length} enabled',
                           style: TextStyle(
                             fontSize: 11,
                             color: Colors.white.withValues(alpha: 0.4),
@@ -2132,10 +2208,22 @@ class _ToolOverridesSheetState extends State<_ToolOverridesSheet> {
                     value: server.enabled,
                     onChanged: (v) {
                       setState(() {
+                        if (!v) {
+                          _previousToolStates[server.id] = server.tools
+                              .map((t) => t.enabled)
+                              .toList();
+                        }
                         server.enabled = v;
-                        // When toggling server, also toggle all its tools
-                        for (final t in server.tools) {
-                          t.enabled = v;
+                        if (!v) {
+                          for (final t in server.tools) t.enabled = false;
+                        } else {
+                          final previous = _previousToolStates[server.id];
+                          for (var i = 0; i < server.tools.length; i++) {
+                            server.tools[i].enabled =
+                                previous != null && i < previous.length
+                                ? previous[i]
+                                : true;
+                          }
                         }
                       });
                     },
@@ -2275,6 +2363,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   String? _error;
   final TextEditingController _searchController = TextEditingController();
   String _search = '';
+  final Map<String, bool> _expandedCategories = {};
 
   @override
   void initState() {
@@ -2330,6 +2419,26 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   }
 
   Future<void> _clearAll() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear all overrides?'),
+        content: const Text(
+          'This removes every custom response setting for this thread.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Clear all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
     setState(() => _isSaving = true);
     try {
       final updated = await widget.api.clearThreadLlmOverrides(widget.threadId);
@@ -2350,6 +2459,10 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
   }
 
   void _setOverride(String key, dynamic value) {
+    if (value is String && value.trim().isEmpty) {
+      _clearOne(key);
+      return;
+    }
     final current = Map<String, dynamic>.from(
       _overrides?.overrides ?? const {},
     );
@@ -2362,11 +2475,7 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
       _overrides?.overrides ?? const {},
     );
     current.remove(key);
-    if (current.isEmpty) {
-      _clearAll();
-    } else {
-      _save(current);
-    }
+    _save(current);
   }
 
   @override
@@ -2505,14 +2614,60 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
     ThreadLlmOverrides overrides,
     ScrollController scrollController,
   ) {
-    final keys = overrides.keys.where((k) {
-      if (_search.isEmpty) return true;
-      final entry = overrides.schema[k];
-      final label = entry?.label.toLowerCase() ?? k;
-      return label.contains(_search) || k.contains(_search);
-    }).toList();
-
-    if (keys.isEmpty) {
+    final categories = <String, List<String>>{
+      'Basic': ['system_prompt', 'model', 'temperature', 'max_tokens'],
+      'Connection': ['provider', 'api_url', 'api_key'],
+      'Context & limits': [
+        'max_iterations',
+        'context_window',
+        'stream_timeout',
+        'video_tool_timeout',
+        'compaction_threshold',
+        'preserve_recent',
+      ],
+      'Tool behavior': ['tool_result_max_chars'],
+      'Image generation': [
+        'image_enabled',
+        'image_model',
+        'image_api_url',
+        'image_provider',
+      ],
+      'Speech & video': [
+        'audio_enabled',
+        'tts_provider',
+        'tts_api_url',
+        'tts_api_key',
+        'tts_model',
+        'tts_voice',
+        'tts_format',
+        'tts_timeout',
+        'lipsync_enabled',
+        'video_enabled',
+      ],
+      'Vision': [
+        'vision_enabled',
+        'vision_api_url',
+        'vision_api_key',
+        'vision_model',
+        'vision_provider',
+        'vision_max_tokens',
+      ],
+    };
+    final known = categories.values.expand((v) => v).toSet();
+    final other = overrides.keys.where((k) => !known.contains(k)).toList();
+    if (other.isNotEmpty) categories['Other advanced'] = other;
+    final matching = <String, List<String>>{};
+    for (final category in categories.entries) {
+      final keys = category.value.where((key) {
+        final entry = overrides.schema[key];
+        if (entry == null) return false;
+        if (_search.isEmpty) return true;
+        return key.toLowerCase().contains(_search) ||
+            entry.label.toLowerCase().contains(_search);
+      }).toList();
+      if (keys.isNotEmpty) matching[category.key] = keys;
+    }
+    if (matching.isEmpty) {
       return Center(
         child: Text(
           'No matches for "$_search"',
@@ -2521,18 +2676,53 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
       );
     }
 
-    return ListView.separated(
+    final activeKeys = overrides.overrides.keys
+        .where((key) => matching.values.expand((value) => value).contains(key))
+        .toList();
+    return ListView(
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: keys.length,
-      separatorBuilder: (_, __) =>
-          const Divider(color: Color(0xFF22222D), height: 1),
-      itemBuilder: (context, index) {
-        final key = keys[index];
-        final entry = overrides.schema[key];
-        if (entry == null) return const SizedBox.shrink();
-        return _buildRow(key, entry, overrides);
-      },
+      children: [
+        if (activeKeys.isNotEmpty)
+          _CategoryPanel(
+            title: 'Active overrides',
+            keys: activeKeys,
+            expanded: true,
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: activeKeys
+                  .map(
+                    (key) => Chip(
+                      label: Text(overrides.schema[key]?.label ?? key),
+                      onDeleted: () => _clearOne(key),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+        ...matching.entries.map(
+          (category) => _CategoryPanel(
+            title: category.key,
+            keys: category.value,
+            expanded:
+                category.key == 'Basic' ||
+                _search.isNotEmpty ||
+                (_expandedCategories[category.key] ?? false),
+            onToggle: () => setState(
+              () => _expandedCategories[category.key] =
+                  !(_expandedCategories[category.key] ?? false),
+            ),
+            child: Column(
+              children: category.value
+                  .map(
+                    (key) => _buildRow(key, overrides.schema[key]!, overrides),
+                  )
+                  .toList(),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -2589,11 +2779,6 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                       ),
                   ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  key,
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                ),
                 const SizedBox(height: 6),
                 if (type == 'boolean')
                   Row(
@@ -2639,7 +2824,9 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                               )
                             : _StringField(
                                 keyName: key,
-                                initial: displayValue?.toString() ?? '',
+                                initial: _isSecret(key)
+                                    ? ''
+                                    : displayValue?.toString() ?? '',
                                 isOverridden: isOverridden,
                                 isSaving: _isSaving,
                                 multiline:
@@ -2647,11 +2834,12 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                                     key == 'api_key' ||
                                     key == 'tts_api_key' ||
                                     key == 'vision_api_key',
+                                secret: _isSecret(key),
                                 onSubmit: (v) {
-                                  if (v.isEmpty) {
-                                    _clearOne(key);
-                                  } else {
+                                  if (v.isNotEmpty) {
                                     _setOverride(key, v);
+                                  } else if (!_isSecret(key)) {
+                                    _clearOne(key);
                                   }
                                 },
                                 onReset: isOverridden
@@ -2661,16 +2849,14 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
                       ),
                     ],
                   ),
-                if (!isOverridden && effective != null && effective != '')
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      'Default: ${_formatDefault(effective, type)}',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 11,
-                      ),
-                    ),
+                if (_isSecret(key))
+                  Text(
+                    isOverridden
+                        ? 'Thread credential configured'
+                        : effective != null && effective != ''
+                        ? 'Using global credential'
+                        : 'Not configured',
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
                   ),
               ],
             ),
@@ -2680,18 +2866,53 @@ class _LlmOverridesSheetState extends State<_LlmOverridesSheet> {
     );
   }
 
-  static String _formatDefault(Object value, String type) {
-    if (type == 'number') {
-      if (value is num) {
-        return value.toString();
-      }
-    }
-    final str = value.toString();
-    if (str.length > 80) {
-      return '${str.substring(0, 77)}…';
-    }
-    return str;
-  }
+  static bool _isSecret(String key) =>
+      const {'api_key', 'tts_api_key', 'vision_api_key'}.contains(key);
+}
+
+class _CategoryPanel extends StatelessWidget {
+  final String title;
+  final List<String> keys;
+  final bool expanded;
+  final Widget child;
+  final VoidCallback? onToggle;
+
+  const _CategoryPanel({
+    required this.title,
+    required this.keys,
+    required this.expanded,
+    required this.child,
+    this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+    child: Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .025),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          ListTile(
+            minVerticalPadding: 4,
+            title: Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            subtitle: Text(
+              '${keys.length} setting${keys.length == 1 ? '' : 's'}',
+              style: const TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+            trailing: Icon(expanded ? Icons.expand_less : Icons.expand_more),
+            onTap: onToggle,
+          ),
+          if (expanded) child,
+        ],
+      ),
+    ),
+  );
 }
 
 class _NumberField extends StatefulWidget {
@@ -2809,6 +3030,7 @@ class _StringField extends StatefulWidget {
   final bool isOverridden;
   final bool isSaving;
   final bool multiline;
+  final bool secret;
   final ValueChanged<String> onSubmit;
   final VoidCallback? onReset;
 
@@ -2818,6 +3040,7 @@ class _StringField extends StatefulWidget {
     required this.isOverridden,
     required this.isSaving,
     required this.multiline,
+    this.secret = false,
     required this.onSubmit,
     this.onReset,
   });
@@ -2871,6 +3094,7 @@ class _StringFieldState extends State<_StringField> {
                 ? 8
                 : (widget.multiline ? 3 : 1),
             style: const TextStyle(color: Colors.white, fontSize: 13),
+            obscureText: widget.secret,
             onSubmitted: (_) => _commit(),
             onEditingComplete: _commit,
             onTapOutside: (_) => _commit(),

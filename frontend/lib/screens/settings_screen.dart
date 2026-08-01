@@ -16,6 +16,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _apiUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
+  final _temperatureController = TextEditingController();
+  final _maxTokensController = TextEditingController();
+  final _streamTimeoutController = TextEditingController();
+  final _videoToolTimeoutController = TextEditingController();
   final _imageApiUrlController = TextEditingController();
   final _imageModelController = TextEditingController();
   final _comfyuiApiUrlController = TextEditingController();
@@ -92,6 +96,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _discordChannelController = TextEditingController();
   final _discordPollController = TextEditingController();
   double _compactionThreshold = 0.75;
+  String _llmProvider = 'auto';
   bool _imageGenerationEnabled = false;
   String _imageProvider = 'auto';
   bool _visionEnabled = false;
@@ -114,6 +119,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _loadFailed = false;
 
   @override
   void initState() {
@@ -122,11 +128,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadFailed = false;
+    });
     try {
       final settings = await _api.getSettings();
       _apiUrlController.text = settings['llm_api_url'] as String? ?? '';
       _modelController.text = settings['llm_model'] as String? ?? '';
+      _llmProvider = settings['llm_provider'] as String? ?? 'auto';
+      _temperatureController.text = (settings['llm_temperature'] ?? 0.7)
+          .toString();
+      _maxTokensController.text = (settings['llm_max_tokens'] ?? 2048)
+          .toString();
+      _streamTimeoutController.text = (settings['llm_stream_timeout'] ?? 600)
+          .toString();
+      _videoToolTimeoutController.text =
+          (settings['llm_video_tool_timeout'] ?? 2400).toString();
       _imageGenerationEnabled = settings['llm_image_enabled'] as bool? ?? false;
       _imageApiUrlController.text =
           settings['llm_image_api_url'] as String? ?? '';
@@ -308,8 +326,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .toString();
       await _loadDiscordServers();
     } catch (_) {
+      _loadFailed = true;
       _apiUrlController.text = '';
       _modelController.text = 'llama3.1';
+      _llmProvider = 'auto';
+      _temperatureController.text = '0.7';
+      _maxTokensController.text = '2048';
+      _streamTimeoutController.text = '600';
+      _videoToolTimeoutController.text = '2400';
       _imageGenerationEnabled = false;
       _imageApiUrlController.text = '';
       _imageModelController.text = '';
@@ -553,6 +577,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _saveSettings() async {
+    if (_loadFailed) return;
     setState(() => _isSaving = true);
     try {
       final contextWindow = int.tryParse(_contextWindowController.text) ?? 8192;
@@ -567,6 +592,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final payload = <String, dynamic>{
         'llm_api_url': _apiUrlController.text,
         'llm_model': _modelController.text,
+        'llm_provider': _llmProvider,
+        'llm_temperature': double.tryParse(_temperatureController.text) ?? 0.7,
+        'llm_max_tokens': int.tryParse(_maxTokensController.text) ?? 2048,
+        'llm_stream_timeout':
+            int.tryParse(_streamTimeoutController.text) ?? 600,
+        'llm_video_tool_timeout':
+            int.tryParse(_videoToolTimeoutController.text) ?? 2400,
         'llm_image_enabled': _imageGenerationEnabled,
         'llm_image_api_url': _imageApiUrlController.text,
         'llm_image_model': _imageModelController.text,
@@ -729,6 +761,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _apiUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
+    _temperatureController.dispose();
+    _maxTokensController.dispose();
+    _streamTimeoutController.dispose();
+    _videoToolTimeoutController.dispose();
     _imageApiUrlController.dispose();
     _imageModelController.dispose();
     _comfyuiApiUrlController.dispose();
@@ -825,7 +861,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 8),
             child: FilledButton(
-              onPressed: _isSaving ? null : _saveSettings,
+              onPressed: _isSaving || _loadFailed ? null : _saveSettings,
               style: FilledButton.styleFrom(
                 backgroundColor: const Color(0xFF8B5CF6),
                 foregroundColor: Colors.white,
@@ -853,6 +889,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 valueColor: AlwaysStoppedAnimation(Color(0xFF8B5CF6)),
               ),
             )
+          : _loadFailed
+          ? _buildLoadError()
           : DefaultTabController(
               length: 5,
               child: Column(
@@ -981,6 +1019,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ]);
   }
 
+  Widget _buildLoadError() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.cloud_off_outlined,
+            size: 42,
+            color: Color(0xFFA1A1AA),
+          ),
+          const SizedBox(height: 12),
+          const Text('Could not load settings.'),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _loadSettings,
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Retry'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLlmSettingsTab() {
     return _buildSettingsTab([
       _buildSection(
@@ -988,26 +1049,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'Configure the main text/reasoning model backend',
         Icons.psychology_outlined,
         [
-          _buildField(
-            controller: _apiUrlController,
-            label: 'API URL',
-            hint: 'http://localhost:11434/v1',
-            icon: Icons.link_rounded,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _apiKeyController,
-            label: 'API Key',
-            hint: 'Leave blank to keep current key',
-            icon: Icons.key_rounded,
-            obscure: true,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _modelController,
-            label: 'Model',
-            hint: 'llama3.1',
-            icon: Icons.smart_toy_outlined,
+          _buildResponsiveFields([
+            _buildProviderDropdown(),
+            _buildField(
+              controller: _modelController,
+              label: 'Model',
+              hint: 'llama3.1',
+              icon: Icons.smart_toy_outlined,
+            ),
+            _buildField(
+              controller: _apiUrlController,
+              label: 'API URL',
+              hint: 'http://localhost:11434/v1',
+              icon: Icons.link_rounded,
+            ),
+            _buildField(
+              controller: _apiKeyController,
+              label: 'API Key',
+              hint: 'Leave blank to keep current key',
+              icon: Icons.key_rounded,
+              obscure: true,
+            ),
+          ]),
+          const SizedBox(height: 12),
+          _buildDisclosure(
+            title: 'Advanced response controls',
+            children: [
+              _buildResponsiveFields([
+                _buildField(
+                  controller: _temperatureController,
+                  label: 'Temperature',
+                  hint: '0.7',
+                  icon: Icons.thermostat_outlined,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+                _buildField(
+                  controller: _maxTokensController,
+                  label: 'Max output tokens',
+                  hint: '2048',
+                  icon: Icons.token_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+                _buildField(
+                  controller: _maxIterationsController,
+                  label: 'Maximum agent iterations',
+                  hint: '25',
+                  icon: Icons.repeat_rounded,
+                  keyboardType: TextInputType.number,
+                ),
+                _buildField(
+                  controller: _streamTimeoutController,
+                  label: 'Stream timeout (seconds)',
+                  hint: '600',
+                  icon: Icons.timer_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+                _buildField(
+                  controller: _videoToolTimeoutController,
+                  label: 'Video tool timeout (seconds)',
+                  hint: '2400',
+                  icon: Icons.movie_outlined,
+                  keyboardType: TextInputType.number,
+                ),
+              ]),
+            ],
           ),
         ],
       ),
@@ -1025,22 +1132,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             keyboardType: TextInputType.number,
           ),
           const SizedBox(height: 24),
-          _buildField(
-            controller: _maxIterationsController,
-            label: 'Max Conversational Turns',
-            hint: '25',
-            icon: Icons.repeat_rounded,
-            keyboardType: TextInputType.number,
-          ),
-          const SizedBox(height: 24),
-          _buildThresholdSlider(),
-          const SizedBox(height: 24),
-          _buildField(
-            controller: _preserveRecentController,
-            label: 'Preserve Recent Messages',
-            hint: '10',
-            icon: Icons.history_rounded,
-            keyboardType: TextInputType.number,
+          _buildDisclosure(
+            title: 'Compaction settings',
+            children: [
+              _buildThresholdSlider(),
+              const SizedBox(height: 16),
+              _buildField(
+                controller: _preserveRecentController,
+                label: 'Preserve recent messages',
+                hint: '10',
+                icon: Icons.history_rounded,
+                keyboardType: TextInputType.number,
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           _buildInfoBox(
@@ -1054,8 +1158,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget _buildMediaSettingsTab() {
     return _buildSettingsTab([
       _buildSection(
-        'Image Generation',
-        'Use a separate image model/backend for generated images',
+        'Media Infrastructure',
+        'Shared endpoints used by media capabilities',
+        Icons.hub_outlined,
+        [
+          _buildResponsiveFields([
+            _buildField(
+              controller: _publicBaseUrlController,
+              label: 'Public base URL',
+              hint: 'https://threadbot.example.com (optional)',
+              icon: Icons.public_rounded,
+            ),
+            _buildField(
+              controller: _comfyuiApiUrlController,
+              label: 'ComfyUI API URL',
+              hint: 'http://ollama.home:8188',
+              icon: Icons.hub_outlined,
+            ),
+          ]),
+        ],
+      ),
+      const SizedBox(height: 24),
+      _buildSection(
+        'Images',
+        'Generate images with a dedicated image backend; image understanding can use its configured model',
         Icons.image_outlined,
         [
           SwitchListTile(
@@ -1065,155 +1191,125 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: const Color(0xFF8B5CF6),
             title: const Text('Enable image generation'),
             subtitle: Text(
-              'When enabled, ThreadBot can call the built-in generate_image tool. Image analysis still uses the main multimodal chat model.',
+              'Enables the built-in generate_image tool. Image analysis uses Image Understanding when configured, with the chat model as fallback.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.white.withValues(alpha: 0.4),
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          _buildImageProviderDropdown(),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _publicBaseUrlController,
-            label: 'Public Base URL',
-            hint: 'https://threadbot.example.com (optional)',
-            icon: Icons.public_rounded,
-          ),
-          const SizedBox(height: 12),
-          if (_imageProvider == 'comfyui') ...[
-            _buildInfoBox(
-              'ComfyUI uses the workflow to decide the model/style. The bundled default is Flux.2 Klein 9B on ollama.home:8188. Leave Image Model hidden because it is not used for ComfyUI.',
-            ),
-            const SizedBox(height: 16),
-            _buildField(
-              controller: _comfyuiApiUrlController,
-              label: 'ComfyUI API URL',
-              hint: 'http://ollama.home:8188',
-              icon: Icons.hub_outlined,
-            ),
-            const SizedBox(height: 16),
-            _buildField(
-              controller: _comfyuiOutputNodeController,
-              label: 'Save Image Node ID',
-              hint: '12',
-              icon: Icons.output_rounded,
-            ),
-            const SizedBox(height: 16),
-            _buildField(
-              controller: _comfyuiNegativePromptController,
-              label: 'Negative Prompt',
-              hint: 'Optional; Flux workflows usually leave this blank',
-              icon: Icons.block_rounded,
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiWidthController,
-                    label: 'Width',
-                    hint: '1024',
-                    icon: Icons.straighten_rounded,
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiHeightController,
-                    label: 'Height',
-                    hint: '1024',
-                    icon: Icons.straighten_rounded,
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiStepsController,
-                    label: 'Steps',
-                    hint: '28',
-                    icon: Icons.repeat_rounded,
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiCfgController,
-                    label: 'CFG',
-                    hint: '1.0',
-                    icon: Icons.tune_rounded,
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiSeedController,
-                    label: 'Seed',
-                    hint: '42',
-                    icon: Icons.casino_outlined,
-                    keyboardType: TextInputType.number,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiSamplerController,
-                    label: 'Sampler',
-                    hint: 'euler',
-                    icon: Icons.gradient_rounded,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildField(
-                    controller: _comfyuiSchedulerController,
-                    label: 'Scheduler',
-                    hint: 'simple',
-                    icon: Icons.schedule_rounded,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            _buildComfyuiWorkflowSelector(),
-          ] else ...[
-            const SizedBox(height: 16),
-            _buildField(
-              controller: _imageApiUrlController,
-              label: 'Image API URL',
-              hint: 'http://ollama.home:11434 or http://host:port/v1',
-              icon: Icons.link_rounded,
-            ),
-            const SizedBox(height: 16),
-            _buildField(
-              controller: _imageModelController,
-              label: 'Image Model',
-              hint: 'x/z-image-turbo:fp8',
-              icon: Icons.auto_awesome_rounded,
-            ),
+          if (_imageGenerationEnabled) ...[
+            _buildImageProviderDropdown(),
             const SizedBox(height: 12),
-            _buildInfoBox(
-              'Ollama image models found on ollama.home include x/z-image-turbo:fp8 and x/flux2-klein:9b. Use provider Ollama for those models. Use OpenAI-compatible only for servers that expose /images/generations.',
+            if (_imageProvider != 'comfyui') ...[
+              _buildField(
+                controller: _imageApiUrlController,
+                label: 'Image API URL',
+                hint: 'http://host:port/v1',
+                icon: Icons.link_rounded,
+              ),
+              const SizedBox(height: 12),
+              _buildField(
+                controller: _imageModelController,
+                label: 'Image Model',
+                hint: 'image model name',
+                icon: Icons.auto_awesome_rounded,
+              ),
+            ],
+            _buildDisclosure(
+              title: 'Advanced image settings',
+              children: [
+                const SizedBox(height: 16),
+                if (_imageProvider == 'comfyui') ...[
+                  _buildInfoBox(
+                    'ComfyUI uses the selected workflow to decide the model and style. Leave Image Model hidden when using ComfyUI.',
+                  ),
+                  const SizedBox(height: 16),
+                  _buildField(
+                    controller: _comfyuiOutputNodeController,
+                    label: 'Save Image Node ID',
+                    hint: '12',
+                    icon: Icons.output_rounded,
+                  ),
+                  const SizedBox(height: 16),
+                  _buildField(
+                    controller: _comfyuiNegativePromptController,
+                    label: 'Negative Prompt',
+                    hint: 'Optional; Flux workflows usually leave this blank',
+                    icon: Icons.block_rounded,
+                  ),
+                  const SizedBox(height: 16),
+                  _buildResponsiveFields([
+                    _buildField(
+                      controller: _comfyuiWidthController,
+                      label: 'Width',
+                      hint: '1024',
+                      icon: Icons.straighten_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+                    _buildField(
+                      controller: _comfyuiHeightController,
+                      label: 'Height',
+                      hint: '1024',
+                      icon: Icons.straighten_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+                  _buildResponsiveFields([
+                    _buildField(
+                      controller: _comfyuiStepsController,
+                      label: 'Steps',
+                      hint: '28',
+                      icon: Icons.repeat_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+                    _buildField(
+                      controller: _comfyuiCfgController,
+                      label: 'CFG',
+                      hint: '1.0',
+                      icon: Icons.tune_rounded,
+                      keyboardType: TextInputType.number,
+                    ),
+                    _buildField(
+                      controller: _comfyuiSeedController,
+                      label: 'Seed',
+                      hint: '42',
+                      icon: Icons.casino_outlined,
+                      keyboardType: TextInputType.number,
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+                  _buildResponsiveFields([
+                    _buildField(
+                      controller: _comfyuiSamplerController,
+                      label: 'Sampler',
+                      hint: 'euler',
+                      icon: Icons.gradient_rounded,
+                    ),
+                    _buildField(
+                      controller: _comfyuiSchedulerController,
+                      label: 'Scheduler',
+                      hint: 'simple',
+                      icon: Icons.schedule_rounded,
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+                  _buildComfyuiWorkflowSelector(),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  _buildInfoBox(
+                    'Use Ollama for local image models or OpenAI-compatible for servers that expose image generation.',
+                  ),
+                ],
+              ],
             ),
           ],
         ],
       ),
       const SizedBox(height: 32),
       _buildSection(
-        'Video Generation',
+        'Video',
         'Use ComfyUI/Wan workflows for text-to-video and image-to-video',
         Icons.movie_creation_outlined,
         [
@@ -1224,213 +1320,173 @@ class _SettingsScreenState extends State<SettingsScreen> {
             activeThumbColor: const Color(0xFF8B5CF6),
             title: const Text('Enable video generation'),
             subtitle: Text(
-              'Enables the unified generate_video tool. Uses the same ComfyUI API URL above, defaulting to your strix.home:8188 instance.',
+              'Enables the unified generate_video tool using the shared ComfyUI endpoint.',
               style: TextStyle(
                 fontSize: 12,
                 color: Colors.white.withValues(alpha: 0.4),
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          _buildInfoBox(
-            'Defaults are conservative for Wan2.2 14B quantized on an RTX 3090: 832x480, 81 frames, 16 fps, 24 steps, CFG 4.0, timeout 1800s. Paste an exported ComfyUI API workflow JSON below; node ID fields can be left blank for heuristic patching.',
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoOutputNodeController,
-                  label: 'Video Output Node ID',
-                  hint: 'optional; SaveVideo/VHS node',
-                  icon: Icons.output_rounded,
-                ),
+          if (_videoGenerationEnabled) ...[
+            _buildResponsiveFields([
+              _buildField(
+                controller: _videoWidthController,
+                label: 'Width',
+                hint: '832',
+                icon: Icons.straighten_rounded,
+                keyboardType: TextInputType.number,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoInputImageNodeController,
-                  label: 'Input Image Node ID',
-                  hint: 'optional; LoadImage node for I2V',
-                  icon: Icons.add_photo_alternate_outlined,
-                ),
+              _buildField(
+                controller: _videoHeightController,
+                label: 'Height',
+                hint: '480',
+                icon: Icons.straighten_rounded,
+                keyboardType: TextInputType.number,
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoPromptNodeController,
-                  label: 'Prompt Node ID',
-                  hint: 'optional; positive prompt node',
-                  icon: Icons.text_fields_rounded,
-                ),
+              _buildField(
+                controller: _videoFramesController,
+                label: 'Frames',
+                hint: '81',
+                icon: Icons.video_library_outlined,
+                keyboardType: TextInputType.number,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoNegativeNodeController,
-                  label: 'Negative Node ID',
-                  hint: 'optional; negative prompt node',
+              _buildField(
+                controller: _videoFpsController,
+                label: 'FPS',
+                hint: '16',
+                icon: Icons.speed_rounded,
+                keyboardType: TextInputType.number,
+              ),
+            ]),
+            const SizedBox(height: 12),
+            _buildDisclosure(
+              title: 'Advanced video settings',
+              children: [
+                const SizedBox(height: 12),
+                _buildInfoBox(
+                  'Set the output dimensions and timing for generated video, then paste an exported ComfyUI API workflow JSON if needed.',
+                ),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _videoOutputNodeController,
+                    label: 'Video Output Node ID',
+                    hint: 'optional; SaveVideo/VHS node',
+                    icon: Icons.output_rounded,
+                  ),
+                  _buildField(
+                    controller: _videoInputImageNodeController,
+                    label: 'Input Image Node ID',
+                    hint: 'optional; LoadImage node for I2V',
+                    icon: Icons.add_photo_alternate_outlined,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _videoPromptNodeController,
+                    label: 'Prompt Node ID',
+                    hint: 'optional; positive prompt node',
+                    icon: Icons.text_fields_rounded,
+                  ),
+                  _buildField(
+                    controller: _videoNegativeNodeController,
+                    label: 'Negative Node ID',
+                    hint: 'optional; negative prompt node',
+                    icon: Icons.block_rounded,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildField(
+                  controller: _videoNegativePromptController,
+                  label: 'Video Negative Prompt',
+                  hint:
+                      'low quality, blurry, distorted, watermark, text artifacts',
                   icon: Icons.block_rounded,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _videoNegativePromptController,
-            label: 'Video Negative Prompt',
-            hint: 'low quality, blurry, distorted, watermark, text artifacts',
-            icon: Icons.block_rounded,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoWidthController,
-                  label: 'Width',
-                  hint: '832',
-                  icon: Icons.straighten_rounded,
-                  keyboardType: TextInputType.number,
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _videoStepsController,
+                    label: 'Steps',
+                    hint: '24',
+                    icon: Icons.repeat_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _videoCfgController,
+                    label: 'CFG',
+                    hint: '4.0',
+                    icon: Icons.tune_rounded,
+                    keyboardType: TextInputType.number,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _videoSamplerController,
+                    label: 'Sampler',
+                    hint: 'euler',
+                    icon: Icons.gradient_rounded,
+                  ),
+                  _buildField(
+                    controller: _videoSchedulerController,
+                    label: 'Scheduler',
+                    hint: 'simple',
+                    icon: Icons.schedule_rounded,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _videoSeedController,
+                    label: 'Seed',
+                    hint: '42',
+                    icon: Icons.casino_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _videoTimeoutController,
+                    label: 'Timeout Seconds',
+                    hint: '1800',
+                    icon: Icons.timer_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildVideoWorkflowCard(
+                  title: 'Text-to-Video Workflow',
+                  description:
+                      'Official Wan2.2 5B text-to-video workflow. This is what generate_video uses.',
+                  controller: _videoWorkflowController,
+                  showJson: _showVideoWorkflowJson,
+                  onShowJsonChanged: (value) =>
+                      setState(() => _showVideoWorkflowJson = value),
+                  jsonHint:
+                      'Paste the official Wan2.2 text-to-video workflow JSON. UI export or API format is accepted.',
+                  icon: Icons.movie_creation_outlined,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoHeightController,
-                  label: 'Height',
-                  hint: '480',
-                  icon: Icons.straighten_rounded,
-                  keyboardType: TextInputType.number,
+                const SizedBox(height: 16),
+                _buildVideoWorkflowCard(
+                  title: 'Image-to-Video Workflow',
+                  description:
+                      'Official Wan2.2 5B image-to-video workflow. Used when animating uploaded, generated, or reference images.',
+                  controller: _imageToVideoWorkflowController,
+                  showJson: _showImageToVideoWorkflowJson,
+                  onShowJsonChanged: (value) =>
+                      setState(() => _showImageToVideoWorkflowJson = value),
+                  jsonHint:
+                      'Paste the official Wan2.2 image-to-video workflow JSON. Leave blank to reuse text-to-video workflow.',
+                  icon: Icons.video_camera_back_outlined,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoFramesController,
-                  label: 'Frames',
-                  hint: '81',
-                  icon: Icons.video_library_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoFpsController,
-                  label: 'FPS',
-                  hint: '16',
-                  icon: Icons.speed_rounded,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoStepsController,
-                  label: 'Steps',
-                  hint: '24',
-                  icon: Icons.repeat_rounded,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoCfgController,
-                  label: 'CFG',
-                  hint: '4.0',
-                  icon: Icons.tune_rounded,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoSamplerController,
-                  label: 'Sampler',
-                  hint: 'euler',
-                  icon: Icons.gradient_rounded,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoSchedulerController,
-                  label: 'Scheduler',
-                  hint: 'simple',
-                  icon: Icons.schedule_rounded,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _videoSeedController,
-                  label: 'Seed',
-                  hint: '42',
-                  icon: Icons.casino_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _videoTimeoutController,
-                  label: 'Timeout Seconds',
-                  hint: '1800',
-                  icon: Icons.timer_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildVideoWorkflowCard(
-            title: 'Text-to-Video Workflow',
-            description:
-                'Official Wan2.2 5B text-to-video workflow. This is what generate_video uses.',
-            controller: _videoWorkflowController,
-            showJson: _showVideoWorkflowJson,
-            onShowJsonChanged: (value) =>
-                setState(() => _showVideoWorkflowJson = value),
-            jsonHint:
-                'Paste the official Wan2.2 text-to-video workflow JSON. UI export or API format is accepted.',
-            icon: Icons.movie_creation_outlined,
-          ),
-          const SizedBox(height: 16),
-          _buildVideoWorkflowCard(
-            title: 'Image-to-Video Workflow',
-            description:
-                'Official Wan2.2 5B image-to-video workflow. Used when animating uploaded, generated, or reference images.',
-            controller: _imageToVideoWorkflowController,
-            showJson: _showImageToVideoWorkflowJson,
-            onShowJsonChanged: (value) =>
-                setState(() => _showImageToVideoWorkflowJson = value),
-            jsonHint:
-                'Paste the official Wan2.2 image-to-video workflow JSON. Leave blank to reuse text-to-video workflow.',
-            icon: Icons.video_camera_back_outlined,
-          ),
+              ],
+            ),
+          ],
         ],
       ),
       const SizedBox(height: 32),
       _buildSection(
-        'Audio Generation',
+        'Speech & Audio',
         'Generate dialog, narration, ambient beds, and sound effects for video',
         Icons.graphic_eq_rounded,
         [
@@ -1448,70 +1504,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          _buildInfoBox(
-            'Default endpoint is an OpenAI-compatible local TTS service on ollama.home:5002. The worker uses ffmpeg to mix voice, ambient soundscape layers, and final video into one generated-media file.',
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(child: _buildTtsProviderDropdown()),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _ttsApiUrlController,
-                  label: 'TTS API URL',
-                  hint: 'http://ollama.home:5002/v1/audio/speech',
-                  icon: Icons.link_rounded,
-                ),
+          if (_audioGenerationEnabled) ...[
+            const SizedBox(height: 12),
+            _buildInfoBox(
+              'The worker uses ffmpeg to mix speech, ambient soundscape layers, and final video into one generated-media file.',
+            ),
+            const SizedBox(height: 16),
+            _buildResponsiveFields([
+              _buildTtsProviderDropdown(),
+              _buildField(
+                controller: _ttsApiUrlController,
+                label: 'TTS API URL',
+                hint: 'http://host:port/v1/audio/speech',
+                icon: Icons.link_rounded,
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _ttsModelController,
-                  label: 'TTS Model',
-                  hint: 'piper',
-                  icon: Icons.record_voice_over_outlined,
-                ),
+            ]),
+            const SizedBox(height: 16),
+            _buildResponsiveFields([
+              _buildField(
+                controller: _ttsModelController,
+                label: 'TTS Model',
+                hint: 'piper',
+                icon: Icons.record_voice_over_outlined,
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _ttsVoiceController,
-                  label: 'Voice',
-                  hint: 'en_US-lessac-medium',
-                  icon: Icons.person_outline_rounded,
-                ),
+              _buildField(
+                controller: _ttsVoiceController,
+                label: 'Voice',
+                hint: 'voice name',
+                icon: Icons.person_outline_rounded,
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _ttsFormatController,
-                  label: 'Audio Format',
-                  hint: 'wav',
-                  icon: Icons.audio_file_outlined,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _ttsTimeoutController,
-                  label: 'TTS Timeout Seconds',
-                  hint: '300',
-                  icon: Icons.timer_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
+            ]),
+            const SizedBox(height: 16),
+            _buildDisclosure(
+              title: 'Advanced audio settings',
+              children: [
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _ttsFormatController,
+                    label: 'Audio Format',
+                    hint: 'wav',
+                    icon: Icons.audio_file_outlined,
+                  ),
+                  _buildField(
+                    controller: _ttsTimeoutController,
+                    label: 'TTS Timeout Seconds',
+                    hint: '300',
+                    icon: Icons.timer_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                ]),
+              ],
+            ),
+          ],
         ],
       ),
       const SizedBox(height: 32),
@@ -1520,6 +1564,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         'Use Wan2.2 S2V and InfiniteTalk to align generated speech with mouth motion',
         Icons.face_retouching_natural_outlined,
         [
+          if (_lipsyncEnabled &&
+              (!_videoGenerationEnabled || !_audioGenerationEnabled))
+            _buildWarningBox(
+              'Lip sync requires both Video and Speech & Audio to be enabled.',
+            ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _lipsyncEnabled,
@@ -1534,229 +1583,185 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          _buildInfoBox(
-            'Defaults are populated for local Wan2.2 S2V on ollama.home:8188: S2V 14B FP8, InfiniteTalk single-speaker patch, wav2vec2 audio encoder, UMT5 text encoder, and Wan 2.1 VAE. Leave workflow JSON blank to use ThreadBot\'s built-in API workflow.',
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncOutputNodeController,
-                  label: 'Output Node ID',
-                  hint: '47',
-                  icon: Icons.output_rounded,
+          if (_lipsyncEnabled) ...[
+            _buildField(
+              controller: _lipsyncModelController,
+              label: 'S2V Diffusion Model',
+              hint: 'model filename',
+              icon: Icons.memory_outlined,
+            ),
+            const SizedBox(height: 12),
+            _buildDisclosure(
+              title: 'Advanced lip sync settings',
+              children: [
+                const SizedBox(height: 12),
+                _buildInfoBox(
+                  'Configure the lip-sync workflow and model assets for your ComfyUI installation. Leave workflow JSON blank to use ThreadBot\'s built-in API workflow.',
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncInputImageNodeController,
-                  label: 'Input Image Node ID',
-                  hint: '12',
-                  icon: Icons.image_outlined,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncInputAudioNodeController,
-                  label: 'Input Audio Node ID',
-                  hint: '8',
-                  icon: Icons.audiotrack_outlined,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncPromptNodeController,
-                  label: 'Prompt Node ID',
-                  hint: '6',
-                  icon: Icons.short_text_rounded,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _lipsyncNegativeNodeController,
-            label: 'Negative Prompt Node ID',
-            hint: '7',
-            icon: Icons.block_outlined,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _lipsyncModelController,
-            label: 'S2V Diffusion Model',
-            hint: 'wan2.2_s2v_14B_fp8_scaled.safetensors',
-            icon: Icons.memory_outlined,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _lipsyncPatchController,
-            label: 'InfiniteTalk Patch',
-            hint:
-                'InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors',
-            icon: Icons.extension_outlined,
-          ),
-          const SizedBox(height: 16),
-          _buildField(
-            controller: _lipsyncAudioEncoderController,
-            label: 'Audio Encoder',
-            hint: 'wav2vec2_large_english_fp16.safetensors',
-            icon: Icons.graphic_eq_rounded,
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncVaeController,
-                  label: 'VAE',
-                  hint: 'wan_2.1_vae.safetensors',
-                  icon: Icons.view_in_ar_outlined,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncClipController,
-                  label: 'Text Encoder',
-                  hint: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-                  icon: Icons.text_fields_rounded,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncWidthController,
-                  label: 'Width',
-                  hint: '832',
-                  icon: Icons.width_normal_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncHeightController,
-                  label: 'Height',
-                  hint: '480',
-                  icon: Icons.height_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncFramesController,
-                  label: 'Frames',
-                  hint: '81',
-                  icon: Icons.photo_library_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncFpsController,
-                  label: 'FPS',
-                  hint: '16',
-                  icon: Icons.speed_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncStepsController,
-                  label: 'Steps',
-                  hint: '20',
-                  icon: Icons.timeline_outlined,
-                  keyboardType: TextInputType.number,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncCfgController,
-                  label: 'CFG',
-                  hint: '6.0',
-                  icon: Icons.tune_outlined,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncOutputNodeController,
+                    label: 'Output Node ID',
+                    hint: '47',
+                    icon: Icons.output_rounded,
                   ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncAudioScaleController,
-                  label: 'Audio Scale',
-                  hint: '1.0',
-                  icon: Icons.multitrack_audio_outlined,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
+                  _buildField(
+                    controller: _lipsyncInputImageNodeController,
+                    label: 'Input Image Node ID',
+                    hint: '12',
+                    icon: Icons.image_outlined,
                   ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncInputAudioNodeController,
+                    label: 'Input Audio Node ID',
+                    hint: '8',
+                    icon: Icons.audiotrack_outlined,
+                  ),
+                  _buildField(
+                    controller: _lipsyncPromptNodeController,
+                    label: 'Prompt Node ID',
+                    hint: '6',
+                    icon: Icons.short_text_rounded,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildField(
+                  controller: _lipsyncNegativeNodeController,
+                  label: 'Negative Prompt Node ID',
+                  hint: '7',
+                  icon: Icons.block_outlined,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncSeedController,
-                  label: 'Seed',
-                  hint: '42',
-                  icon: Icons.casino_outlined,
-                  keyboardType: TextInputType.number,
+                const SizedBox(height: 16),
+                _buildField(
+                  controller: _lipsyncPatchController,
+                  label: 'InfiniteTalk Patch',
+                  hint:
+                      'InfiniteTalk/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors',
+                  icon: Icons.extension_outlined,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildField(
-                  controller: _lipsyncTimeoutController,
-                  label: 'Timeout Seconds',
-                  hint: '2400',
-                  icon: Icons.timer_outlined,
-                  keyboardType: TextInputType.number,
+                const SizedBox(height: 16),
+                _buildField(
+                  controller: _lipsyncAudioEncoderController,
+                  label: 'Audio Encoder',
+                  hint: 'wav2vec2_large_english_fp16.safetensors',
+                  icon: Icons.graphic_eq_rounded,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildVideoWorkflowCard(
-            title: 'Lip Sync Workflow Override',
-            description:
-                'Optional custom Wan S2V/InfiniteTalk workflow. Leave blank to use ThreadBot\'s built-in local lip-sync workflow.',
-            controller: _lipsyncWorkflowController,
-            showJson: _showLipsyncWorkflowJson,
-            onShowJsonChanged: (value) =>
-                setState(() => _showLipsyncWorkflowJson = value),
-            jsonHint:
-                'Optional custom ComfyUI workflow JSON. UI export or API format is accepted.',
-            icon: Icons.record_voice_over_outlined,
-          ),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncVaeController,
+                    label: 'VAE',
+                    hint: 'wan_2.1_vae.safetensors',
+                    icon: Icons.view_in_ar_outlined,
+                  ),
+                  _buildField(
+                    controller: _lipsyncClipController,
+                    label: 'Text Encoder',
+                    hint: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+                    icon: Icons.text_fields_rounded,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncWidthController,
+                    label: 'Width',
+                    hint: '832',
+                    icon: Icons.width_normal_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _lipsyncHeightController,
+                    label: 'Height',
+                    hint: '480',
+                    icon: Icons.height_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _lipsyncFramesController,
+                    label: 'Frames',
+                    hint: '81',
+                    icon: Icons.photo_library_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncFpsController,
+                    label: 'FPS',
+                    hint: '16',
+                    icon: Icons.speed_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _lipsyncStepsController,
+                    label: 'Steps',
+                    hint: '20',
+                    icon: Icons.timeline_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _lipsyncCfgController,
+                    label: 'CFG',
+                    hint: '6.0',
+                    icon: Icons.tune_outlined,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildResponsiveFields([
+                  _buildField(
+                    controller: _lipsyncAudioScaleController,
+                    label: 'Audio Scale',
+                    hint: '1.0',
+                    icon: Icons.multitrack_audio_outlined,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                  ),
+                  _buildField(
+                    controller: _lipsyncSeedController,
+                    label: 'Seed',
+                    hint: '42',
+                    icon: Icons.casino_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                  _buildField(
+                    controller: _lipsyncTimeoutController,
+                    label: 'Timeout Seconds',
+                    hint: '2400',
+                    icon: Icons.timer_outlined,
+                    keyboardType: TextInputType.number,
+                  ),
+                ]),
+                const SizedBox(height: 16),
+                _buildVideoWorkflowCard(
+                  title: 'Lip Sync Workflow Override',
+                  description:
+                      'Optional custom Wan S2V/InfiniteTalk workflow. Leave blank to use ThreadBot\'s built-in local lip-sync workflow.',
+                  controller: _lipsyncWorkflowController,
+                  showJson: _showLipsyncWorkflowJson,
+                  onShowJsonChanged: (value) =>
+                      setState(() => _showLipsyncWorkflowJson = value),
+                  jsonHint:
+                      'Optional custom ComfyUI workflow JSON. UI export or API format is accepted.',
+                  icon: Icons.record_voice_over_outlined,
+                ),
+              ],
+            ),
+          ],
         ],
       ),
       const SizedBox(height: 32),
       _buildSection(
-        'Computer Vision',
+        'Image Understanding',
         'Use a dedicated multimodal LLM for image analysis and recipe extraction',
         Icons.visibility_outlined,
         [
@@ -1774,7 +1779,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildField(
               controller: _visionApiUrlController,
               label: 'Vision API URL',
-              hint: 'http://strix.home:8080/v1',
+              hint: 'http://host:port/v1',
               icon: Icons.link_rounded,
             ),
             const SizedBox(height: 12),
@@ -1832,67 +1837,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               contentPadding: EdgeInsets.zero,
             ),
-            const SizedBox(height: 12),
-            SwitchListTile(
-              value: _visionPipelineEnabled,
-              onChanged: (v) => setState(() => _visionPipelineEnabled = v),
-              title: const Text('Enable multi-stage local vision pipeline'),
-              subtitle: const Text(
-                'Runs primary analysis, optional OCR/detail/style passes, then synthesizes the result. Stages run sequentially to limit VRAM usage.',
-              ),
-              contentPadding: EdgeInsets.zero,
+            _buildDisclosure(
+              title: 'Advanced image pipeline',
+              children: [
+                SwitchListTile(
+                  value: _visionPipelineEnabled,
+                  onChanged: (v) => setState(() => _visionPipelineEnabled = v),
+                  title: const Text('Enable multi-stage local vision pipeline'),
+                  subtitle: const Text(
+                    'Runs primary analysis, optional OCR/detail/style passes, then synthesizes the result. Stages run sequentially to limit resource usage.',
+                  ),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                if (_visionPipelineEnabled) ...[
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionOcrApiUrlController,
+                    label: 'OCR Stage API URL (optional)',
+                    hint: 'http://ollama.home:11434/v1',
+                    icon: Icons.text_snippet_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionOcrModelController,
+                    label: 'OCR Stage Model (optional)',
+                    hint: 'small local vision/OCR model',
+                    icon: Icons.short_text_rounded,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionDetailApiUrlController,
+                    label: 'Detail Stage API URL (optional)',
+                    hint: 'http://ollama.home:11434/v1',
+                    icon: Icons.search_rounded,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionDetailModelController,
+                    label: 'Detail Stage Model (optional)',
+                    hint: 'small local multimodal model',
+                    icon: Icons.center_focus_strong_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionStyleApiUrlController,
+                    label: 'Style Stage API URL (optional)',
+                    hint: 'http://ollama.home:11434/v1',
+                    icon: Icons.palette_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildField(
+                    controller: _visionStyleModelController,
+                    label: 'Style Stage Model (optional)',
+                    hint: 'small local multimodal model',
+                    icon: Icons.auto_awesome_outlined,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildInfoBox(
+                    'Leave a helper stage blank to skip it. If only a model is provided, the stage uses the primary vision API URL. The style stage is also used for extract_image_recipe when configured.',
+                  ),
+                ],
+              ],
             ),
-            if (_visionPipelineEnabled) ...[
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionOcrApiUrlController,
-                label: 'OCR Stage API URL (optional)',
-                hint: 'http://ollama.home:11434/v1',
-                icon: Icons.text_snippet_outlined,
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionOcrModelController,
-                label: 'OCR Stage Model (optional)',
-                hint: 'small local vision/OCR model',
-                icon: Icons.short_text_rounded,
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionDetailApiUrlController,
-                label: 'Detail Stage API URL (optional)',
-                hint: 'http://ollama.home:11434/v1',
-                icon: Icons.search_rounded,
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionDetailModelController,
-                label: 'Detail Stage Model (optional)',
-                hint: 'small local multimodal model',
-                icon: Icons.center_focus_strong_outlined,
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionStyleApiUrlController,
-                label: 'Style Stage API URL (optional)',
-                hint: 'http://ollama.home:11434/v1',
-                icon: Icons.palette_outlined,
-              ),
-              const SizedBox(height: 12),
-              _buildField(
-                controller: _visionStyleModelController,
-                label: 'Style Stage Model (optional)',
-                hint: 'small local multimodal model',
-                icon: Icons.auto_awesome_outlined,
-              ),
-              const SizedBox(height: 12),
-              _buildInfoBox(
-                'Leave a helper stage blank to skip it. If only a model is provided, the stage uses the primary vision API URL. The style stage is also used for extract_image_recipe when configured.',
-              ),
-            ],
             const SizedBox(height: 12),
             _buildInfoBox(
-              'Strix.home example: API URL http://strix.home:8080/v1 with model qwen3.6:35b (started via ~/start-llama.sh qwen3.6-35b). The vision endpoint uses the OpenAI /v1/chat/completions schema.',
+              'The image understanding endpoint uses the OpenAI /v1/chat/completions schema.',
             ),
           ],
         ],
@@ -2013,6 +2022,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildWarningBox(String text) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: Colors.amber.withValues(alpha: 0.08),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.warning_amber_rounded,
+            size: 18,
+            color: Colors.amber,
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(text, style: const TextStyle(fontSize: 12))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResponsiveFields(List<Widget> fields) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = constraints.maxWidth < 640 ? 1 : 2;
+        return Wrap(
+          spacing: 12,
+          runSpacing: 16,
+          children: fields
+              .map(
+                (field) => SizedBox(
+                  width: columns == 1
+                      ? constraints.maxWidth
+                      : (constraints.maxWidth - 12) / 2,
+                  child: field,
+                ),
+              )
+              .toList(),
+        );
+      },
+    );
+  }
+
+  Widget _buildDisclosure({
+    required String title,
+    required List<Widget> children,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white.withValues(alpha: 0.02),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        title: Text(
+          title,
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        children: children,
+      ),
+    );
+  }
+
+  Widget _buildProviderDropdown() {
+    return DropdownButtonFormField<String>(
+      initialValue: _llmProvider,
+      decoration: const InputDecoration(
+        labelText: 'Provider',
+        prefixIcon: Icon(Icons.dns_outlined),
+      ),
+      items: const [
+        DropdownMenuItem(value: 'auto', child: Text('Auto')),
+        DropdownMenuItem(value: 'ollama', child: Text('Ollama')),
+        DropdownMenuItem(
+          value: 'openai_compatible',
+          child: Text('OpenAI-compatible'),
+        ),
+      ],
+      onChanged: (value) {
+        if (value != null) setState(() => _llmProvider = value);
+      },
     );
   }
 

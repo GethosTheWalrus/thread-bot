@@ -13,6 +13,7 @@ class ChatInput extends StatefulWidget {
   final bool hasToolOverrides;
   final VoidCallback? onLlmOverridesPressed;
   final bool hasLlmOverrides;
+  final bool hasThread;
   final int estimatedTokens;
   final int contextWindow;
 
@@ -24,6 +25,7 @@ class ChatInput extends StatefulWidget {
     this.hasToolOverrides = false,
     this.onLlmOverridesPressed,
     this.hasLlmOverrides = false,
+    this.hasThread = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
   });
@@ -145,6 +147,107 @@ class _ChatInputState extends State<ChatInput> {
     _focusNode.requestFocus();
   }
 
+  void _showThreadControls(BuildContext sourceContext) {
+    showModalBottomSheet<void>(
+      context: sourceContext,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF16161E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Thread Controls',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  _ControlsRow(
+                    icon: Icons.data_usage_rounded,
+                    title: 'Context usage',
+                    subtitle: _contextSummary,
+                  ),
+                  _ControlsRow(
+                    icon: Icons.tune_rounded,
+                    title: 'Response settings',
+                    subtitle: widget.hasThread
+                        ? (widget.hasLlmOverrides ? 'Custom' : 'Default')
+                        : 'Available after this thread is created',
+                    enabled:
+                        widget.hasThread &&
+                        widget.onLlmOverridesPressed != null,
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      WidgetsBinding.instance.addPostFrameCallback(
+                        (_) => widget.onLlmOverridesPressed?.call(),
+                      );
+                    },
+                  ),
+                  _ControlsRow(
+                    icon: Icons.build_outlined,
+                    title: 'MCP tools',
+                    subtitle: widget.hasToolOverrides
+                        ? 'Customized'
+                        : 'All enabled',
+                    enabled: widget.onToolsPressed != null,
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      WidgetsBinding.instance.addPostFrameCallback(
+                        (_) => widget.onToolsPressed?.call(),
+                      );
+                    },
+                  ),
+                  if (!widget.hasThread)
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        left: 52,
+                        top: 0,
+                        bottom: 4,
+                      ),
+                      child: Text(
+                        'Response settings apply to an existing thread. MCP tool choices can be prepared now.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withValues(alpha: 0.45),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String get _contextSummary {
+    if (widget.estimatedTokens <= 0) return 'No usage reported yet';
+    final percent = widget.contextWindow > 0
+        ? (widget.estimatedTokens / widget.contextWindow * 100).round()
+        : 0;
+    return '${widget.estimatedTokens} / ${widget.contextWindow} tokens ($percent%)';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -259,10 +362,14 @@ class _ChatInputState extends State<ChatInput> {
                                         ),
                                       ),
                                     ),
-                                    child: const Icon(
-                                      Icons.close_rounded,
-                                      size: 14,
-                                      color: Colors.white70,
+                                    child: Semantics(
+                                      label: 'Remove attachment',
+                                      button: true,
+                                      child: const Icon(
+                                        Icons.close_rounded,
+                                        size: 14,
+                                        color: Colors.white70,
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -350,160 +457,56 @@ class _ChatInputState extends State<ChatInput> {
                     ),
                     Padding(
                       padding: const EdgeInsets.only(bottom: 6),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap:
-                              kIsWeb && !_isUploadingImages && !widget.isSending
-                              ? _pickImages
-                              : null,
-                          child: Container(
-                            width: 36,
-                            height: 36,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              color: _isUploadingImages
-                                  ? const Color(
-                                      0xFF8B5CF6,
-                                    ).withValues(alpha: 0.15)
-                                  : Colors.transparent,
-                            ),
-                            child: _isUploadingImages
-                                ? const Padding(
-                                    padding: EdgeInsets.all(10),
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation(
-                                        Colors.white,
-                                      ),
-                                    ),
-                                  )
-                                : Icon(
-                                    Icons.add_photo_alternate_outlined,
-                                    size: 16,
-                                    color: Colors.white.withValues(alpha: 0.3),
-                                  ),
-                          ),
-                        ),
+                      child: IconButton(
+                        tooltip: 'Attach images',
+                        onPressed:
+                            kIsWeb && !_isUploadingImages && !widget.isSending
+                            ? _pickImages
+                            : null,
+                        icon: _isUploadingImages
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Icon(
+                                Icons.add_photo_alternate_outlined,
+                                size: 16,
+                                color: Colors.white.withValues(alpha: 0.3),
+                              ),
                       ),
                     ),
-                    if (widget.estimatedTokens > 0)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 6),
-                        child: _ContextDonut(
-                          estimatedTokens: widget.estimatedTokens,
-                          contextWindow: widget.contextWindow,
-                        ),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: _ThreadControlsButton(
+                        hasOverrides:
+                            widget.hasLlmOverrides || widget.hasToolOverrides,
+                        estimatedTokens: widget.estimatedTokens,
+                        contextWindow: widget.contextWindow,
+                        onPressed: () => _showThreadControls(context),
                       ),
-                    if (widget.onLlmOverridesPressed != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 6),
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: widget.onLlmOverridesPressed,
-                            child: Tooltip(
-                              message: widget.hasLlmOverrides
-                                  ? 'Thread has LLM overrides'
-                                  : 'Per-thread LLM overrides',
-                              child: Container(
-                                width: 36,
-                                height: 36,
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  color: widget.hasLlmOverrides
-                                      ? const Color(
-                                          0xFF8B5CF6,
-                                        ).withValues(alpha: 0.15)
-                                      : Colors.transparent,
-                                ),
-                                child: Icon(
-                                  Icons.tune_rounded,
-                                  size: 16,
-                                  color: widget.hasLlmOverrides
-                                      ? const Color(0xFF8B5CF6)
-                                      : Colors.white.withValues(alpha: 0.3),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (widget.onToolsPressed != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 6),
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: widget.onToolsPressed,
-                            child: Container(
-                              width: 36,
-                              height: 36,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                color: widget.hasToolOverrides
-                                    ? const Color(
-                                        0xFF8B5CF6,
-                                      ).withValues(alpha: 0.15)
-                                    : Colors.transparent,
-                              ),
-                              child: Icon(
-                                Icons.build_outlined,
-                                size: 16,
-                                color: widget.hasToolOverrides
-                                    ? const Color(0xFF8B5CF6)
-                                    : Colors.white.withValues(alpha: 0.3),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                    ),
                     Padding(
                       padding: const EdgeInsets.only(right: 8, bottom: 6),
-                      child: AnimatedScale(
-                        scale: _canSend ? 1.0 : 0.85,
-                        duration: const Duration(milliseconds: 150),
-                        child: Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: _canSend
-                                ? () {
-                                    _handleSend();
-                                  }
-                                : null,
-                            child: Container(
-                              width: 36,
-                              height: 36,
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
+                      child: IconButton(
+                        tooltip: 'Send message',
+                        onPressed: _canSend ? _handleSend : null,
+                        icon: widget.isSending
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : Icon(
+                                Icons.arrow_upward_rounded,
                                 color: _canSend
-                                    ? const Color(0xFF8B5CF6)
-                                    : Colors.white.withValues(alpha: 0.06),
+                                    ? Colors.white
+                                    : Colors.white.withValues(alpha: 0.2),
                               ),
-                              child: widget.isSending
-                                  ? const Padding(
-                                      padding: EdgeInsets.all(10),
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        valueColor: AlwaysStoppedAnimation(
-                                          Colors.white,
-                                        ),
-                                      ),
-                                    )
-                                  : Icon(
-                                      Icons.arrow_upward_rounded,
-                                      size: 18,
-                                      color: _canSend
-                                          ? Colors.white
-                                          : Colors.white.withValues(alpha: 0.2),
-                                    ),
-                            ),
-                          ),
-                        ),
                       ),
                     ),
                   ],
@@ -531,14 +534,52 @@ class _AttachedImage {
   const _AttachedImage({required this.url});
 }
 
-/// Small donut chart showing context window consumption.
-class _ContextDonut extends StatelessWidget {
+class _ControlsRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _ControlsRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.enabled = true,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    button: onTap != null,
+    enabled: enabled,
+    label: '$title, $subtitle',
+    child: ListTile(
+      enabled: enabled,
+      minVerticalPadding: 8,
+      leading: Icon(
+        icon,
+        color: enabled ? const Color(0xFF8B5CF6) : Colors.white24,
+      ),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: onTap == null ? null : const Icon(Icons.chevron_right_rounded),
+      onTap: enabled ? onTap : null,
+    ),
+  );
+}
+
+class _ThreadControlsButton extends StatelessWidget {
+  final bool hasOverrides;
   final int estimatedTokens;
   final int contextWindow;
+  final VoidCallback onPressed;
 
-  const _ContextDonut({
+  const _ThreadControlsButton({
+    required this.hasOverrides,
     required this.estimatedTokens,
     required this.contextWindow,
+    required this.onPressed,
   });
 
   @override
@@ -546,40 +587,54 @@ class _ContextDonut extends StatelessWidget {
     final ratio = contextWindow > 0
         ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
         : 0.0;
-    final percentage = (ratio * 100).round();
-
-    // Color shifts: green → amber → red
-    final Color arcColor;
-    if (ratio < 0.5) {
-      arcColor = const Color(0xFF10B981); // green
-    } else if (ratio < 0.75) {
-      arcColor = const Color(0xFFF59E0B); // amber
-    } else {
-      arcColor = const Color(0xFFEF4444); // red
-    }
-
-    final tokenLabel = estimatedTokens >= 1000
-        ? '${(estimatedTokens / 1000).toStringAsFixed(1)}k'
-        : '$estimatedTokens';
-    final windowLabel = contextWindow >= 1000
-        ? '${(contextWindow / 1000).toStringAsFixed(0)}k'
-        : '$contextWindow';
-
     return Tooltip(
-      message: '$tokenLabel / $windowLabel tokens ($percentage%)',
-      child: SizedBox(
-        width: 36,
-        height: 36,
-        child: CustomPaint(
-          painter: _DonutPainter(ratio: ratio, arcColor: arcColor),
-          child: Center(
-            child: Text(
-              '$percentage%',
-              style: TextStyle(
-                fontSize: 8,
-                fontWeight: FontWeight.w600,
-                color: Colors.white.withValues(alpha: 0.5),
-              ),
+      message: 'Thread controls',
+      child: Semantics(
+        label:
+            'Thread controls${hasOverrides ? ', custom settings active' : ''}',
+        button: true,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onPressed,
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (estimatedTokens > 0)
+                  CustomPaint(
+                    size: const Size(28, 28),
+                    painter: _DonutPainter(
+                      ratio: ratio,
+                      arcColor: ratio > .75
+                          ? Colors.redAccent
+                          : ratio > .5
+                          ? Colors.amber
+                          : Colors.greenAccent,
+                    ),
+                  ),
+                Icon(
+                  Icons.tune_rounded,
+                  size: 17,
+                  color: hasOverrides
+                      ? const Color(0xFF8B5CF6)
+                      : Colors.white54,
+                ),
+                if (hasOverrides)
+                  Positioned(
+                    right: 5,
+                    top: 5,
+                    child: Container(
+                      width: 6,
+                      height: 6,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF8B5CF6),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
