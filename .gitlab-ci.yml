@@ -1,3 +1,4 @@
+# Image build pipeline for backend, frontend, worker, and Reachy deployments.
 stages:
   - build
   - update-manifests
