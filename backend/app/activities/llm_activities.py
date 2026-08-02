@@ -4815,22 +4815,125 @@ async def generate_and_update_title(args: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════
 
 @defn
-async def save_message(args: dict) -> None:
+async def save_message(args: dict) -> dict:
     """Save a message to the database."""
     from uuid import UUID
     from app.database import AsyncSessionLocal
     from app.database.crud import add_message
+    from app.models.models import Thread, Message
+    from sqlalchemy import select, update
 
     thread_id = args["thread_id"]
     role = args["role"]
     content = args["content"]
     metadata = args.get("metadata")
+    idempotency_key = args.get("idempotency_key")
+    if idempotency_key:
+        metadata = dict(metadata or {})
+        metadata["idempotency_key"] = str(idempotency_key)
     discord_config = args.get("discord")
     async with AsyncSessionLocal() as db:
-        await add_message(db, UUID(thread_id), role, content, metadata=metadata)
+        existing = None
+        if idempotency_key:
+            existing = (await db.execute(
+                select(Message).where(
+                    Message.thread_id == UUID(thread_id),
+                    Message.metadata_["idempotency_key"].astext == str(idempotency_key),
+                ).limit(1)
+            )).scalar_one_or_none()
+        if not existing:
+            await add_message(db, UUID(thread_id), role, content, metadata=metadata)
+        completed_turns = None
+        if not existing and args.get("completed_turn") is True:
+            result = await db.execute(
+                update(Thread).where(Thread.id == UUID(thread_id)).values(
+                    completed_turns=Thread.completed_turns + 1
+                ).returning(Thread.completed_turns)
+            )
+            completed_turns = result.scalar_one_or_none()
         await db.commit()
-    from app.discord_integration import sync_message_to_discord
-    await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata, discord_config=discord_config)
+    if not existing:
+        from app.discord_integration import sync_message_to_discord
+        await sync_message_to_discord(UUID(thread_id), role, content, metadata=metadata, discord_config=discord_config)
+    return {"completed_turns": completed_turns}
+
+
+@defn
+async def refresh_conversation_summary(args: dict) -> dict:
+    """Refresh the durable, displayable conversation overview independently of chat context."""
+    from datetime import datetime, timezone
+    from uuid import UUID
+    from sqlalchemy import select, update
+    from app.database import AsyncSessionLocal
+    from app.models.models import Thread, Message
+
+    thread_id = UUID(args["thread_id"])
+    config = dict(args.get("llm_config") or {})
+    force = bool(args.get("force"))
+    cadence = max(1, int(args.get("cadence_turns") or 1))
+    async with AsyncSessionLocal() as db:
+        thread = await db.get(Thread, thread_id)
+        if not thread:
+            return {"status": "missing"}
+        target_turns = int(thread.completed_turns or 0)
+        previous_turns = int(thread.conversation_summary_turn_count or 0)
+        if target_turns <= 0 or (
+            thread.conversation_summary and not force and target_turns - previous_turns < cadence
+        ):
+            return {"status": "skipped", "turn_count": previous_turns}
+        result = await db.execute(
+            select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at, Message.id)
+        )
+        messages = result.scalars().all()
+        since = thread.conversation_summary_updated_at
+
+    lines = []
+    total = 0
+    for message in messages:
+        if message.role == "thinking" or (since and message.created_at < since):
+            continue
+        if message.role not in {"user", "assistant", "tool_result", "system"}:
+            continue
+        content = (message.content or "")[:2000]
+        if not content:
+            continue
+        line = f"{message.role}: {content}"
+        if total + len(line) > 40000:
+            break
+        lines.append(line)
+        total += len(line)
+    if not lines and not thread.conversation_summary:
+        return {"status": "skipped", "turn_count": previous_turns}
+    previous = (thread.conversation_summary or "").strip()
+    source = (f"Previous overview:\n{previous}\n\n" if previous else "") + "New retained conversation:\n" + "\n".join(lines)
+    prompt = [
+        {"role": "system", "content": "Create a concise readable whole-conversation overview. Preserve goals, decisions, important facts, outcomes, and unresolved work. Output only the overview, with no meta preamble."},
+        {"role": "user", "content": source},
+    ]
+    config["extra_body"] = {
+        **(config.get("extra_body") or {}),
+        "chat_template_kwargs": {
+            **((config.get("extra_body") or {}).get("chat_template_kwargs") or {}),
+            "enable_thinking": False,
+        },
+    }
+    completion = await _agents_chat_completion(prompt, config, temperature=0.2, max_tokens=800)
+    summary = (completion.get("content") or "").strip()
+    if not summary:
+        raise RuntimeError("conversation summary returned empty content")
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            update(Thread).where(
+                Thread.id == thread_id,
+                Thread.conversation_summary_turn_count < target_turns,
+            ).values(
+                conversation_summary=summary,
+                conversation_summary_updated_at=datetime.now(timezone.utc),
+                conversation_summary_turn_count=target_turns,
+            )
+        )
+        await db.commit()
+    return {"status": "updated" if result.rowcount else "already_current", "turn_count": target_turns}
 
 
 @defn

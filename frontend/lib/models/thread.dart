@@ -1,5 +1,129 @@
 import 'package:threadbot/models/message.dart';
 
+int _contextInt(dynamic value, [int fallback = 0]) {
+  if (value is int) return value;
+  if (value is num) return value.round();
+  return int.tryParse('$value') ?? fallback;
+}
+
+double _contextDouble(dynamic value, [double fallback = 0]) {
+  if (value is num) return value.toDouble();
+  return double.tryParse('$value') ?? fallback;
+}
+
+class ContextBudget {
+  final int contextWindow;
+  final int maxOutputTokens;
+  final int inputBudget;
+  final int estimatedTokens;
+  final int remainingTokens;
+  final double usageRatio;
+  final double compactionThreshold;
+  final int compactionAtTokens;
+  final int tokensUntilCompaction;
+  final String estimator;
+
+  ContextBudget({
+    required this.contextWindow,
+    required this.maxOutputTokens,
+    required this.inputBudget,
+    required this.estimatedTokens,
+    required this.remainingTokens,
+    required this.usageRatio,
+    required this.compactionThreshold,
+    required this.compactionAtTokens,
+    required this.tokensUntilCompaction,
+    required this.estimator,
+  });
+
+  factory ContextBudget.fromJson(Map<String, dynamic> json) => ContextBudget(
+    contextWindow: _contextInt(json['context_window']),
+    maxOutputTokens: _contextInt(json['max_output_tokens']),
+    inputBudget: _contextInt(json['input_budget']),
+    estimatedTokens: _contextInt(json['estimated_tokens']),
+    remainingTokens: _contextInt(json['remaining_tokens']),
+    usageRatio: _contextDouble(json['usage_ratio']),
+    compactionThreshold: _contextDouble(json['compaction_threshold']),
+    compactionAtTokens: _contextInt(json['compaction_at_tokens']),
+    tokensUntilCompaction: _contextInt(json['tokens_until_compaction']),
+    estimator: json['estimator'] as String? ?? 'chars/4',
+  );
+}
+
+class ContextCompositionItem {
+  final String key;
+  final String label;
+  final int tokens;
+  final int messageCount;
+
+  ContextCompositionItem({
+    required this.key,
+    required this.label,
+    required this.tokens,
+    required this.messageCount,
+  });
+
+  factory ContextCompositionItem.fromJson(Map<String, dynamic> json) =>
+      ContextCompositionItem(
+        key: json['key'] as String? ?? '',
+        label: json['label'] as String? ?? json['key'] as String? ?? '',
+        tokens: _contextInt(json['tokens']),
+        messageCount: _contextInt(json['message_count']),
+      );
+}
+
+class ContextSummary {
+  final String content;
+  final DateTime? updatedAt;
+  final int turnCount;
+  final int currentTurnCount;
+  final bool stale;
+
+  ContextSummary({
+    required this.content,
+    required this.updatedAt,
+    required this.turnCount,
+    required this.currentTurnCount,
+    required this.stale,
+  });
+
+  factory ContextSummary.fromJson(Map<String, dynamic> json) => ContextSummary(
+    content: json['content'] as String? ?? '',
+    updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? ''),
+    turnCount: _contextInt(json['turn_count']),
+    currentTurnCount: _contextInt(json['current_turn_count']),
+    stale: json['stale'] as bool? ?? false,
+  );
+}
+
+class ThreadContext {
+  final String threadId;
+  final ContextBudget budget;
+  final List<ContextCompositionItem> composition;
+  final ContextSummary? summary;
+
+  ThreadContext({
+    required this.threadId,
+    required this.budget,
+    required this.composition,
+    required this.summary,
+  });
+
+  factory ThreadContext.fromJson(Map<String, dynamic> json) => ThreadContext(
+    threadId: json['thread_id'] as String? ?? '',
+    budget: ContextBudget.fromJson(
+      json['budget'] as Map<String, dynamic>? ?? const {},
+    ),
+    composition: (json['composition'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(ContextCompositionItem.fromJson)
+        .toList(),
+    summary: json['summary'] is Map<String, dynamic>
+        ? ContextSummary.fromJson(json['summary'] as Map<String, dynamic>)
+        : null,
+  );
+}
+
 class Thread {
   final String id;
   final String title;

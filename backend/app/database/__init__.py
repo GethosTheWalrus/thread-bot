@@ -49,6 +49,18 @@ async def ensure_database_schema() -> None:
         await conn.execute(text(
             "ALTER TABLE threads ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS completed_turns INTEGER NOT NULL DEFAULT 0"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS conversation_summary TEXT"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS conversation_summary_updated_at TIMESTAMPTZ"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE threads ADD COLUMN IF NOT EXISTS conversation_summary_turn_count INTEGER NOT NULL DEFAULT 0"
+        ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS generated_images (
                 filename VARCHAR(255) PRIMARY KEY,

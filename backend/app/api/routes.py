@@ -74,6 +74,10 @@ from app.models.schemas import (
     UploadedImageResponse,
     ThreadLlmOverridesResponse,
     ThreadLlmOverridesRequest,
+    ThreadContextResponse,
+    ContextBudgetResponse,
+    ContextCompositionItem,
+    ContextSummaryResponse,
 )
 from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, File, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -444,6 +448,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
     config = get_llm_config()
     reachy_thread_id = str((config.get("reachy") or {}).get("thread_id") or "")
     overrides = thread.llm_overrides or {}
+    config = apply_thread_llm_overrides(config, overrides)
     return ThreadResponse(
         id=thread.id,
         title=thread.title,
@@ -455,7 +460,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         discord_link=_build_discord_link_response(discord_link),
         reachy_connected=reachy_thread_id == str(thread.id),
         estimated_tokens=_estimate_context_tokens(msgs),
-        context_window=config.get("context_window", 8192),
+        context_window=int(config.get("context_window", 8192)),
         has_llm_overrides=bool(overrides),
         is_pinned=bool(thread.is_pinned),
     )
@@ -854,6 +859,85 @@ async def get_thread_endpoint(
 
     discord_link = await _get_discord_link_for_thread(db, thread_id)
     return _build_thread_response(thread, thread.messages, is_generating=is_generating, discord_link=discord_link)
+
+
+@router.get("/threads/{thread_id}/context", response_model=ThreadContextResponse)
+async def get_thread_context_endpoint(thread_id: UUID, db: AsyncSession = Depends(get_db)):
+    thread = await get_thread(db, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    result = await db.execute(
+        select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at, Message.id)
+    )
+    messages = result.scalars().all()
+    config = apply_thread_llm_overrides(get_llm_config(), thread.llm_overrides or {})
+    context_window = int(config.get("context_window") or 8192)
+    max_output_tokens = int(config.get("max_tokens") or 0)
+    threshold = float(config.get("compaction_threshold") or 0.75)
+    groups = {
+        "user": ("User", 0, 0),
+        "assistant": ("Assistant", 0, 0),
+        "tool_context": ("Tool context", 0, 0),
+        "summaries": ("Summaries", 0, 0),
+        "system_context": ("System context", 0, 0),
+        "other": ("Other", 0, 0),
+    }
+    for message in messages:
+        if message.role == "thinking":
+            continue
+        content = message.content or ""
+        key = {
+            "user": "user", "assistant": "assistant",
+            "tool_call": "tool_context", "tool_result": "tool_context",
+        }.get(message.role)
+        if message.role == "system":
+            metadata = message.metadata_ or {}
+            key = "summaries" if metadata.get("type") in {"compaction_summary", "internal_context_summary", "conversation_summary"} else "system_context"
+        key = key or "other"
+        label, chars, count = groups[key]
+        groups[key] = (label, chars + len(content), count + 1)
+    total_chars = sum(chars for _, chars, _ in groups.values())
+    estimated_tokens = int(total_chars / 4)
+    remainder = estimated_tokens
+    for key, (label, chars, count) in groups.items():
+        if count:
+            tokens = int(chars / 4)
+            groups[key] = (label, tokens, count)
+            remainder -= tokens
+    if remainder:
+        for key, (label, tokens, count) in groups.items():
+            if count:
+                groups[key] = (label, tokens + remainder, count)
+                break
+    composition = [
+        ContextCompositionItem(key=key, label=label, tokens=tokens, message_count=count)
+        for key, (label, tokens, count) in groups.items() if tokens or count
+    ]
+    input_budget = max(context_window - max_output_tokens, 0)
+    ratio = estimated_tokens / input_budget if input_budget else 0.0
+    compaction_at = int(context_window * threshold)
+    summary = None
+    if thread.conversation_summary:
+        turn_count = int(thread.conversation_summary_turn_count or 0)
+        summary = ContextSummaryResponse(
+            content=thread.conversation_summary,
+            updated_at=thread.conversation_summary_updated_at,
+            turn_count=turn_count,
+            current_turn_count=int(thread.completed_turns or 0),
+            stale=turn_count < int(thread.completed_turns or 0),
+        )
+    return ThreadContextResponse(
+        thread_id=thread_id,
+        budget=ContextBudgetResponse(
+            context_window=context_window, max_output_tokens=max_output_tokens,
+            input_budget=input_budget, estimated_tokens=estimated_tokens,
+            remaining_tokens=max(input_budget - estimated_tokens, 0),
+            usage_ratio=ratio, compaction_threshold=threshold,
+            compaction_at_tokens=compaction_at,
+            tokens_until_compaction=max(compaction_at - estimated_tokens, 0),
+        ),
+        composition=composition, summary=summary,
+    )
 
 
 @router.post("/threads/{thread_id}/continue")

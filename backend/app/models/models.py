@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean, LargeBinary, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, func, Boolean, LargeBinary, UniqueConstraint, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 import uuid
@@ -18,6 +18,10 @@ class Thread(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     llm_overrides = Column(JSONB, nullable=True, default=None)
     is_pinned = Column(Boolean, nullable=False, default=False, server_default="false")
+    completed_turns = Column(Integer, nullable=False, default=0, server_default="0")
+    conversation_summary = Column(Text, nullable=True)
+    conversation_summary_updated_at = Column(DateTime(timezone=True), nullable=True)
+    conversation_summary_turn_count = Column(Integer, nullable=False, default=0, server_default="0")
 
     messages = relationship("Message", back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at")
     parent = relationship("Thread", remote_side=[id], foreign_keys=[parent_id])

@@ -6,7 +6,11 @@ CREATE TABLE IF NOT EXISTS threads (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     llm_overrides JSONB DEFAULT NULL,
-    is_pinned BOOLEAN NOT NULL DEFAULT FALSE
+    is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_turns INTEGER NOT NULL DEFAULT 0,
+    conversation_summary TEXT,
+    conversation_summary_updated_at TIMESTAMPTZ,
+    conversation_summary_turn_count INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (

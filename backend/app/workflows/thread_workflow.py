@@ -388,7 +388,7 @@ class RunThreadWorkflow:
                 save_message, get_messages,
                 compact_history, delete_messages_before, discover_tools,
                 execute_agent_tool_activity, generated_images_for_latest_turn,
-                send_continue_prompt,
+                send_continue_prompt, refresh_conversation_summary,
             )
             from app.activities.reachy_activities import execute_reachy_tool_activity
             from app.workflows.reachy_speech_workflow import ReachySpeechWorkflow
@@ -1552,6 +1552,8 @@ class RunThreadWorkflow:
                     "role": "assistant",
                     "content": llm_response,
                     "discord": llm_config.get("discord"),
+                    "completed_turn": True,
+                    "idempotency_key": workflow.info().workflow_id,
                 },
                 start_to_close_timeout=timedelta(seconds=10),
             )
@@ -1566,6 +1568,22 @@ class RunThreadWorkflow:
                 "estimated_tokens": self._estimate_context_tokens(retained_messages),
                 "context_window": llm_config.get("context_window", 8192),
             })
+            try:
+                stream_timeout = int(llm_config.get("stream_timeout") or 600)
+                summary_timeout = timedelta(seconds=max(30, min(stream_timeout, 300)))
+                await execute_activity(
+                    refresh_conversation_summary,
+                    {
+                        "thread_id": thread_id,
+                        "llm_config": dict(llm_config),
+                        "force": bool(compact_result.get("compacted")),
+                        "cadence_turns": 1,
+                    },
+                    start_to_close_timeout=summary_timeout,
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+            except Exception:
+                workflow.logger.exception("Conversation summary refresh failed")
             should_title = len(chat_history) <= 5 or len(chat_history) % 5 == 1
 
             return {

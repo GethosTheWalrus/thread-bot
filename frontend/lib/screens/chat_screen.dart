@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
@@ -1983,6 +1984,8 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                       index: _tab,
                       children: [
                         _ContextTab(
+                          threadId: widget.threadId,
+                          api: widget.api,
                           estimatedTokens: widget.estimatedTokens,
                           contextWindow: widget.contextWindow,
                           canCustomize: widget.threadId != null,
@@ -2051,21 +2054,69 @@ class _TabLabel extends StatelessWidget {
   );
 }
 
-class _ContextTab extends StatelessWidget {
+class _ContextTab extends StatefulWidget {
+  final String? threadId;
+  final ApiService api;
   final int estimatedTokens;
   final int contextWindow;
   final bool canCustomize;
   final VoidCallback onResponse;
   const _ContextTab({
+    required this.threadId,
+    required this.api,
     required this.estimatedTokens,
     required this.contextWindow,
     required this.canCustomize,
     required this.onResponse,
   });
+
+  @override
+  State<_ContextTab> createState() => _ContextTabState();
+}
+
+class _ContextTabState extends State<_ContextTab> {
+  ThreadContext? _context;
+  String? _error;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.threadId != null) _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final result = await widget.api.getThreadContext(widget.threadId!);
+      if (mounted)
+        setState(() {
+          _context = result;
+          _loading = false;
+        });
+    } catch (_) {
+      if (mounted)
+        setState(() {
+          _error = 'Context details are unavailable';
+          _loading = false;
+        });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final ratio = contextWindow > 0
-        ? (estimatedTokens / contextWindow).clamp(0.0, 1.0)
+    final data = _context;
+    final budget = data?.budget;
+    final estimated = budget?.estimatedTokens ?? widget.estimatedTokens;
+    final window = budget?.contextWindow ?? widget.contextWindow;
+    final inputBudget = (budget?.inputBudget ?? window) > 0
+        ? (budget?.inputBudget ?? window)
+        : window;
+    final ratio = inputBudget > 0
+        ? (estimated / inputBudget).clamp(0.0, 1.0)
         : 0.0;
     final percent = (ratio * 100).round();
     final color = ratio < .5
@@ -2075,83 +2126,384 @@ class _ContextTab extends StatelessWidget {
         : const Color(0xFFEF4444);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final horizontal = constraints.maxWidth >= 520;
-        final visualization = horizontal ? 104.0 : 112.0;
-        const bodyPadding = 26.0;
-        final details = Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: horizontal
-              ? CrossAxisAlignment.start
-              : CrossAxisAlignment.center,
-          children: [
-            Text(
-              estimatedTokens > 0
-                  ? '$estimatedTokens / $contextWindow tokens'
-                  : 'No usage reported yet',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-              textAlign: horizontal ? TextAlign.start : TextAlign.center,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              estimatedTokens > 0
-                  ? 'Estimated from this conversation.'
-                  : 'Usage will appear after the first response is generated.',
-              textAlign: horizontal ? TextAlign.start : TextAlign.center,
-              style: const TextStyle(color: Colors.white54, height: 1.35),
-            ),
-            if (canCustomize)
-              TextButton.icon(
-                onPressed: onResponse,
-                icon: const Icon(Icons.tune_rounded, size: 16),
-                label: const Text('Customize response'),
-              ),
-          ],
-        );
+        final sideBySide = constraints.maxWidth >= 600;
         return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: constraints.hasBoundedHeight
-                  ? (constraints.maxHeight - bodyPadding).clamp(
-                      0.0,
-                      double.infinity,
-                    )
-                  : 0,
-            ),
-            child: Center(
-              child: horizontal
-                  ? Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _ContextGauge(
-                          ratio: ratio,
-                          color: color,
-                          percent: percent,
-                          size: visualization,
-                        ),
-                        const SizedBox(width: 24),
-                        Flexible(child: details),
-                      ],
-                    )
-                  : Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        _ContextGauge(
-                          ratio: ratio,
-                          color: color,
-                          percent: percent,
-                          size: visualization,
-                        ),
-                        const SizedBox(height: 12),
-                        details,
-                      ],
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'Context usage',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-            ),
+                  ),
+                  if (_loading)
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  IconButton(
+                    tooltip: 'Refresh context',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _loading || widget.threadId == null
+                        ? null
+                        : _load,
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                  ),
+                ],
+              ),
+              if (_error != null)
+                _InlineError(message: _error!, onRetry: _load),
+              if (sideBySide)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _budgetCard(
+                        budget,
+                        estimated,
+                        window,
+                        inputBudget,
+                        ratio,
+                        color,
+                        percent,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _compositionCard(data?.composition ?? const []),
+                    ),
+                  ],
+                )
+              else ...[
+                _budgetCard(
+                  budget,
+                  estimated,
+                  window,
+                  inputBudget,
+                  ratio,
+                  color,
+                  percent,
+                ),
+                const SizedBox(height: 10),
+                _compositionCard(data?.composition ?? const []),
+              ],
+              const SizedBox(height: 10),
+              _summaryCard(data?.summary),
+              if (widget.canCustomize)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: widget.onResponse,
+                    icon: const Icon(Icons.tune_rounded, size: 16),
+                    label: const Text('Customize response'),
+                  ),
+                ),
+            ],
           ),
         );
       },
     );
   }
+
+  Widget _card(String title, Widget child) => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: const Color(0xFF1C1C26),
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: Colors.white10),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 12),
+        child,
+      ],
+    ),
+  );
+
+  Widget _budgetCard(
+    ContextBudget? budget,
+    int estimated,
+    int window,
+    int inputBudget,
+    double ratio,
+    Color color,
+    int percent,
+  ) {
+    final remaining =
+        budget?.remainingTokens ??
+        (inputBudget - estimated).clamp(0, inputBudget);
+    final until = budget?.tokensUntilCompaction;
+    final threshold = budget?.compactionAtTokens;
+    return _card(
+      'Input budget',
+      Column(
+        children: [
+          Row(
+            children: [
+              _ContextGauge(
+                ratio: ratio,
+                color: color,
+                percent: percent,
+                size: 82,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$estimated tokens',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Text(
+                      'Estimated input (chars/4)',
+                      style: TextStyle(color: Colors.white54, fontSize: 11),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '$remaining remaining input',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _metric('Context window', _formatTokens(window)),
+          _metric(
+            'Max output reserve',
+            _formatTokens(budget?.maxOutputTokens ?? 0),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            until == null
+                ? 'Compaction threshold unavailable'
+                : '$until tokens until compaction${threshold == null ? '' : ' ($threshold)'}',
+            style: const TextStyle(color: Colors.white60, fontSize: 11),
+          ),
+          if (until != null) ...[
+            const SizedBox(height: 5),
+            LinearProgressIndicator(
+              value: threshold != null && threshold > 0
+                  ? (estimated / threshold).clamp(0.0, 1.0)
+                  : 0,
+              minHeight: 4,
+              backgroundColor: Colors.white10,
+              color: color,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _metric(String label, String value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 2),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+        ),
+        Text(value, style: const TextStyle(fontSize: 12)),
+      ],
+    ),
+  );
+  String _formatTokens(int value) => value == 0 ? '—' : value.toString();
+
+  Widget _compositionCard(List<ContextCompositionItem> items) {
+    final nonzero = items.where((item) => item.tokens > 0).toList();
+    final total = nonzero.fold<int>(0, (sum, item) => sum + item.tokens);
+    if (nonzero.isEmpty)
+      return _card(
+        'Composition',
+        const Text(
+          'Composition appears after messages are available.',
+          style: TextStyle(color: Colors.white54, fontSize: 12),
+        ),
+      );
+    return _card(
+      'Composition',
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: nonzero
+                .map(
+                  (item) => Expanded(
+                    flex: item.tokens,
+                    child: Container(
+                      height: 8,
+                      color: _compositionColor(item.key),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+          const SizedBox(height: 10),
+          ...nonzero.map((item) {
+            final share = total == 0 ? 0 : (item.tokens * 100 / total).round();
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    color: _compositionColor(item.key),
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      item.label,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  Text(
+                    '$share%  ${item.tokens} · ${item.messageCount} msg',
+                    style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Color _compositionColor(String key) => switch (key) {
+    'user' => const Color(0xFF8B5CF6),
+    'assistant' => const Color(0xFF22D3EE),
+    'tool_context' => const Color(0xFFF59E0B),
+    'summaries' => const Color(0xFF10B981),
+    'system_context' => const Color(0xFFEC4899),
+    _ => const Color(0xFF60A5FA),
+  };
+
+  Widget _summaryCard(ContextSummary? summary) => _card(
+    'Conversation summary',
+    summary == null || summary.content.trim().isEmpty
+        ? const Text(
+            'A summary appears after the first completed response and refreshes after every completed response.',
+            style: TextStyle(color: Colors.white54, height: 1.4, fontSize: 12),
+          )
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (summary.stale)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white10,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: const Text(
+                    'Summary update pending',
+                    style: TextStyle(color: Colors.white60, fontSize: 10),
+                  ),
+                ),
+              if (summary.stale) const SizedBox(height: 8),
+              MarkdownBody(
+                data: summary.content,
+                selectable: true,
+                styleSheet: MarkdownStyleSheet(
+                  p: const TextStyle(
+                    color: Colors.white70,
+                    height: 1.45,
+                    fontSize: 12,
+                  ),
+                  h1: const TextStyle(
+                    color: Color(0xFFE4E4E7),
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  h2: const TextStyle(
+                    color: Color(0xFFE4E4E7),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  h3: const TextStyle(
+                    color: Color(0xFFE4E4E7),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  strong: const TextStyle(
+                    color: Color(0xFFE4E4E7),
+                    fontWeight: FontWeight.w700,
+                  ),
+                  em: const TextStyle(fontStyle: FontStyle.italic),
+                  listBullet: const TextStyle(
+                    color: Color(0xFFA78BFA),
+                    fontSize: 12,
+                  ),
+                  code: TextStyle(
+                    color: const Color(0xFFC4B5FD),
+                    backgroundColor: Colors.white.withValues(alpha: 0.06),
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: const Color(0xFF111118),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  codeblockPadding: const EdgeInsets.all(12),
+                  blockSpacing: 10,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Updated through turn ${summary.turnCount} · thread at turn ${summary.currentTurnCount}',
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+            ],
+          ),
+  );
+}
+
+class _InlineError extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _InlineError({required this.message, required this.onRetry});
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            message,
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+          ),
+        ),
+        TextButton(onPressed: onRetry, child: const Text('Retry')),
+      ],
+    ),
+  );
 }
 
 class _ContextGauge extends StatelessWidget {

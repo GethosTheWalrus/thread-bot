@@ -67,7 +67,7 @@ class ThreadResponse(BaseModel):
     title: str
     parent_id: Optional[UUID] = None
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
     messages: list[MessageResponse] = []
     is_generating: bool = False
     discord_link: Optional[DiscordThreadLinkResponse] = None
@@ -78,6 +78,41 @@ class ThreadResponse(BaseModel):
     is_pinned: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class ContextBudgetResponse(BaseModel):
+    context_window: int
+    max_output_tokens: int
+    input_budget: int
+    estimated_tokens: int
+    remaining_tokens: int
+    usage_ratio: float
+    compaction_threshold: float
+    compaction_at_tokens: int
+    tokens_until_compaction: int
+    estimator: str = "chars_div_4_v1"
+
+
+class ContextCompositionItem(BaseModel):
+    key: str
+    label: str
+    tokens: int
+    message_count: int
+
+
+class ContextSummaryResponse(BaseModel):
+    content: str
+    updated_at: Optional[datetime] = None
+    turn_count: int
+    current_turn_count: int
+    stale: bool
+
+
+class ThreadContextResponse(BaseModel):
+    thread_id: UUID
+    budget: ContextBudgetResponse
+    composition: list[ContextCompositionItem]
+    summary: Optional[ContextSummaryResponse] = None
 
 
 class ThreadListItem(BaseModel):

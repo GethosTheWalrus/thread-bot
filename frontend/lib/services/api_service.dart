@@ -50,6 +50,18 @@ class ApiService {
     throw Exception('Failed to load thread: ${response.statusCode}');
   }
 
+  Future<ThreadContext> getThreadContext(String threadId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/threads/$threadId/context'),
+    );
+    if (response.statusCode == 200) {
+      return ThreadContext.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception('Failed to load context (${response.statusCode})');
+  }
+
   Future<void> respondContinue(String threadId, bool shouldContinue) async {
     final response = await http.post(
       Uri.parse('$baseUrl/api/threads/$threadId/continue'),
