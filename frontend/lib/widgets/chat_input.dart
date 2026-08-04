@@ -5,6 +5,15 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/utils/web_image_io.dart';
+import 'package:threadbot/models/thread.dart';
+
+String? mentionQueryAtCaret(String text, int caret) {
+  if (caret < 0 || caret > text.length) return null;
+  final before = text.substring(0, caret);
+  return RegExp(
+    r'(?<!\\)(?:^|\s)@([A-Za-z0-9_-]*)$',
+  ).firstMatch(before)?.group(1);
+}
 
 class ChatInput extends StatefulWidget {
   final Future<void> Function(String content, List<String> imageUrls) onSend;
@@ -14,6 +23,7 @@ class ChatInput extends StatefulWidget {
   final bool hasLlmOverrides;
   final int estimatedTokens;
   final int contextWindow;
+  final List<ThreadAgentSummary> participants;
 
   const ChatInput({
     super.key,
@@ -24,6 +34,7 @@ class ChatInput extends StatefulWidget {
     this.hasLlmOverrides = false,
     this.estimatedTokens = 0,
     this.contextWindow = 8192,
+    this.participants = const [],
   });
 
   @override
@@ -37,6 +48,7 @@ class _ChatInputState extends State<ChatInput> {
   final List<_AttachedImage> _attachments = [];
   bool _hasText = false;
   bool _isUploadingImages = false;
+  String? _mentionQuery;
   StreamSubscription? _pasteSubscription;
 
   @override
@@ -47,9 +59,41 @@ class _ChatInputState extends State<ChatInput> {
       if (hasText != _hasText) {
         setState(() => _hasText = hasText);
       }
+      final query = mentionQueryAtCaret(
+        _controller.text,
+        _controller.selection.baseOffset,
+      );
+      if (query != _mentionQuery) setState(() => _mentionQuery = query);
     });
     _focusNode.addListener(() => setState(() {}));
     _pasteSubscription = listenForImagePaste(_handlePastedImages);
+  }
+
+  List<ThreadAgentSummary> get _mentionSuggestions {
+    final query = (_mentionQuery ?? '').toLowerCase();
+    return widget.participants
+        .where(
+          (agent) =>
+              agent.mentionName.isNotEmpty &&
+              agent.status.toLowerCase() != 'archived' &&
+              agent.mentionName.toLowerCase().startsWith(query),
+        )
+        .take(6)
+        .toList();
+  }
+
+  void _insertMention(ThreadAgentSummary agent) {
+    final caret = _controller.selection.baseOffset;
+    final before = _controller.text.substring(0, caret);
+    final match = RegExp(r'(?<!\\)(?:^|\s)@[A-Za-z0-9_-]*$').firstMatch(before);
+    if (match == null) return;
+    final start = match.start + (before[match.start] == '@' ? 0 : 1);
+    final replacement = '@${agent.mentionName} ';
+    _controller.value = TextEditingValue(
+      text: _controller.text.replaceRange(start, caret, replacement),
+      selection: TextSelection.collapsed(offset: start + replacement.length),
+    );
+    _focusNode.requestFocus();
   }
 
   @override
@@ -354,6 +398,47 @@ class _ChatInputState extends State<ChatInput> {
                               ),
                             ),
                           ),
+                          if (_mentionSuggestions.isNotEmpty)
+                            Positioned(
+                              left: 12,
+                              right: 12,
+                              bottom: 58,
+                              child: Material(
+                                color: const Color(0xFF24232E),
+                                borderRadius: BorderRadius.circular(14),
+                                elevation: 10,
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: _mentionSuggestions
+                                      .map(
+                                        (agent) => ListTile(
+                                          dense: true,
+                                          leading: CircleAvatar(
+                                            radius: 14,
+                                            child: Text(
+                                              agent.name.isEmpty
+                                                  ? '?'
+                                                  : agent.name[0].toUpperCase(),
+                                            ),
+                                          ),
+                                          title: Text(agent.name),
+                                          subtitle: Text(
+                                            '@${agent.mentionName} · ${agent.status}',
+                                          ),
+                                          trailing: agent.isModerator
+                                              ? const Icon(
+                                                  Icons.shield_outlined,
+                                                  size: 16,
+                                                  color: Color(0xFFF59E0B),
+                                                )
+                                              : null,
+                                          onTap: () => _insertMention(agent),
+                                        ),
+                                      )
+                                      .toList(),
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ),

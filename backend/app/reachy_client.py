@@ -68,6 +68,13 @@ MOOD_EMOTIONS: dict[str, str] = {
 VALID_HEAD_MODES = ("head_only", "body_turn_head_follows", "body_turn_head_stays_world_fixed")
 
 
+def _effect_free_guard(config: dict | None, effect: str = "reachy") -> str | None:
+    mode = (config or {}).get("mode")
+    if mode in {"dry_run", "replay", "canary_shadow"}:
+        return f"{mode}: {effect} execution suppressed"
+    return None
+
+
 @dataclass
 class ReachyPose:
     roll: float = 0.0
@@ -306,6 +313,8 @@ def _play_reachy_asset_wav(name: str) -> bool:
 
 def goto_sleep(config: dict | None) -> str:
     """Use the SDK/daemon's exact sleep routine."""
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     if not (config or {}).get("prefer_sdk_motion"):
         try:
             media_ok = _daemon_media_available(config)
@@ -331,6 +340,8 @@ def goto_sleep(config: dict | None) -> str:
 
 def wake_up(config: dict | None) -> str:
     """Use the SDK/daemon's exact wake routine."""
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     if not (config or {}).get("prefer_sdk_motion"):
         try:
             media_ok = _daemon_media_available(config)
@@ -355,6 +366,8 @@ def wake_up(config: dict | None) -> str:
 
 
 def play_mood_animation(config: dict | None, mood: str) -> str:
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     mood_key = (mood or "helpful").strip().lower().replace(" ", "_").replace("-", "_")
     emotion = MOOD_EMOTIONS.get(mood_key)
     if emotion is None and mood_key in MOOD_EMOTIONS.values():
@@ -368,6 +381,8 @@ def play_mood_animation(config: dict | None, mood: str) -> str:
 
 
 def set_output_volume(config: dict | None, volume: int = 100) -> str:
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     volume = max(0, min(100, int(volume)))
     from reachy_mini.daemon.app.routers.volume_control import create_volume_control
 
@@ -378,6 +393,8 @@ def set_output_volume(config: dict | None, volume: int = 100) -> str:
 
 
 def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     np, _ReachyMini, create_head_pose = _sdk_imports()
     pose = pose.resolve_head_pose()
     duration = max(0.2, min(float(pose.duration or 1.0), 10.0))
@@ -414,6 +431,8 @@ def goto_pose_via_daemon(config: dict | None, pose: ReachyPose) -> str:
 
 
 def goto_pose(config: dict | None, pose: ReachyPose) -> str:
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     if not (config or {}).get("prefer_sdk_motion"):
         try:
             return goto_pose_via_daemon(config, pose)
@@ -452,6 +471,8 @@ def goto_pose(config: dict | None, pose: ReachyPose) -> str:
 
 
 def play_animation(config: dict | None, name: str, duration: float = 3.0, stop: asyncio.Event | None = None) -> str:
+    if (blocked := _effect_free_guard(config)):
+        return blocked
     if not (config or {}).get("prefer_sdk_motion"):
         return _play_animation_via_daemon(config, name, duration, stop)
 
@@ -680,6 +701,8 @@ def _capture_image_with_ffmpeg(config: dict | None) -> tuple[str, str]:
 
 
 def speak_wav(config: dict | None, audio: bytes) -> float:
+    if _effect_free_guard(config):
+        return 0.0
     with wave.open(io.BytesIO(audio), "rb") as wav:
         channels = wav.getnchannels()
         sample_width = wav.getsampwidth()

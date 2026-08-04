@@ -19,6 +19,8 @@ from app.temporal_client import build_worker_versioning_config, connect_temporal
 
 async def run_worker():
     settings = get_settings()
+    from app.database import ensure_database_schema
+    await ensure_database_schema()
     for attempt in range(1, 11):
         try:
             await load_settings_from_db()

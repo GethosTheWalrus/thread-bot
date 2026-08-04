@@ -1,22 +1,23 @@
 import 'dart:convert';
-import 'dart:ui_web' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:web/web.dart' as web;
+import 'package:threadbot/services/inline_video.dart';
 
 class ChatMessageList extends StatelessWidget {
   final List<Message> messages;
   final ScrollController scrollController;
   final bool isSending;
+  final List<Widget> footerWidgets;
 
   const ChatMessageList({
     super.key,
     required this.messages,
     required this.scrollController,
     this.isSending = false,
+    this.footerWidgets = const [],
   });
 
   @override
@@ -253,8 +254,11 @@ class ChatMessageList extends StatelessWidget {
     return ListView.builder(
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 24),
-      itemCount: messages.length,
+      itemCount: messages.length + footerWidgets.length,
       itemBuilder: (context, index) {
+        if (index >= messages.length) {
+          return footerWidgets[index - messages.length];
+        }
         final msg = messages[index];
         if (msg.isCompactionSummary) return _CompactionDivider(message: msg);
         // Hide thinking messages claimed by an assistant message
@@ -1423,11 +1427,42 @@ class _ChatBubbleState extends State<_ChatBubble> {
   }
 
   Widget _buildAvatar(bool isUser) {
-    if (!isUser) {
+    if (!isUser && widget.message.agentName == null) {
       return const ThreadbotAvatar(
         size: 44,
         showNeedle: false,
         showShadow: false,
+      );
+    }
+
+    if (!isUser) {
+      final colors = [
+        const Color(0xFF8B5CF6),
+        const Color(0xFF06B6D4),
+        const Color(0xFFF97316),
+        const Color(0xFF10B981),
+        const Color(0xFFEC4899),
+      ];
+      final color =
+          colors[widget.message.agentIdentity.codeUnits.fold(
+                0,
+                (a, b) => a + b,
+              ) %
+              colors.length];
+      return Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: .22),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: .55)),
+        ),
+        child: Center(
+          child: Text(
+            (widget.message.agentName ?? 'A')[0].toUpperCase(),
+            style: TextStyle(color: color, fontWeight: FontWeight.w800),
+          ),
+        ),
       );
     }
 
@@ -1718,26 +1753,12 @@ class _InlineVideoPlayer extends StatefulWidget {
 }
 
 class _InlineVideoPlayerState extends State<_InlineVideoPlayer> {
-  static int _nextId = 0;
   late final String _viewType;
 
   @override
   void initState() {
     super.initState();
-    _viewType = 'threadbot-video-${_nextId++}';
-    final videoUrl = widget.url;
-    ui.platformViewRegistry.registerViewFactory(_viewType, (int viewId) {
-      final video = web.HTMLVideoElement()
-        ..src = videoUrl
-        ..controls = true
-        ..loop = true
-        ..preload = 'metadata';
-      video.style.width = '100%';
-      video.style.height = '100%';
-      video.style.borderRadius = '12px';
-      video.style.backgroundColor = '#000000';
-      return video;
-    });
+    _viewType = registerInlineVideo(widget.url);
   }
 
   @override
@@ -1756,7 +1777,7 @@ class _InlineVideoPlayerState extends State<_InlineVideoPlayer> {
             SizedBox(
               width: 640,
               height: 360,
-              child: HtmlElementView(viewType: _viewType),
+              child: inlineVideoView(_viewType),
             ),
             InkWell(
               onTap: () => launchUrl(Uri.parse(widget.url)),

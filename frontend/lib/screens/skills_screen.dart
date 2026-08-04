@@ -42,7 +42,9 @@ class _SkillsScreenState extends State<SkillsScreen> {
 
   Future<void> _showSkillDialog({Skill? skill}) async {
     final nameController = TextEditingController(text: skill?.name ?? '');
-    final descriptionController = TextEditingController(text: skill?.description ?? '');
+    final descriptionController = TextEditingController(
+      text: skill?.description ?? '',
+    );
     final contentController = TextEditingController(text: skill?.content ?? '');
 
     await showDialog<void>(
@@ -74,7 +76,8 @@ class _SkillsScreenState extends State<SkillsScreen> {
                   decoration: const InputDecoration(
                     labelText: 'Skill instructions',
                     alignLabelWithHint: true,
-                    hintText: 'Reusable guidance, procedure, style, or domain knowledge for ThreadBot to apply when relevant.',
+                    hintText:
+                        'Reusable guidance, procedure, style, or domain knowledge for ThreadBot to apply when relevant.',
                   ),
                   style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                 ),
@@ -112,9 +115,9 @@ class _SkillsScreenState extends State<SkillsScreen> {
                 _loadSkills();
               } catch (e) {
                 if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Error: $e')),
-                );
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text('Error: $e')));
               }
             },
             child: const Text('Save'),
@@ -134,7 +137,9 @@ class _SkillsScreenState extends State<SkillsScreen> {
       _loadSkills();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -144,7 +149,9 @@ class _SkillsScreenState extends State<SkillsScreen> {
       _loadSkills();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -163,21 +170,24 @@ class _SkillsScreenState extends State<SkillsScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(child: Text(_error!, style: const TextStyle(color: Colors.red)))
-              : Column(
-                  children: [
-                    _buildHeader(),
-                    Expanded(
-                      child: _skills.isEmpty
-                          ? _buildEmptyState()
-                          : ListView.builder(
-                              padding: const EdgeInsets.all(16),
-                              itemCount: _skills.length,
-                              itemBuilder: (context, index) => _buildSkillCard(_skills[index]),
-                            ),
-                    ),
-                  ],
+          ? Center(
+              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            )
+          : Column(
+              children: [
+                _buildHeader(),
+                Expanded(
+                  child: _skills.isEmpty
+                      ? _buildEmptyState()
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _skills.length,
+                          itemBuilder: (context, index) =>
+                              _buildSkillCard(_skills[index]),
+                        ),
                 ),
+              ],
+            ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showSkillDialog(),
         icon: const Icon(Icons.add),
@@ -193,14 +203,20 @@ class _SkillsScreenState extends State<SkillsScreen> {
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.03),
-        border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'Teach ThreadBot Reusable Skills',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
@@ -217,11 +233,21 @@ class _SkillsScreenState extends State<SkillsScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.school_outlined, size: 64, color: Colors.white.withValues(alpha: 0.1)),
+          Icon(
+            Icons.school_outlined,
+            size: 64,
+            color: Colors.white.withValues(alpha: 0.1),
+          ),
           const SizedBox(height: 16),
-          const Text('No skills yet', style: TextStyle(color: Color(0xFF71717A))),
+          const Text(
+            'No skills yet',
+            style: TextStyle(color: Color(0xFF71717A)),
+          ),
           const SizedBox(height: 8),
-          TextButton(onPressed: () => _showSkillDialog(), child: const Text('Add your first skill')),
+          TextButton(
+            onPressed: () => _showSkillDialog(),
+            child: const Text('Add your first skill'),
+          ),
         ],
       ),
     );
@@ -249,20 +275,32 @@ class _SkillsScreenState extends State<SkillsScreen> {
                     color: const Color(0xFF8B5CF6).withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child: const Icon(Icons.school_rounded, color: Color(0xFF8B5CF6)),
+                  child: const Icon(
+                    Icons.school_rounded,
+                    color: Color(0xFF8B5CF6),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(skill.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      Text(
+                        skill.name,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                       if (skill.description.isNotEmpty)
                         Text(
                           skill.description,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.45)),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: 0.45),
+                          ),
                         ),
                     ],
                   ),
@@ -273,11 +311,19 @@ class _SkillsScreenState extends State<SkillsScreen> {
                   activeThumbColor: const Color(0xFF8B5CF6),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.edit_outlined, size: 20, color: Colors.white70),
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    size: 20,
+                    color: Colors.white70,
+                  ),
                   onPressed: () => _showSkillDialog(skill: skill),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline, size: 20, color: Colors.red),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 20,
+                    color: Colors.red,
+                  ),
                   onPressed: () => _deleteSkill(skill),
                 ),
               ],

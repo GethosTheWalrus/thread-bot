@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-connector-worker
+  namespace: threadbot
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: threadbot-connector-worker}}
+  template:
+    metadata: {labels: {app: threadbot-connector-worker}}
+    spec:
+      serviceAccountName: threadbot-sa
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+      containers:
+        - name: connector-worker
+          image: git.home:5050/mike/thread-bot/worker:latest
+          imagePullPolicy: Always
+          command: ["python", "-m", "app.connector_worker"]
+          envFrom:
+            - configMapRef:
+                name: threadbot-config
+          env:
+            - name: CONNECTOR_TASK_QUEUE
+              value: threadbot-connectors
+            - name: AUTONOMY_ENABLED
+              value: "true"

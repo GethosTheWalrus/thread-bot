@@ -118,3 +118,20 @@ async def decrypt_dict(data: dict | None) -> dict | None:
             # Value is not encrypted (legacy data or plaintext) — pass through
             decrypted[k] = v
     return decrypted
+
+
+async def encrypt_scalar(value: str | None) -> str | None:
+    """Encrypt one value using the existing Fernet key compatibility path."""
+    if value is None:
+        return None
+    return (await _get_fernet_async()).encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+async def decrypt_scalar(value: str | None) -> str | None:
+    """Decrypt one value; legacy plaintext remains readable during migration."""
+    if value is None:
+        return None
+    try:
+        return (await _get_fernet_async()).decrypt(value.encode("utf-8")).decode("utf-8")
+    except Exception:
+        return value

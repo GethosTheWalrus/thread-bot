@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 class ThreadbotAvatar extends StatelessWidget {
   final double size;
@@ -41,7 +42,7 @@ class ThreadbotAvatar extends StatelessWidget {
                 ],
               ),
             ),
-          
+
           // Background Box (optional)
           if (showBackground)
             Container(
@@ -65,8 +66,25 @@ class ThreadbotAvatar extends StatelessWidget {
   }
 
   Widget _build3DView() {
+    if (size < 100 || !kIsWeb) {
+      return Container(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+            colors: [Color(0xFF8B5CF6), Color(0xFF4F46E5)],
+          ),
+        ),
+        child: Icon(
+          Icons.smart_toy_outlined,
+          size: size * .48,
+          color: Colors.white,
+        ),
+      );
+    }
     return HtmlElementView(
-      key: ValueKey('bot-avatar-${size.toInt()}-${showNeedle ? "needle" : "none"}-${showShadow ? "shadow" : "none"}-${showBackground ? "bg" : "none"}'),
+      key: ValueKey(
+        'bot-avatar-${size.toInt()}-${showNeedle ? "needle" : "none"}-${showShadow ? "shadow" : "none"}-${showBackground ? "bg" : "none"}',
+      ),
       viewType: showNeedle ? 'poly-bot-view' : 'poly-bot-view-no-needle',
     );
   }

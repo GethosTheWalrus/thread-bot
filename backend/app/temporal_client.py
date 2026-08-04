@@ -147,3 +147,15 @@ def build_worker_versioning_config():
         use_worker_versioning=True,
         default_versioning_behavior=VersioningBehavior.PINNED,
     )
+
+
+def autonomy_search_attributes(workspace_id: str, agent_id: str | None = None, mode: str | None = None):
+    """Return only explicitly configured, server-registered autonomy indexes."""
+    if not get_settings().TEMPORAL_SEARCH_ATTRIBUTES_ENABLED:
+        return None
+    attributes = {"ThreadBotWorkspaceId": [str(workspace_id)]}
+    if agent_id:
+        attributes["ThreadBotAgentId"] = [str(agent_id)]
+    if mode:
+        attributes["ThreadBotRunMode"] = [str(mode)]
+    return attributes

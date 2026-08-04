@@ -25,10 +25,12 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     sed -i '' -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
     sed -i '' -E "s|image: .*/worker:[^[:space:]]+|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
     sed -i '' -E "s|image: .*/frontend:[^[:space:]]+|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
+    sed -i '' -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/migration-job.yaml
 else
     sed -i -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/deployment.yaml
     sed -i -E "s|image: .*/worker:[^[:space:]]+|image: ${REGISTRY}/worker:latest|" k8s/deployment.yaml
     sed -i -E "s|image: .*/frontend:[^[:space:]]+|image: ${REGISTRY}/frontend:latest|" k8s/deployment.yaml
+    sed -i -E "s|image: .*/backend:[^[:space:]]+|image: ${REGISTRY}/backend:latest|" k8s/migration-job.yaml
 fi
 
 # 2. Setup buildx
@@ -74,7 +76,11 @@ else
   echo -e "${RED}Warning: temporal/codec-encryption-key not found. Payload codec pods will not start until threadbot/codec-encryption-key exists.${NC}"
 fi
 
-kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl delete job threadbot-migrate -n threadbot --ignore-not-found
+kubectl apply -f k8s/migration-job.yaml
+kubectl wait --for=condition=complete job/threadbot-migrate -n threadbot --timeout=10m
+kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/cronjob-mcp-cleanup.yaml
 
 # Since we use :latest, we should rollout restart to force nodes to pull the latest images

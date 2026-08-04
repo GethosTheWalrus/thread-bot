@@ -55,7 +55,6 @@ class ContextCompositionItem {
   final String label;
   final int tokens;
   final int messageCount;
-
   ContextCompositionItem({
     required this.key,
     required this.label,
@@ -138,6 +137,13 @@ class Thread {
   final int contextWindow;
   final bool hasLlmOverrides;
   final bool isPinned;
+  final String mode;
+  final ThreadAgentSummary? agent;
+  final ThreadRunSummary? latestActiveRun;
+  final List<ThreadAgentSummary> agents;
+  final List<ThreadRunSummary> activeRuns;
+  final int pendingApprovals;
+  final int agentTurnLimit;
 
   Thread({
     required this.id,
@@ -153,6 +159,13 @@ class Thread {
     this.contextWindow = 8192,
     this.hasLlmOverrides = false,
     this.isPinned = false,
+    this.mode = 'chat',
+    this.agent,
+    this.latestActiveRun,
+    this.agents = const [],
+    this.activeRuns = const [],
+    this.pendingApprovals = 0,
+    this.agentTurnLimit = 0,
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -161,6 +174,11 @@ class Thread {
         .map((m) => Message.fromJson(m as Map<String, dynamic>))
         .toList();
 
+    final agents = _threadAgents(json['agents'], json['agent']);
+    final activeRuns = _threadRuns(
+      json['active_runs'],
+      json['latest_active_run'],
+    );
     return Thread(
       id: json['id'] as String,
       title: json['title'] as String,
@@ -179,6 +197,13 @@ class Thread {
       contextWindow: json['context_window'] as int? ?? 8192,
       hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
       isPinned: json['is_pinned'] as bool? ?? false,
+      mode: json['mode'] as String? ?? 'chat',
+      agent: _threadAgent(json['agent']),
+      latestActiveRun: _threadRun(json['latest_active_run']),
+      agents: agents,
+      activeRuns: activeRuns,
+      pendingApprovals: _contextInt(json['pending_approvals']),
+      agentTurnLimit: _contextInt(json['agent_turn_limit']),
     );
   }
 
@@ -196,11 +221,19 @@ class ThreadListItem {
   final DateTime createdAt;
   final DateTime updatedAt;
   final int messageCount;
+  final bool isGenerating;
   final bool isDiscordThread;
   final String? discordServerName;
   final bool isReachyThread;
   final bool hasLlmOverrides;
   bool isPinned;
+  final String mode;
+  final ThreadAgentSummary? agent;
+  final ThreadRunSummary? latestActiveRun;
+  final List<ThreadAgentSummary> agents;
+  final List<ThreadRunSummary> activeRuns;
+  final int pendingApprovals;
+  final int agentTurnLimit;
 
   ThreadListItem({
     required this.id,
@@ -209,14 +242,27 @@ class ThreadListItem {
     required this.createdAt,
     required this.updatedAt,
     required this.messageCount,
+    this.isGenerating = false,
     this.isDiscordThread = false,
     this.discordServerName,
     this.isReachyThread = false,
     this.hasLlmOverrides = false,
     this.isPinned = false,
+    this.mode = 'chat',
+    this.agent,
+    this.latestActiveRun,
+    this.agents = const [],
+    this.activeRuns = const [],
+    this.pendingApprovals = 0,
+    this.agentTurnLimit = 0,
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
+    final agents = _threadAgents(json['agents'], json['agent']);
+    final activeRuns = _threadRuns(
+      json['active_runs'],
+      json['latest_active_run'],
+    );
     return ThreadListItem(
       id: json['id'] as String,
       title: json['title'] as String,
@@ -224,13 +270,94 @@ class ThreadListItem {
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
       messageCount: json['message_count'] as int? ?? 0,
+      isGenerating: json['is_generating'] as bool? ?? false,
       isDiscordThread: json['is_discord_thread'] as bool? ?? false,
       discordServerName: json['discord_server_name'] as String?,
       isReachyThread: json['is_reachy_thread'] as bool? ?? false,
       hasLlmOverrides: json['has_llm_overrides'] as bool? ?? false,
       isPinned: json['is_pinned'] as bool? ?? false,
+      mode: json['mode'] as String? ?? 'chat',
+      agent: _threadAgent(json['agent']),
+      latestActiveRun: _threadRun(json['latest_active_run']),
+      agents: agents,
+      activeRuns: activeRuns,
+      pendingApprovals: _contextInt(json['pending_approvals']),
+      agentTurnLimit: _contextInt(json['agent_turn_limit']),
     );
   }
+}
+
+class ThreadAgentSummary {
+  final String id, name, status, executionMode;
+  final String? activeVersionId;
+  final String mentionName;
+  final bool isModerator;
+  const ThreadAgentSummary({
+    required this.id,
+    required this.name,
+    required this.status,
+    required this.executionMode,
+    this.activeVersionId,
+    this.mentionName = '',
+    this.isModerator = false,
+  });
+}
+
+class ThreadRunSummary {
+  final String id, status, mode;
+  final String? agentId, agentName, agentHandle;
+  final String? outputSummary;
+  const ThreadRunSummary({
+    required this.id,
+    required this.status,
+    required this.mode,
+    this.agentId,
+    this.agentName,
+    this.agentHandle,
+    this.outputSummary,
+  });
+}
+
+ThreadAgentSummary? _threadAgent(dynamic value) {
+  if (value is! Map) return null;
+  final j = Map<String, dynamic>.from(value);
+  return ThreadAgentSummary(
+    id: '${j['id'] ?? ''}',
+    name: '${j['name'] ?? 'Agent'}',
+    status: '${j['status'] ?? 'unknown'}',
+    executionMode: '${j['execution_mode'] ?? 'unknown'}',
+    activeVersionId: j['active_version_id']?.toString(),
+    mentionName: '${j['handle'] ?? j['mention_name'] ?? ''}',
+    isModerator: j['is_moderator'] == true,
+  );
+}
+
+List<ThreadAgentSummary> _threadAgents(dynamic value, dynamic legacy) {
+  final raw = value is List && value.isNotEmpty
+      ? value
+      : (legacy is Map ? [legacy] : const []);
+  return raw.whereType<Map>().map((v) => _threadAgent(v)!).toList();
+}
+
+List<ThreadRunSummary> _threadRuns(dynamic value, dynamic legacy) {
+  final raw = value is List && value.isNotEmpty
+      ? value
+      : (legacy is Map ? [legacy] : const []);
+  return raw.whereType<Map>().map((v) => _threadRun(v)!).toList();
+}
+
+ThreadRunSummary? _threadRun(dynamic value) {
+  if (value is! Map) return null;
+  final j = Map<String, dynamic>.from(value);
+  return ThreadRunSummary(
+    id: '${j['id'] ?? ''}',
+    status: '${j['status'] ?? 'unknown'}',
+    mode: '${j['mode'] ?? 'live'}',
+    agentId: j['agent_id']?.toString(),
+    agentName: j['agent_name']?.toString(),
+    agentHandle: (j['agent_handle'] ?? j['handle'])?.toString(),
+    outputSummary: j['output_summary']?.toString(),
+  );
 }
 
 class ThreadLlmOverrideSchemaEntry {

@@ -1,3 +1,4 @@
+from typing import Annotated
 from app.database import get_db
 from app.database.crud import (
     create_thread,
@@ -75,17 +76,21 @@ from app.models.schemas import (
     ThreadLlmOverridesResponse,
     ThreadLlmOverridesRequest,
     ThreadContextResponse,
+    ThreadModeRequest,
     ContextBudgetResponse,
     ContextCompositionItem,
     ContextSummaryResponse,
+    SecurityModeRequest,
+    SecurityResponse,
 )
-from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, File, UploadFile
-from fastapi.responses import FileResponse, Response
-from sqlalchemy import select, func
+from fastapi import APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect, File, UploadFile, Header
+from fastapi.responses import FileResponse, Response, JSONResponse
+from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
+import secrets
 from app.config import (
     get_settings,
     get_llm_config,
@@ -104,6 +109,13 @@ from app.config import (
 from temporalio.client import Client as TemporalClient
 from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from app.workflows.thread_workflow import RunThreadWorkflow
+from app.security import authenticate_websocket, browser_cookie_secure, security_mode, hash_token, LOCAL_WORKSPACE_ID, SESSION_MAX_AGE_SECONDS, require_actor, local_actor, require_owner_or_admin
+from app.database.foundation import list_events
+from app.models.foundation_models import ApiToken
+from app.contracts import ActorContext
+from app.models.agent_models import Agent
+from app.models.run_models import AgentRun
+from app.models.approval_models import ApprovalRequest
 
 router = APIRouter(prefix="/api", tags=["chatbot"])
 
@@ -443,7 +455,93 @@ def _clean_image_attachment_lines(content: str) -> str:
     ).strip()
 
 
-def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None) -> ThreadResponse:
+def _agent_run_projection(run, agent=None):
+    if not run:
+        return None
+    agent = agent or getattr(run, "agent", None)
+    return {"id": run.id, "agent_id": getattr(run, "agent_id", None), "agent_name": getattr(agent, "name", None), "agent_handle": getattr(agent, "handle", None), "status": run.status, "mode": run.mode,
+            "output_summary": run.output_summary, "failure_summary": run.failure_summary,
+            "queued_at": run.queued_at, "started_at": run.started_at,
+            "completed_at": run.completed_at}
+
+
+def _agent_projection(agent):
+    if not agent:
+        return None
+    return {"id": agent.id, "name": agent.name, "handle": agent.handle,
+            "is_moderator": bool(agent.is_moderator), "status": agent.status,
+            "execution_mode": agent.execution_mode, "active_version_id": agent.active_version_id}
+
+
+async def _thread_agent_summary(db: AsyncSession, thread_id: UUID, workspace_id=LOCAL_WORKSPACE_ID):
+    agent = await db.scalar(select(Agent).where(
+        Agent.thread_id == thread_id, Agent.workspace_id == workspace_id,
+        Agent.status != "archived", Agent.is_moderator.is_(True),
+    ))
+    if not agent:
+        agent = await db.scalar(select(Agent).where(
+            Agent.thread_id == thread_id, Agent.workspace_id == workspace_id,
+            Agent.status != "archived",
+        ).order_by(Agent.created_at, Agent.id))
+    if not agent:
+        return None, None, 0
+    active = await db.scalar(select(AgentRun).where(
+        AgentRun.thread_id == thread_id, AgentRun.workspace_id == workspace_id,
+        AgentRun.status.in_({"queued", "running", "waiting_approval", "waiting_handoff"}),
+    ).order_by(AgentRun.queued_at.desc(), AgentRun.id.desc()))
+    pending = await db.scalar(select(func.count(ApprovalRequest.id)).join(
+        AgentRun, AgentRun.id == ApprovalRequest.run_id
+    ).where(ApprovalRequest.workspace_id == workspace_id, AgentRun.thread_id == thread_id,
+            ApprovalRequest.status == "pending")) or 0
+    active_agent = await db.get(Agent, active.agent_id) if active else None
+    return _agent_projection(agent), _agent_run_projection(active, active_agent), int(pending)
+
+
+async def _thread_roster_projection(db, thread_id, workspace_id):
+    from app.models.agent_models import Agent
+    agents = list((await db.execute(select(Agent).where(
+        Agent.thread_id == thread_id, Agent.workspace_id == workspace_id,
+        Agent.status != "archived").order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars())
+    active = list((await db.execute(select(AgentRun).where(
+        AgentRun.thread_id == thread_id, AgentRun.workspace_id == workspace_id,
+        AgentRun.status.in_({"queued", "running", "waiting_approval", "waiting_handoff"}))
+        .order_by(AgentRun.queued_at))).scalars())
+    agent_by_id = {a.id: a for a in agents}
+    return [_agent_projection(a) for a in agents], [_agent_run_projection(r, agent_by_id.get(r.agent_id)) for r in active]
+
+
+async def _thread_agent_summaries(db: AsyncSession, thread_ids: list[UUID], workspace_id=LOCAL_WORKSPACE_ID):
+    if not thread_ids:
+        return {}
+    agents = list((await db.execute(select(Agent).where(
+        Agent.thread_id.in_(thread_ids), Agent.workspace_id == workspace_id,
+        Agent.status != "archived"))).scalars())
+    runs = list((await db.execute(select(AgentRun).where(
+        AgentRun.thread_id.in_(thread_ids), AgentRun.workspace_id == workspace_id,
+        AgentRun.status.in_({"queued", "running", "waiting_approval", "waiting_handoff"}),
+    ).order_by(AgentRun.queued_at.desc(), AgentRun.id.desc()))).scalars())
+    approvals = (await db.execute(select(AgentRun.thread_id, func.count(ApprovalRequest.id)).join(
+        ApprovalRequest, ApprovalRequest.run_id == AgentRun.id
+    ).where(AgentRun.thread_id.in_(thread_ids), AgentRun.workspace_id == workspace_id,
+            ApprovalRequest.workspace_id == workspace_id, ApprovalRequest.status == "pending")
+        .group_by(AgentRun.thread_id))).all()
+    by_id = {a.thread_id: a for a in agents if a.is_moderator}
+    for row in agents:
+        by_id.setdefault(row.thread_id, row)
+    agent_by_id = {a.id: a for a in agents}
+    active_by_thread = {}
+    for run in runs:
+        active_by_thread.setdefault(run.thread_id, run)
+    pending_by_thread = dict(approvals)
+    return {thread_id: (_agent_projection(by_id[thread_id]),
+                         _agent_run_projection(active_by_thread.get(thread_id), agent_by_id.get(active_by_thread[thread_id].agent_id)) if thread_id in active_by_thread else None,
+                        int(pending_by_thread.get(thread_id, 0)))
+            for thread_id in by_id}
+
+
+def _build_thread_response(thread, messages=None, is_generating=False, discord_link=None,
+                           agent=None, latest_active_run=None, pending_approvals=0,
+                           agents=None, active_runs=None) -> ThreadResponse:
     msgs = messages or []
     config = get_llm_config()
     reachy_thread_id = str((config.get("reachy") or {}).get("thread_id") or "")
@@ -463,6 +561,15 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         context_window=int(config.get("context_window", 8192)),
         has_llm_overrides=bool(overrides),
         is_pinned=bool(thread.is_pinned),
+        mode=thread.mode or "chat",
+        archived_at=thread.archived_at,
+        agent=agent,
+        latest_active_run=latest_active_run,
+        pending_approvals=pending_approvals,
+        agents=agents or ([agent] if agent else []),
+        active_runs=active_runs or ([latest_active_run] if latest_active_run else []),
+        agent_turn_limit=getattr(thread, "agent_turn_limit", 4) or 4,
+        moderator=next((item for item in (agents or []) if item.get("is_moderator") and item.get("status") == "active"), agent if agent and agent.get("status") == "active" else None),
     )
 
 
@@ -496,8 +603,17 @@ async def _build_reachy_binding_response(db: AsyncSession) -> ReachyBindingRespo
 async def create_thread_endpoint(
     request: ThreadCreateRequest,
     db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
 ):
-    thread = await create_thread(db, request.title, request.parent_id)
+    thread = await create_thread(db, request.title, request.parent_id, mode=request.mode, workspace_id=actor.workspace_id)
+    if request.mode == "agent":
+        from app.agents.autonomy_service import create_agent
+        try:
+            await create_agent(db, actor.workspace_id, actor, {
+                "name": request.agent_name or request.title, "thread_id": thread.id,
+            })
+        except (LookupError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     if request.tool_overrides:
         overrides = [
             {
@@ -519,7 +635,139 @@ async def create_thread_endpoint(
         await set_thread_skill_overrides(db, thread.id, skill_overrides)
     if request.tool_overrides or request.skill_overrides:
         await db.commit()
-    return _build_thread_response(thread)
+    summary, active, pending = await _thread_agent_summary(db, thread.id, actor.workspace_id)
+    return _build_thread_response(thread, agent=summary, latest_active_run=active, pending_approvals=pending)
+
+
+@router.post("/threads/{thread_id}/agent", response_model=ThreadResponse)
+async def configure_thread_agent(thread_id: UUID, request: ThreadModeRequest, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
+    """Attach the single agent to an existing thread, without replacing it."""
+    from app.models.agent_models import Agent
+    from app.agents.autonomy_service import create_agent
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    thread = await db.scalar(select(Thread).where(Thread.id == thread_id))
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    existing = await db.scalar(select(Agent).where(Agent.thread_id == thread_id))
+    if existing:
+        if existing.workspace_id != actor.workspace_id:
+            raise HTTPException(404, "Thread not found")
+        agent = existing
+    else:
+        try:
+            agent = await create_agent(db, actor.workspace_id, actor, {"name": request.agent_name or thread.title, "thread_id": thread_id})
+        except Exception as exc:
+            raise HTTPException(409, str(exc)) from exc
+    thread.mode = "agent"
+    await db.flush()
+    # The server-managed updated_at value is expired after the UPDATE. Refresh
+    # it explicitly so response serialization never triggers async lazy I/O.
+    await db.refresh(thread)
+    messages = list((await db.execute(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at))).scalars())
+    summary, active, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
+    return _build_thread_response(thread, messages, agent=summary, latest_active_run=active, pending_approvals=pending)
+
+
+@router.patch("/threads/{thread_id}/mode", response_model=ThreadResponse)
+async def set_thread_mode(thread_id: UUID, request: ThreadModeRequest, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    thread = await db.scalar(select(Thread).where(Thread.id == thread_id))
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    if request.mode == "agent":
+        return await configure_thread_agent(thread_id, request, db, fastapi_request)
+    else:
+        from app.models.agent_models import Agent
+        agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id))
+        if agent and agent.workspace_id != actor.workspace_id:
+            raise HTTPException(404, "Thread not found")
+        thread.mode = "chat"
+        await db.flush()
+        await db.refresh(thread)
+    messages = list((await db.execute(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at))).scalars())
+    summary, active, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
+    return _build_thread_response(thread, messages, agent=summary, latest_active_run=active, pending_approvals=pending)
+
+
+@router.get("/threads/{thread_id}/agent")
+async def thread_agent(thread_id: UUID, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    summary, active, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
+    if not summary:
+        raise HTTPException(404, "Agent not found")
+    return {"agent": summary, "latest_active_run": active, "pending_approvals": pending}
+
+
+@router.put("/threads/{thread_id}/agent/draft")
+async def thread_agent_draft(thread_id: UUID, body: dict, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
+    from app.models.agent_models import Agent
+    from app.agents.autonomy_service import upsert_draft
+    from app.contracts.autonomy import DraftUpsert
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id))
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    draft = await upsert_draft(db, agent.id, actor.workspace_id, DraftUpsert.model_validate(body).model_dump(mode="json"))
+    return draft
+
+
+@router.post("/threads/{thread_id}/agent/activate")
+async def thread_agent_activate(thread_id: UUID, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
+    from app.models.agent_models import Agent
+    from app.agents.autonomy_service import activate_draft
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id))
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+    try:
+        return await activate_draft(db, agent.id, actor.workspace_id, actor)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/threads/{thread_id}/agent/run")
+async def thread_agent_run(thread_id: UUID, body: dict, db: AsyncSession = Depends(get_db), fastapi_request: Request = None, idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    from app.models.agent_models import Agent, AgentVersion
+    from app.agents.autonomy_service import create_run
+    from app.agent_mentions import parse_agent_mention
+    actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
+    actor = actor or local_actor()
+    message = str(body.get("message") or "")
+    roster = list((await db.execute(select(Agent).where(
+        Agent.thread_id == thread_id,
+        Agent.workspace_id == actor.workspace_id,
+        Agent.status != "archived",
+    ).order_by(Agent.is_moderator.desc(), Agent.created_at, Agent.id))).scalars())
+    mention = parse_agent_mention(message, [item.handle for item in roster])
+    if mention.target_handle:
+        agent = next((item for item in roster if item.handle.casefold() == mention.target_handle.casefold()), None)
+        if agent and agent.status != "active":
+            raise HTTPException(409, f"agent @{agent.handle} is {agent.status} and cannot receive runs")
+    else:
+        agent = next((item for item in roster if item.is_moderator and item.status == "active"), None)
+    if not agent or not agent.active_version_id:
+        raise HTTPException(409, "Agent thread has no active moderator or mentioned agent version")
+    if not idempotency_key:
+        raise HTTPException(422, "Idempotency-Key header is required")
+    version = await db.get(AgentVersion, agent.active_version_id)
+    run = await create_run(db, actor.workspace_id, actor, agent, version, message, str(body.get("mode") or "live"), None, idempotency_key, str(body.get("response_mode") or "both"), route="user_mention" if mention.target_handle else "moderator")
+    await db.commit()
+    client = get_temporal_client()
+    if client:
+        from app.workflows.agent_workflows import TriggerDispatchWorkflow
+        try:
+            await client.start_workflow(TriggerDispatchWorkflow.run, {"agent_id": str(agent.id), "event_id": str(run.trigger_event_id)}, id=f"trigger-dispatch:{run.trigger_event_id}", task_queue=get_settings().AGENT_TASK_QUEUE)
+        except Exception as exc:
+            from app.agents.autonomy_service import fail_queued_run
+            await fail_queued_run(db, run.id, str(exc))
+            await db.commit()
+            raise HTTPException(status_code=503, detail="autonomy dispatch failed") from exc
+    return run
 
 
 @router.post("/chat")
@@ -533,6 +781,8 @@ async def chat_endpoint(
 
 @router.websocket("/broadcast/ws")
 async def broadcast_websocket(websocket: WebSocket):
+    if await authenticate_websocket(websocket) is None:
+        return
     await websocket.accept()
     _broadcast_clients.add(websocket)
     try:
@@ -546,6 +796,9 @@ async def broadcast_websocket(websocket: WebSocket):
 
 @router.websocket("/chat/ws")
 async def chat_websocket(websocket: WebSocket):
+    actor = await authenticate_websocket(websocket, {"owner", "admin"})
+    if actor is None:
+        return
     await websocket.accept()
 
     temporal_client = get_temporal_client()
@@ -564,10 +817,17 @@ async def chat_websocket(websocket: WebSocket):
 
     from app.config import load_settings_from_db
     from app.database import AsyncSessionLocal
+    from app.database.autonomy import acquire_thread_lease
+    from datetime import datetime, timezone
+    from uuid import uuid4
 
     await load_settings_from_db()
     settings = get_settings()
     llm_config = get_llm_config().copy()
+    chat_execution_id = f"chat-{uuid4().hex}"
+    image_attachments = _image_attachments_from_urls(request.image_urls)
+    message_metadata = {"image_attachments": image_attachments} if image_attachments else None
+    message_content = _content_with_image_lines(request.content, image_attachments)
 
     async with AsyncSessionLocal() as setup_db:
         if request.thread_id:
@@ -577,8 +837,48 @@ async def chat_websocket(websocket: WebSocket):
                 await websocket.close(code=1008)
                 return
             thread_id = thread.id
+            if (thread.mode or "chat") == "agent":
+                from app.agents.autonomy_service import create_run
+                from app.models.agent_models import Agent, AgentVersion
+                if actor.workspace_id != (await setup_db.scalar(select(Agent.workspace_id).where(Agent.thread_id == thread.id))):
+                    await websocket.send_json({"type": "error", "content": "Thread is not available"})
+                    await websocket.close(code=1008)
+                    return
+                roster = list((await setup_db.execute(select(Agent).where(Agent.thread_id == thread.id, Agent.workspace_id == actor.workspace_id).order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars().all())
+                from app.agent_mentions import parse_agent_mention
+                mention = parse_agent_mention(request.content, [item.handle for item in roster])
+                agent = next((item for item in roster if item.handle.casefold() == (mention.target_handle or "").casefold()), None) if mention.target_handle else next((item for item in roster if item.is_moderator and item.status == "active"), None)
+                if mention.target_handle and agent and agent.status != "active":
+                    await websocket.send_json({"type": "error", "content": f"Agent @{agent.handle} is {agent.status} and cannot receive runs"})
+                    await websocket.close(code=409)
+                    return
+                version = await setup_db.get(AgentVersion, agent.active_version_id) if agent and agent.active_version_id else None
+                if not agent or not version:
+                    await websocket.send_json({"type": "error", "content": "Agent thread is not activated"})
+                    await websocket.close(code=409)
+                    return
+                import uuid as uuid_mod
+                idempotency_key = f"thread-message:{thread.id}:{uuid_mod.uuid4()}"
+                agent_message = _content_with_image_lines(request.content, _image_attachments_from_urls(request.image_urls))
+                run = await create_run(setup_db, actor.workspace_id, actor, agent, version, agent_message, "live", None, idempotency_key, request.response_mode, message_metadata)
+                await setup_db.commit()
+                try:
+                    from app.workflows.agent_workflows import TriggerDispatchWorkflow
+                    await temporal_client.start_workflow(TriggerDispatchWorkflow.run, {"agent_id": str(agent.id), "event_id": str(run.trigger_event_id)}, id=f"trigger-dispatch:{run.trigger_event_id}", task_queue=get_settings().AGENT_TASK_QUEUE)
+                except Exception as exc:
+                    from app.agents.autonomy_service import fail_queued_run
+                    await fail_queued_run(setup_db, run.id, str(exc))
+                    await setup_db.commit()
+                    await websocket.send_json({"type": "error", "content": f"Failed to start agent run: {exc}"})
+                    await websocket.close(code=1011)
+                    return
+                await websocket.send_json({"type": "thread", "thread_id": str(thread.id), "run_id": str(run.id), "mode": "agent"})
+                await websocket.send_json({"type": "done"})
+                await websocket.close()
+                return
+
         elif request.parent_id:
-            thread = await create_thread(setup_db, "Reply", parent_id=request.parent_id)
+            thread = await create_thread(setup_db, "Reply", parent_id=request.parent_id, workspace_id=actor.workspace_id)
             thread_id = thread.id
             if request.tool_overrides:
                 overrides = [
@@ -597,7 +897,7 @@ async def chat_websocket(websocket: WebSocket):
                 ]
                 await set_thread_skill_overrides(setup_db, thread_id, skill_overrides)
         else:
-            thread = await create_thread(setup_db, "New Thread", parent_id=None)
+            thread = await create_thread(setup_db, "New Thread", parent_id=None, workspace_id=actor.workspace_id)
             thread_id = thread.id
             if request.tool_overrides:
                 overrides = [
@@ -616,9 +916,6 @@ async def chat_websocket(websocket: WebSocket):
                 ]
                 await set_thread_skill_overrides(setup_db, thread_id, skill_overrides)
 
-        image_attachments = _image_attachments_from_urls(request.image_urls)
-        message_metadata = {"image_attachments": image_attachments} if image_attachments else None
-        message_content = _content_with_image_lines(request.content, image_attachments)
         await add_message(setup_db, thread_id, "user", message_content, metadata=message_metadata)
 
         # Load per-thread tool overrides (if any)
@@ -649,14 +946,29 @@ async def chat_websocket(websocket: WebSocket):
 
         await setup_db.commit()
 
+        if not await acquire_thread_lease(setup_db, actor.workspace_id, thread_id, None, chat_execution_id,
+                                          datetime.now(timezone.utc) + timedelta(minutes=30),
+                                          "chat_workflow", chat_execution_id):
+            await websocket.send_json({"type": "error", "content": "Thread is busy with another execution"})
+            await websocket.close(code=409)
+            return
+        await setup_db.commit()
+
     from app.discord_integration import sync_message_to_discord
-    discord_message_id = await sync_message_to_discord(
-        thread_id,
-        "user",
-        message_content,
-        metadata=message_metadata or {},
-        discord_config=llm_config.get("discord"),
-    )
+    try:
+        discord_message_id = await sync_message_to_discord(
+            thread_id,
+            "user",
+            message_content,
+            metadata=message_metadata or {},
+            discord_config=llm_config.get("discord"),
+        )
+    except Exception:
+        async with AsyncSessionLocal() as lease_db:
+            from app.database.autonomy import release_thread_execution
+            await release_thread_execution(lease_db, thread_id, "chat_workflow", chat_execution_id)
+            await lease_db.commit()
+        raise
     if discord_message_id and llm_config.get("discord"):
         llm_config["discord"]["reply_to_message_id"] = discord_message_id
 
@@ -679,6 +991,10 @@ async def chat_websocket(websocket: WebSocket):
             asyncio.create_task(_keep_discord_typing_until_done(workflow_handle, llm_config["discord"]))
         await websocket.send_json({"type": "thread", "thread_id": str(thread_id), "workflow_id": run_id})
     except Exception as e:
+        async with AsyncSessionLocal() as lease_db:
+            from app.database.autonomy import release_thread_execution
+            await release_thread_execution(lease_db, thread_id, "chat_workflow", chat_execution_id)
+            await lease_db.commit()
         await websocket.send_json({"type": "error", "content": f"Failed to start workflow: {e}"})
         await websocket.close(code=1011)
         return
@@ -710,6 +1026,10 @@ async def chat_websocket(websocket: WebSocket):
         pass
     finally:
         control_task.cancel()
+        async with AsyncSessionLocal() as lease_db:
+            from app.database.autonomy import release_thread_execution
+            await release_thread_execution(lease_db, thread_id, "chat_workflow", chat_execution_id)
+            await lease_db.commit()
 
 
 @router.get("/generated-images/{filename}")
@@ -817,19 +1137,28 @@ async def upload_images_endpoint(
 @router.get("/threads", response_model=ThreadListResponse)
 async def list_threads_endpoint(
     db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
     limit: int = 200,
     offset: int = 0,
 ):
-    threads = await get_root_threads(db, limit=limit, offset=offset)
+    threads = list((await db.execute(select(Thread).where(
+        Thread.parent_id.is_(None),
+        Thread.archived_at.is_(None),
+        Thread.workspace_id == actor.workspace_id,
+    )
+        .order_by(Thread.is_pinned.desc(), Thread.updated_at.desc()).limit(limit).offset(offset))).scalars())
     thread_items = []
+    thread_ids = [t.id for t in threads]
+    agent_summaries = await _thread_agent_summaries(db, thread_ids, actor.workspace_id)
+    counts = dict((await db.execute(select(Message.thread_id, func.count(Message.id)).where(
+        Message.thread_id.in_(thread_ids)).group_by(Message.thread_id))).all()) if thread_ids else {}
     reachy_thread_id = str(get_reachy_config().get("thread_id") or "")
     for t in threads:
-        msg_count_result = await db.execute(
-            select(func.count(Message.id)).where(Message.thread_id == t.id)
-        )
-        msg_count = msg_count_result.scalar_one()
+        msg_count = int(counts.get(t.id, 0))
         discord_link = await _get_discord_link_for_thread(db, t.id)
         discord_server_name = await _get_discord_server_name_for_thread(db, t.id)
+        agent_summary, active_run, pending = agent_summaries.get(t.id, (None, None, 0))
+        roster, active_runs = await _thread_roster_projection(db, t.id, actor.workspace_id)
         thread_items.append(ThreadListItem(
             id=t.id,
             title=t.title,
@@ -842,6 +1171,9 @@ async def list_threads_endpoint(
             is_reachy_thread=reachy_thread_id == str(t.id),
             has_llm_overrides=bool(t.llm_overrides),
             is_pinned=bool(t.is_pinned),
+            mode=t.mode or "chat", agent=agent_summary, latest_active_run=active_run, pending_approvals=pending,
+            agents=roster, active_runs=active_runs, agent_turn_limit=getattr(t, "agent_turn_limit", 4) or 4,
+            moderator=next((a for a in roster if a.get("is_moderator") and a.get("status") == "active"), None),
         ))
     return ThreadListResponse(threads=thread_items)
 
@@ -850,20 +1182,31 @@ async def list_threads_endpoint(
 async def get_thread_endpoint(
     thread_id: UUID,
     db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
 ):
-    thread = await get_thread_with_messages(db, thread_id)
+    thread = await db.scalar(select(Thread).outerjoin(Agent, Agent.thread_id == Thread.id)
+        .where(Thread.id == thread_id, or_(Agent.id.is_(None), Agent.workspace_id == actor.workspace_id)))
+    messages = []
+    if thread:
+        result = await db.execute(select(Message).where(Message.thread_id == thread_id)
+                                  .order_by(Message.created_at, Message.id))
+        messages = list(result.scalars())
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
     is_generating = await _thread_is_generating(thread_id)
 
     discord_link = await _get_discord_link_for_thread(db, thread_id)
-    return _build_thread_response(thread, thread.messages, is_generating=is_generating, discord_link=discord_link)
+    agent_summary, active_run, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
+    roster, active_runs = await _thread_roster_projection(db, thread_id, actor.workspace_id)
+    return _build_thread_response(thread, messages, is_generating=is_generating, discord_link=discord_link, agent=agent_summary, latest_active_run=active_run, pending_approvals=pending, agents=roster, active_runs=active_runs)
 
 
 @router.get("/threads/{thread_id}/context", response_model=ThreadContextResponse)
-async def get_thread_context_endpoint(thread_id: UUID, db: AsyncSession = Depends(get_db)):
-    thread = await get_thread(db, thread_id)
+async def get_thread_context_endpoint(thread_id: UUID, db: AsyncSession = Depends(get_db), actor: ActorContext = Depends(require_actor)):
+    thread = await db.scalar(select(Thread).outerjoin(Agent, Agent.thread_id == Thread.id)
+                             .where(Thread.id == thread_id,
+                                    or_(Agent.id.is_(None), Agent.workspace_id == actor.workspace_id)))
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     result = await db.execute(
@@ -962,6 +1305,8 @@ async def continue_thread_workflow_endpoint(
 
 @router.websocket("/threads/{thread_id}/ws")
 async def reconnect_thread_websocket(websocket: WebSocket, thread_id: UUID, offset: int = 0):
+    if await authenticate_websocket(websocket, {"owner", "admin"}) is None:
+        return
     await websocket.accept()
     temporal_client = get_temporal_client()
     if not temporal_client:
@@ -1083,7 +1428,21 @@ async def pin_thread_endpoint(
 async def delete_thread_endpoint(
     thread_id: UUID,
     db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
 ):
+    from app.models.agent_models import Agent
+    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id))
+    if agent and agent.workspace_id != actor.workspace_id:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if agent:
+        thread = await get_thread(db, thread_id)
+        if not thread:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        thread.archived_at = datetime.now(timezone.utc)
+        thread.mode = "agent"
+        agent.status = "archived"
+        await db.commit()
+        return {"detail": "Thread archived"}
     discord_link = await get_discord_link(db, thread_id)
     if discord_link and discord_link.is_active:
         from app.discord_integration import DiscordIntegrationError, delete_discord_thread
@@ -1119,9 +1478,10 @@ async def delete_thread_endpoint(
 @router.delete("/threads")
 async def delete_all_threads_endpoint(
     db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
 ):
-    # Delete all threads (cascades to messages)
-    result = await db.execute(select(Thread))
+    result = await db.execute(select(Thread).outerjoin(Agent, Agent.thread_id == Thread.id)
+                              .where(or_(Agent.id.is_(None), Agent.workspace_id == actor.workspace_id)))
     threads = result.scalars().all()
     from app.discord_integration import delete_discord_thread
 
@@ -1132,7 +1492,14 @@ async def delete_all_threads_endpoint(
                 await delete_discord_thread(discord_link.discord_thread_id)
             except Exception as exc:
                 print(f"[discord] failed to delete Discord thread {discord_link.discord_thread_id}: {exc}", flush=True)
-        await db.delete(t)
+        agent = await db.scalar(select(Agent).where(Agent.thread_id == t.id,
+                                                   Agent.workspace_id == actor.workspace_id))
+        if agent:
+            t.archived_at = datetime.now(timezone.utc)
+            t.mode = "agent"
+            agent.status = "archived"
+        else:
+            await db.delete(t)
     if get_reachy_config().get("thread_id"):
         update_settings(reachy_thread_id="")
         await upsert_settings(db, {"reachy_thread_id": ""})
@@ -1150,7 +1517,6 @@ async def get_settings_endpoint():
         "llm_model": config["model"],
         "llm_provider": config["provider"],
         "llm_api_url": config["api_url"],
-        "llm_api_key": config["api_key"],
         "llm_image_enabled": config["image_enabled"],
         "llm_image_api_url": config["image_api_url"],
         "llm_image_model": config["image_model"],
@@ -1246,6 +1612,153 @@ async def get_settings_endpoint():
             poll_interval_seconds=get_discord_config()["poll_interval_seconds"],
         ).model_dump(),
     }
+
+
+@router.post("/auth/session")
+async def create_session(request: Request, response: Response):
+    """Exchange a bearer token for a short-lived HttpOnly browser cookie."""
+    if security_mode() != "admin_token":
+        raise HTTPException(status_code=400, detail="Browser sessions are only used in admin_token mode")
+    authorization = request.headers.get("Authorization", "")
+    if not authorization.lower().startswith("bearer ") or not authorization[7:].strip():
+        raise HTTPException(status_code=401, detail="A bearer token is required to create a session")
+    from app.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from app.security import actor_from_request
+        await actor_from_request(request, db)
+    token = authorization[7:].strip()
+    response.set_cookie(
+        "threadbot_session",
+        token,
+        httponly=True,
+        secure=browser_cookie_secure(request),
+        samesite="strict",
+        max_age=SESSION_MAX_AGE_SECONDS,
+    )
+    return {"ok": True, "expires_in": SESSION_MAX_AGE_SECONDS}
+
+
+@router.get("/security", response_model=SecurityResponse)
+async def get_security():
+    mode = security_mode()
+    return SecurityResponse(mode=mode, token_auth_enabled=mode == "admin_token")
+
+
+@router.patch("/security/mode", response_model=SecurityResponse)
+async def update_security_mode(
+    payload: SecurityModeRequest,
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_owner_or_admin),
+):
+    target_mode = payload.mode
+
+    if target_mode == "admin_token":
+        token = "tb_" + secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        rows = (await db.execute(
+            select(ApiToken).where(
+                ApiToken.workspace_id == LOCAL_WORKSPACE_ID,
+                ApiToken.revoked_at.is_(None),
+            )
+        )).scalars().all()
+        for row in rows:
+            row.revoked_at = now
+        db.add(ApiToken(
+            workspace_id=LOCAL_WORKSPACE_ID,
+            actor_id=actor.actor_id,
+            token_hash=hash_token(token),
+            token_prefix=token[:12],
+            roles=["owner", "admin"],
+        ))
+        await upsert_settings(db, {"security_mode": "admin_token"})
+        await db.commit()
+        update_settings(SECURITY_MODE="admin_token")
+        response.set_cookie(
+            "threadbot_session",
+            token,
+            httponly=True,
+            secure=browser_cookie_secure(request),
+            samesite="strict",
+            max_age=SESSION_MAX_AGE_SECONDS,
+        )
+        return SecurityResponse(mode="admin_token", token_auth_enabled=True, token=token)
+
+    now = datetime.now(timezone.utc)
+    rows = (await db.execute(
+        select(ApiToken).where(
+            ApiToken.workspace_id == LOCAL_WORKSPACE_ID,
+            ApiToken.revoked_at.is_(None),
+        )
+    )).scalars().all()
+    for row in rows:
+        row.revoked_at = now
+    await upsert_settings(db, {"security_mode": "local"})
+    await db.commit()
+    update_settings(SECURITY_MODE="local")
+    response.delete_cookie("threadbot_session", httponly=True, secure=browser_cookie_secure(request), samesite="strict")
+    return SecurityResponse(mode="local", token_auth_enabled=False)
+
+
+@router.post("/auth/bootstrap")
+async def bootstrap_token(request: Request, db: AsyncSession = Depends(get_db)):
+    """Create an API token from a one-time configured bootstrap secret.
+
+    The generated token is returned once and only its Argon2id hash is persisted.
+    """
+    if security_mode() != "admin_token":
+        raise HTTPException(status_code=400, detail="Token bootstrap requires admin_token mode")
+    configured = str(get_setting("ADMIN_BOOTSTRAP_TOKEN") or "")
+    supplied = request.headers.get("Authorization", "")
+    supplied = supplied[7:].strip() if supplied.lower().startswith("bearer ") else ""
+    if not configured or not supplied or not secrets.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Invalid bootstrap credentials")
+    token = "tb_" + secrets.token_urlsafe(32)
+    db.add(ApiToken(workspace_id=LOCAL_WORKSPACE_ID, actor_id="admin", token_hash=hash_token(token),
+                    token_prefix=token[:12], roles=["owner", "admin"]))
+    await db.commit()
+    return {"token": token, "token_prefix": token[:12]}
+
+
+@router.get("/events")
+async def get_durable_events(
+    actor: Annotated[ActorContext, Depends(require_actor)],
+    after: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    events = await list_events(db, actor.workspace_id, after=max(after, 0), limit=limit)
+    return {"events": [{"cursor": e.sequence, "event_id": str(e.id), "event_type": e.event_type,
+                         "payload": e.payload, "created_at": e.created_at} for e in events],
+            "next_cursor": events[-1].sequence if events else after}
+
+
+@router.websocket("/events/ws")
+async def durable_events_websocket(websocket: WebSocket, after: int = 0):
+    actor = await authenticate_websocket(websocket)
+    if actor is None:
+        return
+    await websocket.accept()
+    from app.database import AsyncSessionLocal
+    import asyncio
+    try:
+        cursor = max(0, after)
+        while True:
+            # PostgreSQL rows are authoritative. A bounded poll also works when
+            # LISTEN is unavailable and avoids a process-local event gap.
+            async with AsyncSessionLocal() as db:
+                events = await list_events(db, actor.workspace_id, after=cursor, limit=500)
+            for event in events:
+                cursor = event.sequence
+                await websocket.send_json({"cursor": event.sequence, "event_id": str(event.id),
+                                           "event_type": event.event_type, "payload": event.payload})
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+    except (WebSocketDisconnect, RuntimeError):
+        return
 
 
 @router.patch("/settings")

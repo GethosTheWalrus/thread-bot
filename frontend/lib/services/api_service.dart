@@ -1,17 +1,28 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'http_client.dart';
 import 'package:threadbot/utils/web_image_io.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:threadbot/models/skill.dart';
+import 'package:threadbot/models/security.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 class ApiService {
   final String baseUrl;
+  final http.Client _client;
 
-  ApiService({String? baseUrl})
-    : baseUrl = baseUrl ?? (kIsWeb ? Uri.base.origin : 'http://localhost:8000');
+  ApiService({
+    String? baseUrl,
+    VoidCallback? onUnauthorized,
+    http.Client? client,
+  }) : baseUrl =
+           baseUrl ?? (kIsWeb ? Uri.base.origin : 'http://localhost:8000'),
+       _client = UnauthorizedClient(
+         client ?? createHttpClient(),
+         onUnauthorized,
+       );
 
   String get _wsBaseUrl {
     final uri = Uri.parse(baseUrl);
@@ -25,7 +36,7 @@ class ApiService {
     int limit = 200,
     int offset = 0,
   }) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads?limit=$limit&offset=$offset'),
     );
 
@@ -40,7 +51,7 @@ class ApiService {
   }
 
   Future<Thread> getThread(String threadId) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads/$threadId'),
     );
 
@@ -51,7 +62,7 @@ class ApiService {
   }
 
   Future<ThreadContext> getThreadContext(String threadId) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads/$threadId/context'),
     );
     if (response.statusCode == 200) {
@@ -63,7 +74,7 @@ class ApiService {
   }
 
   Future<void> respondContinue(String threadId, bool shouldContinue) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/threads/$threadId/continue'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'should_continue': shouldContinue}),
@@ -135,7 +146,7 @@ class ApiService {
       );
     }
 
-    final streamed = await request.send();
+    final streamed = await _client.send(request);
     final response = await http.Response.fromStream(streamed);
 
     if (response.statusCode != 200) {
@@ -193,7 +204,7 @@ class ApiService {
     final body = <String, dynamic>{'title': title};
     if (overrides != null) body['tool_overrides'] = overrides;
 
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/threads'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(body),
@@ -206,7 +217,7 @@ class ApiService {
   }
 
   Future<void> deleteThread(String threadId) async {
-    final response = await http.delete(
+    final response = await _client.delete(
       Uri.parse('$baseUrl/api/threads/$threadId'),
     );
 
@@ -216,7 +227,7 @@ class ApiService {
   }
 
   Future<void> deleteAllThreads() async {
-    final response = await http.delete(Uri.parse('$baseUrl/api/threads'));
+    final response = await _client.delete(Uri.parse('$baseUrl/api/threads'));
 
     if (response.statusCode != 200) {
       throw Exception('Failed to delete all threads: ${response.statusCode}');
@@ -224,7 +235,7 @@ class ApiService {
   }
 
   Future<Thread> renameThread(String threadId, String title) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/threads/$threadId'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'title': title}),
@@ -236,8 +247,93 @@ class ApiService {
     throw Exception('Failed to rename thread: ${response.statusCode}');
   }
 
+  Future<Thread> setThreadMode(
+    String threadId, {
+    required String mode,
+    String? agentName,
+  }) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/api/threads/$threadId/mode'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'mode': mode,
+        if (agentName != null) 'agent_name': agentName,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return Thread.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to change thread mode: ${response.statusCode}');
+  }
+
+  Future<List<ThreadAgentSummary>> getThreadAgents(String threadId) async {
+    final response = await _client.get(
+      Uri.parse('$baseUrl/api/autonomy/threads/$threadId/agents'),
+    );
+    if (response.statusCode != 200)
+      throw Exception('Failed to load agents: ${response.statusCode}');
+    final body = jsonDecode(response.body);
+    final list = body is List ? body : (body is Map ? body['agents'] : null);
+    return (list as List? ?? const []).whereType<Map>().map((x) {
+      final j = Map<String, dynamic>.from(x);
+      return ThreadAgentSummary(
+        id: '${j['id'] ?? ''}',
+        name: '${j['name'] ?? 'Agent'}',
+        status: '${j['status'] ?? 'unknown'}',
+        executionMode: '${j['execution_mode'] ?? 'unknown'}',
+        activeVersionId: j['active_version_id']?.toString(),
+        mentionName: '${j['handle'] ?? j['mention_name'] ?? ''}',
+        isModerator: j['is_moderator'] == true,
+      );
+    }).toList();
+  }
+
+  Future<dynamic> threadAgentRequest(
+    String method,
+    String threadId, {
+    String? agentId,
+    Map<String, dynamic>? body,
+    String action = '',
+  }) async {
+    final suffix = agentId == null ? '' : '/$agentId';
+    final uri = Uri.parse(
+      '$baseUrl/api/autonomy/threads/$threadId/agents$suffix$action',
+    );
+    final headers = {if (body != null) 'Content-Type': 'application/json'};
+    final response = switch (method) {
+      'POST' => await _client.post(
+        uri,
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      ),
+      'PATCH' => await _client.patch(
+        uri,
+        headers: headers,
+        body: jsonEncode(body ?? {}),
+      ),
+      'PUT' => await _client.put(
+        uri,
+        headers: headers,
+        body: jsonEncode(body ?? {}),
+      ),
+      'DELETE' => await _client.delete(uri),
+      _ => await _client.get(uri),
+    };
+    if (response.statusCode < 200 || response.statusCode >= 300)
+      throw Exception('Agent request failed: ${response.statusCode}');
+    return response.body.isEmpty ? null : jsonDecode(response.body);
+  }
+
+  Future<dynamic> setThreadModerator(String threadId, String agentId) =>
+      threadAgentRequest(
+        'POST',
+        threadId,
+        agentId: agentId,
+        action: '/moderator',
+      );
+
   Future<Thread> setThreadPinned(String threadId, bool isPinned) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/threads/$threadId/pin'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'is_pinned': isPinned}),
@@ -252,7 +348,7 @@ class ApiService {
   // ── Reachy ────────────────────────────────────────────────────────
 
   Future<ReachyBinding> getReachyBinding() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/reachy'));
+    final response = await _client.get(Uri.parse('$baseUrl/api/reachy'));
     if (response.statusCode == 200) {
       return ReachyBinding.fromJson(
         jsonDecode(response.body) as Map<String, dynamic>,
@@ -262,7 +358,7 @@ class ApiService {
   }
 
   Future<ReachyBinding> connectReachyThread(String threadId) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/threads/$threadId/reachy'),
     );
     if (response.statusCode == 200) {
@@ -274,7 +370,7 @@ class ApiService {
   }
 
   Future<ReachyBinding> disconnectReachyThread(String threadId) async {
-    final response = await http.delete(
+    final response = await _client.delete(
       Uri.parse('$baseUrl/api/threads/$threadId/reachy'),
     );
     if (response.statusCode == 200) {
@@ -288,7 +384,7 @@ class ApiService {
   // ── Settings ──────────────────────────────────────────────────────
 
   Future<Map<String, dynamic>> getSettings() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/settings'));
+    final response = await _client.get(Uri.parse('$baseUrl/api/settings'));
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
@@ -297,7 +393,7 @@ class ApiService {
   }
 
   Future<void> saveSettingsToBackend(Map<String, dynamic> settings) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/settings'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(settings),
@@ -308,10 +404,34 @@ class ApiService {
     }
   }
 
+  Future<SecuritySettings> getSecuritySettings() async {
+    final response = await _client.get(Uri.parse('$baseUrl/api/security'));
+    if (response.statusCode == 200) {
+      return SecuritySettings.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception('Failed to load security settings: ${response.statusCode}');
+  }
+
+  Future<SecurityModeUpdate> setSecurityMode(String mode) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/api/security/mode'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'mode': mode}),
+    );
+    if (response.statusCode == 200) {
+      return SecurityModeUpdate.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw Exception('Failed to change security mode: ${response.statusCode}');
+  }
+
   // ── Per-thread LLM overrides ──────────────────────────────────────
 
   Future<ThreadLlmOverrides> getThreadLlmOverrides(String threadId) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
     );
     if (response.statusCode == 200) {
@@ -328,7 +448,7 @@ class ApiService {
     String threadId,
     Map<String, dynamic> overrides,
   ) async {
-    final response = await http.put(
+    final response = await _client.put(
       Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'overrides': overrides}),
@@ -344,7 +464,7 @@ class ApiService {
   }
 
   Future<ThreadLlmOverrides> clearThreadLlmOverrides(String threadId) async {
-    final response = await http.delete(
+    final response = await _client.delete(
       Uri.parse('$baseUrl/api/threads/$threadId/llm-overrides'),
     );
     if (response.statusCode == 200) {
@@ -360,7 +480,7 @@ class ApiService {
   // ── MCP Servers ───────────────────────────────────────────────────
 
   Future<List<MCPServer>> getMCPServers() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/mcp'));
+    final response = await _client.get(Uri.parse('$baseUrl/api/mcp'));
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body) as List<dynamic>;
@@ -378,7 +498,7 @@ class ApiService {
     Map<String, dynamic>? args,
     Map<String, dynamic>? registryCredentials,
   }) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/mcp'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -399,7 +519,9 @@ class ApiService {
   }
 
   Future<void> deleteMCPServer(String serverId) async {
-    final response = await http.delete(Uri.parse('$baseUrl/api/mcp/$serverId'));
+    final response = await _client.delete(
+      Uri.parse('$baseUrl/api/mcp/$serverId'),
+    );
 
     if (response.statusCode != 200) {
       throw Exception('Failed to delete MCP server: ${response.statusCode}');
@@ -407,7 +529,7 @@ class ApiService {
   }
 
   Future<MCPServer> toggleMCPServer(String serverId) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/mcp/$serverId/toggle'),
     );
 
@@ -420,7 +542,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> testMCPServer(String serverId) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/mcp/$serverId/test'),
     );
 
@@ -438,7 +560,7 @@ class ApiService {
     Map<String, String>? args,
     Map<String, String>? registryCredentials,
   }) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/mcp/$serverId'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -461,7 +583,7 @@ class ApiService {
   // ── Thread Tool Overrides ────────────────────────────────────────
 
   Future<Map<String, dynamic>> getGlobalToolOverrides() async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/mcp/tool-overrides'),
     );
 
@@ -474,7 +596,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getThreadToolOverrides(String threadId) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads/$threadId/tool-overrides'),
     );
 
@@ -488,7 +610,7 @@ class ApiService {
     String threadId,
     List<Map<String, dynamic>> overrides,
   ) async {
-    final response = await http.put(
+    final response = await _client.put(
       Uri.parse('$baseUrl/api/threads/$threadId/tool-overrides'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'overrides': overrides}),
@@ -502,7 +624,7 @@ class ApiService {
   // ── Skills ────────────────────────────────────────────────────────
 
   Future<List<Skill>> getSkills() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/skills'));
+    final response = await _client.get(Uri.parse('$baseUrl/api/skills'));
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body) as List<dynamic>;
       return data
@@ -517,7 +639,7 @@ class ApiService {
     String description = '',
     required String content,
   }) async {
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/skills'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -538,7 +660,7 @@ class ApiService {
     String description = '',
     required String content,
   }) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/skills/$skillId'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -554,7 +676,7 @@ class ApiService {
   }
 
   Future<Skill> toggleSkill(String skillId) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/skills/$skillId/toggle'),
     );
     if (response.statusCode == 200) {
@@ -564,7 +686,7 @@ class ApiService {
   }
 
   Future<void> deleteSkill(String skillId) async {
-    final response = await http.delete(
+    final response = await _client.delete(
       Uri.parse('$baseUrl/api/skills/$skillId'),
     );
     if (response.statusCode != 200) {
@@ -573,7 +695,7 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> getThreadSkillOverrides(String threadId) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/threads/$threadId/skill-overrides'),
     );
     if (response.statusCode == 200) {
@@ -586,7 +708,7 @@ class ApiService {
     String threadId,
     List<Map<String, dynamic>> overrides,
   ) async {
-    final response = await http.put(
+    final response = await _client.put(
       Uri.parse('$baseUrl/api/threads/$threadId/skill-overrides'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'overrides': overrides}),
@@ -599,7 +721,9 @@ class ApiService {
   // ── Discord Integration ───────────────────────────────────────────
 
   Future<Map<String, dynamic>> getDiscordSettings() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/discord/settings'));
+    final response = await _client.get(
+      Uri.parse('$baseUrl/api/discord/settings'),
+    );
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
@@ -609,7 +733,7 @@ class ApiService {
   Future<Map<String, dynamic>> saveDiscordSettings(
     Map<String, dynamic> settings,
   ) async {
-    final response = await http.patch(
+    final response = await _client.patch(
       Uri.parse('$baseUrl/api/discord/settings'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(settings),
@@ -621,7 +745,9 @@ class ApiService {
   }
 
   Future<List<Map<String, dynamic>>> getDiscordServers() async {
-    final response = await http.get(Uri.parse('$baseUrl/api/discord/servers'));
+    final response = await _client.get(
+      Uri.parse('$baseUrl/api/discord/servers'),
+    );
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       return (data['servers'] as List<dynamic>? ?? [])
@@ -633,7 +759,7 @@ class ApiService {
   Future<Map<String, dynamic>> getDiscordServerMcpOverrides(
     String guildId,
   ) async {
-    final response = await http.get(
+    final response = await _client.get(
       Uri.parse('$baseUrl/api/discord/servers/$guildId/mcp-overrides'),
     );
     if (response.statusCode == 200) {
@@ -648,7 +774,7 @@ class ApiService {
     String guildId,
     List<Map<String, dynamic>> overrides,
   ) async {
-    final response = await http.put(
+    final response = await _client.put(
       Uri.parse('$baseUrl/api/discord/servers/$guildId/mcp-overrides'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'overrides': overrides}),
@@ -673,7 +799,7 @@ class ApiService {
       body['channel_id'] = channelId;
     if (name != null && name.isNotEmpty) body['name'] = name;
 
-    final response = await http.post(
+    final response = await _client.post(
       Uri.parse('$baseUrl/api/threads/$threadId/discord'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode(body),
@@ -689,7 +815,7 @@ class ApiService {
   }
 
   Future<void> unshareThreadFromDiscord(String threadId) async {
-    final response = await http.delete(
+    final response = await _client.delete(
       Uri.parse('$baseUrl/api/threads/$threadId/discord'),
     );
     if (response.statusCode != 200) {

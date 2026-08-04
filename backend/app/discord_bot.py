@@ -26,7 +26,11 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
 
     intents = discord.Intents.default()
     intents.message_content = True
-    bot = commands.Bot(command_prefix="!", intents=intents)
+    bot = commands.Bot(
+        command_prefix="!",
+        intents=intents,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
 
     def _message_link(message: discord.Message) -> str:
         guild_id = message.guild.id if message.guild else "@me"
@@ -37,7 +41,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         if bot.user:
             content = content.replace(f"<@{bot.user.id}>", "")
             content = content.replace(f"<@!{bot.user.id}>", "")
-        from app.discord_integration import normalize_discord_user_mentions
+        from app.discord_mentions import normalize_discord_user_mentions
         return normalize_discord_user_mentions(content, list(message.mentions)).strip()
 
     async def _image_attachments(message: discord.Message) -> list[dict]:
@@ -80,7 +84,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
             guild_id = str(interaction.guild_id) if interaction.guild_id else config.get("guild_id")
             guild_name = interaction.guild.name if interaction.guild else None
             sender_name = interaction.user.global_name or interaction.user.name or "Discord user"
-            from app.discord_integration import normalize_discord_user_mentions
+            from app.discord_mentions import normalize_discord_user_mentions
             prompt = normalize_discord_user_mentions(prompt)
             invoked_channel = interaction.channel
             if isinstance(invoked_channel, discord.Thread):
@@ -93,6 +97,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     guild_name=guild_name,
                     discord_thread_name=invoked_channel.name,
                     sender_name=sender_name,
+                    sender_id=str(interaction.user.id),
                     prompt=prompt,
                     source_message_id=None,
                     source_message_link=None,
@@ -103,6 +108,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     temporal_client,
                     prompt,
                     sender_name,
+                    sender_id=str(interaction.user.id),
                     source_event_id=str(interaction.id),
                     channel_id=channel_id,
                     guild_id=guild_id,
@@ -164,6 +170,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     guild_name=guild_name,
                     discord_thread_name=message.channel.name,
                     sender_name=sender_name,
+                    sender_id=str(message.author.id),
                     prompt=prompt,
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
@@ -175,6 +182,7 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
                     temporal_client,
                     prompt,
                     sender_name,
+                    sender_id=str(message.author.id),
                     source_message_id=str(message.id),
                     source_message_link=_message_link(message),
                     source_event_id=str(message.id),

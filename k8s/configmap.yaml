@@ -4,6 +4,9 @@ metadata:
   name: threadbot-config
   namespace: threadbot
 data:
+  # Set true only after registering these attributes in the Temporal namespace:
+  # ThreadBotWorkspaceId (Keyword), ThreadBotAgentId (Keyword), ThreadBotRunMode (Keyword).
+  TEMPORAL_SEARCH_ATTRIBUTES_ENABLED: "false"
   # Database — external Postgres at 192.168.69.11
   DATABASE_URL: "postgresql+asyncpg://postgres:postgres@192.168.69.11:5432/threadbot"
   # Temporal — existing cluster-internal service
@@ -24,3 +27,20 @@ data:
   # Redis — external Redis instance
   REDIS_URL: "redis://192.168.69.5:6379"
   REDIS_DB: "3"
+  # Autonomy — enable background agents, side effects, and heartbeats.
+  # SECURITY_MODE=local allows unauthenticated local access; admin_token requires API tokens.
+  SECURITY_MODE: "local"
+  AUTONOMY_ENABLED: "true"
+  AUTONOMY_SIDE_EFFECTS_ENABLED: "true"
+  AUTONOMY_WEBHOOKS_ENABLED: "false"
+  # Per-feature autonomy gates (enable all for full background-agent operation).
+  AGENTS_ENABLED: "true"
+  AGENTS_MANUAL_RUN_ENABLED: "true"
+  AGENTS_SCHEDULES_ENABLED: "true"
+  AGENTS_CONNECTORS_ENABLED: "true"
+  AGENTS_ACTIONS_ENABLED: "true"
+  AGENTS_APPROVALS_ENABLED: "true"
+  AGENTS_HANDOFFS_ENABLED: "true"
+  AGENTS_REPLAY_ENABLED: "true"
+  AGENTS_CANARY_ENABLED: "true"
+  AGENTS_REACHY_ACTIONS_ENABLED: "false"

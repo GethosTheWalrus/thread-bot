@@ -704,9 +704,10 @@ async def _agents_chat_completion(
 
     provider, model = _agents_provider_and_model(config)
     try:
+        converted = _convert_openai_messages_to_agents_input(messages)
         response = await model.get_response(
             system_instructions=None,
-            input=messages,
+            input=converted,
             model_settings=_agents_model_settings(config, temperature=temperature, max_tokens=max_tokens),
             tools=_agents_tools(openai_tools or []),
             output_schema=None,
@@ -719,6 +720,55 @@ async def _agents_chat_completion(
         return _extract_agents_response(response)
     finally:
         await _close_agents_provider(provider)
+
+
+def _convert_openai_messages_to_agents_input(messages: list[dict]) -> list[dict]:
+    """Convert raw OpenAI chat-completion message dicts to agents-SDK input items.
+
+    The openai-agents SDK Converter does not accept ``tool_calls`` embedded in
+    assistant messages or ``role='tool'`` messages.  It expects standalone
+    ``function_call`` and ``function_call_output`` items.
+    """
+    converted: list[dict] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            # Emit a function_call item per tool call; the agents SDK
+            # reconstructs the assistant message with tool_calls internally.
+            content = msg.get("content") or ""
+            if content:
+                converted.append({"role": "assistant", "content": content})
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                converted.append({
+                    "type": "function_call",
+                    "call_id": tc.get("id", ""),
+                    "name": fn.get("name", ""),
+                    "arguments": fn.get("arguments", ""),
+                })
+        elif role == "tool":
+            converted.append({
+                "type": "function_call_output",
+                "call_id": msg.get("tool_call_id", ""),
+                "output": msg.get("content", ""),
+            })
+        else:
+            converted.append(msg)
+    # Merge consecutive assistant content messages to avoid
+    # "Cannot have 2 or more assistant messages at the end of the list".
+    merged: list[dict] = []
+    for item in converted:
+        if (
+            merged
+            and merged[-1].get("role") == "assistant"
+            and item.get("role") == "assistant"
+            and "type" not in merged[-1]
+            and "type" not in item
+        ):
+            merged[-1]["content"] = (merged[-1].get("content") or "") + "\n" + (item.get("content") or "")
+        else:
+            merged.append(item)
+    return merged
 
 
 async def _execute_agent_tool(
@@ -746,6 +796,7 @@ async def _execute_agent_tool(
         "context_overview", "compact_context_topic",
         "reachy_move", "reachy_animation", "reachy_capture_image",
     }
+    tool_name = tool_name.removeprefix("mcp:")
     tool_args = _normalize_discord_tool_args(tool_name, json.loads(arguments or "{}"))
     if not tool_call_id:
         tool_call_id = f"{tool_name}-{uuid.uuid4().hex[:8]}"
@@ -800,6 +851,28 @@ async def _execute_agent_tool(
             await _sync_discord_tool_event(config, event)
         return result_text
 
+    if tool_name not in mcp_tools_map:
+        # Agent runs carry the stable mcp:<server>:<tool> identity rather than
+        # the transient discovery map. Resolve that identity through the same
+        # active-server table used by discovery; credentials are still
+        # decrypted only by the executor below.
+        from app.database import AsyncSessionLocal
+        from app.models.models import MCPServer
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as db:
+            servers = list((await db.execute(select(MCPServer).where(MCPServer.is_active.is_(True)))).scalars())
+        if ":" in tool_name:
+            server_name, original_name = tool_name.split(":", 1)
+            server = next((item for item in servers if item.name == server_name), None)
+            map_name = f"{server_name}_{original_name}"
+        else:
+            server = next((item for item in servers if tool_name.startswith(f"{item.name}_")), None)
+            map_name = tool_name
+        if server:
+            if ":" not in tool_name:
+                original_name = tool_name[len(server.name) + 1:]
+            mcp_tools_map[map_name] = {"image": server.image, "env_vars": None, "args": None, "registry_credentials": None, "original_name": original_name, "server_name": server.name}
+            tool_name = map_name
     if tool_name not in mcp_tools_map:
         not_found = "Tool not found"
         await _save_inline(
@@ -1042,6 +1115,7 @@ async def discover_tools(args: dict) -> dict:
                         "description": tdesc,
                         "parameters": tschema,
                     },
+                    "x-threadbot-identity": f"mcp:{server.name}:{tname}",
                 })
             # We don't have decrypted env/args here; if a tool ends up being
             # called on the cache path, re-decrypt in the execute path. For
@@ -1112,6 +1186,7 @@ async def discover_tools(args: dict) -> dict:
                                     "description": tool.description or "",
                                     "parameters": tool.inputSchema,
                                 },
+                                "x-threadbot-identity": f"mcp:{server.name}:{tool.name}",
                             })
             except Exception as e:
                 print(f"ERROR: Failed to load MCP server {server.name}: {e}", flush=True)

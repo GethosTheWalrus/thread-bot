@@ -57,6 +57,20 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - chatbot-network
+    restart: "no"
+
   backend:
     build:
       context: ./backend
@@ -65,6 +79,23 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
+      - SECURITY_MODE=${SECURITY_MODE:-local}
+      - ADMIN_BOOTSTRAP_TOKEN=${ADMIN_BOOTSTRAP_TOKEN:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - AUTONOMY_ENABLED=${AUTONOMY_ENABLED:-false}
+      - AUTONOMY_SIDE_EFFECTS_ENABLED=${AUTONOMY_SIDE_EFFECTS_ENABLED:-false}
+      - AUTONOMY_WEBHOOKS_ENABLED=${AUTONOMY_WEBHOOKS_ENABLED:-false}
+      - AGENTS_ENABLED=${AGENTS_ENABLED:-false}
+      - AGENTS_MANUAL_RUN_ENABLED=${AGENTS_MANUAL_RUN_ENABLED:-false}
+      - AGENTS_SCHEDULES_ENABLED=${AGENTS_SCHEDULES_ENABLED:-false}
+      - AGENTS_CONNECTORS_ENABLED=${AGENTS_CONNECTORS_ENABLED:-false}
+      - AGENTS_ACTIONS_ENABLED=${AGENTS_ACTIONS_ENABLED:-false}
+      - AGENTS_APPROVALS_ENABLED=${AGENTS_APPROVALS_ENABLED:-false}
+      - AGENTS_HANDOFFS_ENABLED=${AGENTS_HANDOFFS_ENABLED:-false}
+      - AGENTS_REPLAY_ENABLED=${AGENTS_REPLAY_ENABLED:-false}
+      - AGENTS_CANARY_ENABLED=${AGENTS_CANARY_ENABLED:-false}
+      - AGENTS_REACHY_ACTIONS_ENABLED=${AGENTS_REACHY_ACTIONS_ENABLED:-false}
+      - TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=${TEMPORAL_SEARCH_ATTRIBUTES_ENABLED:-false}
     ports:
       - "8000:8000"
     volumes:
@@ -74,6 +105,8 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - chatbot-network
     extra_hosts:
@@ -89,6 +122,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
       - TEMPORAL_HOST=temporal
       - TEMPORAL_PORT=7233
+      - TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=${TEMPORAL_SEARCH_ATTRIBUTES_ENABLED:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -96,10 +130,92 @@ services:
         condition: service_healthy
       temporal:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - chatbot-network
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    restart: on-failure
+
+  agent-worker:
+    profiles: ["autonomy"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m app.agent_worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - AGENT_TASK_QUEUE=${AGENT_TASK_QUEUE:-threadbot-agent}
+      - SECURITY_MODE=${SECURITY_MODE:-local}
+      - AUTONOMY_ENABLED=${AUTONOMY_ENABLED:-false}
+      - AUTONOMY_SIDE_EFFECTS_ENABLED=${AUTONOMY_SIDE_EFFECTS_ENABLED:-false}
+      - AUTONOMY_WEBHOOKS_ENABLED=${AUTONOMY_WEBHOOKS_ENABLED:-false}
+      - AGENTS_ENABLED=${AGENTS_ENABLED:-false}
+      - AGENTS_MANUAL_RUN_ENABLED=${AGENTS_MANUAL_RUN_ENABLED:-false}
+      - AGENTS_SCHEDULES_ENABLED=${AGENTS_SCHEDULES_ENABLED:-false}
+      - AGENTS_CONNECTORS_ENABLED=${AGENTS_CONNECTORS_ENABLED:-false}
+      - AGENTS_ACTIONS_ENABLED=${AGENTS_ACTIONS_ENABLED:-false}
+      - AGENTS_APPROVALS_ENABLED=${AGENTS_APPROVALS_ENABLED:-false}
+      - AGENTS_HANDOFFS_ENABLED=${AGENTS_HANDOFFS_ENABLED:-false}
+      - AGENTS_REPLAY_ENABLED=${AGENTS_REPLAY_ENABLED:-false}
+      - AGENTS_CANARY_ENABLED=${AGENTS_CANARY_ENABLED:-false}
+      - AGENTS_REACHY_ACTIONS_ENABLED=${AGENTS_REACHY_ACTIONS_ENABLED:-false}
+      - TEMPORAL_SEARCH_ATTRIBUTES_ENABLED=${TEMPORAL_SEARCH_ATTRIBUTES_ENABLED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [chatbot-network]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: on-failure
+
+  connector-worker:
+    profiles: ["autonomy"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m app.connector_worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - CONNECTOR_TASK_QUEUE=${CONNECTOR_TASK_QUEUE:-threadbot-connectors}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [chatbot-network]
+    restart: on-failure
+
+  notification-worker:
+    profiles: ["autonomy"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: python -m app.notification_worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/chatbot
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - NOTIFICATION_TASK_QUEUE=${NOTIFICATION_TASK_QUEUE:-threadbot-notifications}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [chatbot-network]
     restart: on-failure
 
   frontend:

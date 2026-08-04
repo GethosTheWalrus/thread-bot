@@ -5,6 +5,10 @@ class Message {
   String content; // mutable so streaming can append tokens
   final DateTime createdAt;
   final Map<String, dynamic>? metadata;
+  final String? agentId;
+  final String? agentRunId;
+  final String? agentName;
+  final String? agentMentionName;
 
   Message({
     required this.id,
@@ -13,16 +17,32 @@ class Message {
     required this.content,
     required this.createdAt,
     this.metadata,
+    this.agentId,
+    this.agentRunId,
+    this.agentName,
+    this.agentMentionName,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
+    final metadata = json['metadata'] is Map
+        ? Map<String, dynamic>.from(json['metadata'] as Map)
+        : null;
     return Message(
       id: json['id'] as String,
       threadId: json['thread_id'] as String,
       role: json['role'] as String,
       content: json['content'] as String,
       createdAt: DateTime.parse(json['created_at'] as String),
-      metadata: json['metadata'] as Map<String, dynamic>?,
+      metadata: metadata,
+      agentId: json['agent_id']?.toString(),
+      agentRunId: json['agent_run_id']?.toString(),
+      agentName: (json['agent_name'] ?? metadata?['agent_name'])?.toString(),
+      agentMentionName:
+          (json['agent_handle'] ??
+                  json['agent_mention_name'] ??
+                  metadata?['agent_handle'] ??
+                  metadata?['agent_mention_name'])
+              ?.toString(),
     );
   }
 
@@ -43,9 +63,18 @@ class Message {
         return content.substring(0, legacyDiscordSeparator);
       return 'User';
     }
+    if (isAssistant && agentName?.isNotEmpty == true) {
+      final handle = agentMentionName?.isNotEmpty == true
+          ? ' @$agentMentionName'
+          : '';
+      return '$agentName$handle';
+    }
     if (isAssistant) return 'ThreadBot';
     return role;
   }
+
+  String get agentIdentity =>
+      agentId ?? agentMentionName ?? agentName ?? 'threadbot';
 
   String get displayContent {
     final legacyDiscordSeparator = content.indexOf(' (Discord): ');

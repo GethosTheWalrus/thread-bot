@@ -33,12 +33,17 @@
   <link rel="manifest" href="manifest.json">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
   <script>
+    window.__polyBotInstances = new WeakMap();
     window.initPolyBot = function(container) {
       if (!container) {
         console.error("PolyBot: No container provided");
         return;
       }
 
+      if (!container.isConnected) {
+        requestAnimationFrame(() => window.initPolyBot(container));
+        return;
+      }
       // Check if already initialized
       if (container.dataset.initialized) return;
       container.dataset.initialized = "true";
@@ -53,7 +58,7 @@
       const width = container.clientWidth || 200;
       const height = container.clientHeight || 200;
       renderer.setSize(width, height);
-      renderer.setPixelRatio(window.devicePixelRatio);
+       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       container.appendChild(renderer.domElement);
 
       // Lights
@@ -361,15 +366,41 @@
       // Mouse tracking
       let targetRotationX = 0;
       let targetRotationY = 0;
-      document.addEventListener('mousemove', (e) => {
+      const onMouseMove = (e) => {
         const x = (e.clientX / window.innerWidth) - 0.5;
         const y = (e.clientY / window.innerHeight) - 0.5;
         targetRotationY = x * 0.6;
         targetRotationX = y * 0.4;
-      });
+      };
+      document.addEventListener('mousemove', onMouseMove);
+
+      let animationFrame;
+      let disposed = false;
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        cancelAnimationFrame(animationFrame);
+        resizeObserver.disconnect();
+        document.removeEventListener('mousemove', onMouseMove);
+        scene.traverse((object) => {
+          if (!object.isMesh && !object.isLine) return;
+          object.geometry?.dispose();
+          if (Array.isArray(object.material)) object.material.forEach((m) => m.dispose());
+          else object.material?.dispose();
+        });
+        renderer.dispose();
+        renderer.domElement.remove();
+        delete container.dataset.initialized;
+        window.__polyBotInstances.delete(container);
+      };
+      window.__polyBotInstances.set(container, dispose);
 
       function animate() {
-        requestAnimationFrame(animate);
+         if (disposed || !container.isConnected) {
+           dispose();
+           return;
+         }
+         animationFrame = requestAnimationFrame(animate);
 
         const time = Date.now() * 0.001;
 
@@ -449,9 +480,11 @@
       }
 
       // Handle resize
-      const resizeObserver = new ResizeObserver(() => {
-        const width = container.clientWidth;
-        const height = container.clientHeight;
+       const resizeObserver = new ResizeObserver(() => {
+         if (disposed || !container.isConnected) return;
+         const width = container.clientWidth;
+         const height = container.clientHeight;
+         if (!width || !height) return;
         renderer.setSize(width, height);
         camera.aspect = width / height;
         camera.updateProjectionMatrix();

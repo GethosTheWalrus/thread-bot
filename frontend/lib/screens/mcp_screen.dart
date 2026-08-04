@@ -46,9 +46,15 @@ class _MCPScreenState extends State<MCPScreen> {
   Future<void> _showServerDialog({MCPServer? server}) async {
     final nameController = TextEditingController(text: server?.name);
     final imageController = TextEditingController(text: server?.image);
-    final registryController = TextEditingController(text: server?.registryCredentials['registry']?.toString() ?? '');
-    final registryUsernameController = TextEditingController(text: server?.registryCredentials['username']?.toString() ?? '');
-    final registryPasswordController = TextEditingController(text: server?.registryCredentials['password']?.toString() ?? '');
+    final registryController = TextEditingController(
+      text: server?.registryCredentials['registry']?.toString() ?? '',
+    );
+    final registryUsernameController = TextEditingController(
+      text: server?.registryCredentials['username']?.toString() ?? '',
+    );
+    final registryPasswordController = TextEditingController(
+      text: server?.registryCredentials['password']?.toString() ?? '',
+    );
 
     // Build initial key-value lists from existing server data
     final List<_KVEntry> envEntries = [];
@@ -56,16 +62,20 @@ class _MCPScreenState extends State<MCPScreen> {
 
     if (server != null) {
       for (final e in server.envVars.entries) {
-        envEntries.add(_KVEntry(
-          key: TextEditingController(text: e.key),
-          value: TextEditingController(text: e.value.toString()),
-        ));
+        envEntries.add(
+          _KVEntry(
+            key: TextEditingController(text: e.key),
+            value: TextEditingController(text: e.value.toString()),
+          ),
+        );
       }
       for (final e in server.args.entries) {
-        argEntries.add(_KVEntry(
-          key: TextEditingController(text: e.key),
-          value: TextEditingController(text: e.value.toString()),
-        ));
+        argEntries.add(
+          _KVEntry(
+            key: TextEditingController(text: e.key),
+            value: TextEditingController(text: e.value.toString()),
+          ),
+        );
       }
     }
 
@@ -100,14 +110,17 @@ class _MCPScreenState extends State<MCPScreen> {
                 imageController.text,
                 env.map((k, v) => MapEntry(k, v.toString())),
                 args: args.map((k, v) => MapEntry(k, v.toString())),
-                registryCredentials: registryCredentials.map((k, v) => MapEntry(k, v.toString())),
+                registryCredentials: registryCredentials.map(
+                  (k, v) => MapEntry(k, v.toString()),
+                ),
               );
             }
             Navigator.pop(ctx);
             _loadServers();
           } catch (e) {
-            ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Error: $e')));
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('Error: $e')));
           }
         },
         onCancel: () => Navigator.pop(ctx),
@@ -115,7 +128,12 @@ class _MCPScreenState extends State<MCPScreen> {
       transitionBuilder: (ctx, anim1, anim2, child) => FadeTransition(
         opacity: anim1,
         child: ScaleTransition(
-          scale: anim1.drive(Tween(begin: 0.9, end: 1.0).chain(CurveTween(curve: Curves.easeOutCubic))),
+          scale: anim1.drive(
+            Tween(
+              begin: 0.9,
+              end: 1.0,
+            ).chain(CurveTween(curve: Curves.easeOutCubic)),
+          ),
           child: child,
         ),
       ),
@@ -127,8 +145,9 @@ class _MCPScreenState extends State<MCPScreen> {
       await _api.toggleMCPServer(server.id);
       _loadServers();
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -145,7 +164,9 @@ class _MCPScreenState extends State<MCPScreen> {
             context: context,
             builder: (ctx) => AlertDialog(
               backgroundColor: const Color(0xFF1C1C26),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
               titlePadding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
               contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
               actionsPadding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
@@ -157,17 +178,33 @@ class _MCPScreenState extends State<MCPScreen> {
                       color: Colors.green.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 22),
+                    child: const Icon(
+                      Icons.check_circle_rounded,
+                      color: Colors.green,
+                      size: 22,
+                    ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Connection Success', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        const Text(
+                          'Connection Success',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                         const SizedBox(height: 2),
-                        Text('${tools.length} tool${tools.length == 1 ? '' : 's'} discovered',
-                            style: TextStyle(fontSize: 12, color: Colors.grey[400], fontWeight: FontWeight.normal)),
+                        Text(
+                          '${tools.length} tool${tools.length == 1 ? '' : 's'} discovered',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[400],
+                            fontWeight: FontWeight.normal,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -182,24 +219,43 @@ class _MCPScreenState extends State<MCPScreen> {
                   child: Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: tools.map((t) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF252533),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.build_rounded, size: 14, color: Colors.grey[500]),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(t, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                    children: tools
+                        .map(
+                          (t) => Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF252533),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.08),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.build_rounded,
+                                  size: 14,
+                                  color: Colors.grey[500],
+                                ),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    t,
+                                    style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ],
-                      ),
-                    )).toList(),
+                        )
+                        .toList(),
                   ),
                 ),
               ),
@@ -208,7 +264,10 @@ class _MCPScreenState extends State<MCPScreen> {
                   onPressed: () => Navigator.pop(ctx),
                   style: TextButton.styleFrom(
                     foregroundColor: Colors.white70,
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 10,
+                    ),
                   ),
                   child: const Text('Close'),
                 ),
@@ -229,7 +288,10 @@ class _MCPScreenState extends State<MCPScreen> {
               ),
               content: Text(result['error'] ?? 'Unknown error'),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Close'),
+                ),
               ],
             ),
           );
@@ -237,7 +299,9 @@ class _MCPScreenState extends State<MCPScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error: $e')));
       }
     }
   }
@@ -247,8 +311,9 @@ class _MCPScreenState extends State<MCPScreen> {
       await _api.deleteMCPServer(server.id);
       _loadServers();
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Error: $e')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
 
@@ -261,32 +326,30 @@ class _MCPScreenState extends State<MCPScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadServers,
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadServers),
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
-              ? Center(
-                  child: Text(_error!, style: const TextStyle(color: Colors.red)))
-              : Column(
-                  children: [
-                    _buildHeader(),
-                    Expanded(
-                      child: _servers.isEmpty
-                          ? _buildEmptyState()
-                          : ListView.builder(
-                              padding: const EdgeInsets.all(16),
-                              itemCount: _servers.length,
-                              itemBuilder: (context, index) =>
-                                  _buildServerCard(_servers[index]),
-                            ),
-                    ),
-                  ],
+          ? Center(
+              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            )
+          : Column(
+              children: [
+                _buildHeader(),
+                Expanded(
+                  child: _servers.isEmpty
+                      ? _buildEmptyState()
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: _servers.length,
+                          itemBuilder: (context, index) =>
+                              _buildServerCard(_servers[index]),
+                        ),
                 ),
+              ],
+            ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _showServerDialog(),
         icon: const Icon(Icons.add),
@@ -301,8 +364,9 @@ class _MCPScreenState extends State<MCPScreen> {
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.03),
-        border:
-            Border(bottom: BorderSide(color: Colors.white.withOpacity(0.06))),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withOpacity(0.06)),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -310,7 +374,10 @@ class _MCPScreenState extends State<MCPScreen> {
           const Text(
             'Extend your AI with Dockerized Tools',
             style: TextStyle(
-                fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
           ),
           const SizedBox(height: 8),
           Text(
@@ -351,11 +418,16 @@ class _MCPScreenState extends State<MCPScreen> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.layers_outlined,
-              size: 64, color: Colors.white.withOpacity(0.1)),
+          Icon(
+            Icons.layers_outlined,
+            size: 64,
+            color: Colors.white.withOpacity(0.1),
+          ),
           const SizedBox(height: 16),
-          const Text('No MCP servers connected',
-              style: TextStyle(color: Color(0xFF71717A))),
+          const Text(
+            'No MCP servers connected',
+            style: TextStyle(color: Color(0xFF71717A)),
+          ),
           const SizedBox(height: 8),
           TextButton(
             onPressed: () => _showServerDialog(),
@@ -394,8 +466,10 @@ class _MCPScreenState extends State<MCPScreen> {
                     color: const Color(0xFF8B5CF6).withOpacity(0.1),
                     borderRadius: BorderRadius.circular(8),
                   ),
-                  child:
-                      const Icon(Icons.terminal_rounded, color: Color(0xFF8B5CF6)),
+                  child: const Icon(
+                    Icons.terminal_rounded,
+                    color: Color(0xFF8B5CF6),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -405,25 +479,37 @@ class _MCPScreenState extends State<MCPScreen> {
                       Text(
                         server.name,
                         style: const TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold),
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       Text(
                         server.image,
                         style: TextStyle(
-                            fontSize: 12, color: Colors.white.withOpacity(0.4)),
+                          fontSize: 12,
+                          color: Colors.white.withOpacity(0.4),
+                        ),
                       ),
                       if (server.registryCredentials.isNotEmpty) ...[
                         const SizedBox(height: 6),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.amber.withOpacity(0.12),
                             borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: Colors.amber.withOpacity(0.25)),
+                            border: Border.all(
+                              color: Colors.amber.withOpacity(0.25),
+                            ),
                           ),
                           child: Text(
                             'Private registry',
-                            style: TextStyle(fontSize: 11, color: Colors.amber[200]),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.amber[200],
+                            ),
                           ),
                         ),
                       ],
@@ -436,20 +522,29 @@ class _MCPScreenState extends State<MCPScreen> {
                   activeColor: const Color(0xFF8B5CF6),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.edit_outlined,
-                      size: 20, color: Colors.white70),
+                  icon: const Icon(
+                    Icons.edit_outlined,
+                    size: 20,
+                    color: Colors.white70,
+                  ),
                   tooltip: 'Edit Config',
                   onPressed: () => _showServerDialog(server: server),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.playlist_add_check_rounded,
-                      size: 20, color: Color(0xFF8B5CF6)),
+                  icon: const Icon(
+                    Icons.playlist_add_check_rounded,
+                    size: 20,
+                    color: Color(0xFF8B5CF6),
+                  ),
                   tooltip: 'Test Connection',
                   onPressed: () => _testServer(server),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline,
-                      size: 20, color: Colors.red),
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 20,
+                    color: Colors.red,
+                  ),
                   onPressed: () => _deleteServer(server),
                 ),
               ],
@@ -465,9 +560,10 @@ class _MCPScreenState extends State<MCPScreen> {
                   Text(
                     'Environment Variables:',
                     style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white.withOpacity(0.3)),
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white.withOpacity(0.3),
+                    ),
                   ),
                   const Spacer(),
                   InkWell(
@@ -498,23 +594,28 @@ class _MCPScreenState extends State<MCPScreen> {
                 spacing: 8,
                 runSpacing: 4,
                 children: server.envVars.entries
-                    .map((e) => Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.black26,
-                            borderRadius: BorderRadius.circular(4),
+                    .map(
+                      (e) => Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _revealedServers.contains(server.id)
+                              ? '${e.key}=${e.value}'
+                              : '${e.key}=${_maskValue(e.value.toString())}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontFamily: 'monospace',
+                            color: Color(0xFFA1A1AA),
                           ),
-                          child: Text(
-                            _revealedServers.contains(server.id)
-                                ? '${e.key}=${e.value}'
-                                : '${e.key}=${_maskValue(e.value.toString())}',
-                            style: const TextStyle(
-                                fontSize: 10,
-                                fontFamily: 'monospace',
-                                color: Color(0xFFA1A1AA)),
-                          ),
-                        ))
+                        ),
+                      ),
+                    )
                     .toList(),
               ),
             ],
@@ -523,32 +624,38 @@ class _MCPScreenState extends State<MCPScreen> {
               Text(
                 'Container Arguments:',
                 style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white.withOpacity(0.3)),
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white.withOpacity(0.3),
+                ),
               ),
               const SizedBox(height: 4),
               Wrap(
                 spacing: 8,
                 runSpacing: 4,
                 children: server.args.entries
-                    .map((e) => Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.black26,
-                            borderRadius: BorderRadius.circular(4),
+                    .map(
+                      (e) => Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          _revealedServers.contains(server.id)
+                              ? '--${e.key}=${e.value}'
+                              : '--${e.key}=${_maskValue(e.value.toString())}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontFamily: 'monospace',
+                            color: Color(0xFFA1A1AA),
                           ),
-                          child: Text(
-                            _revealedServers.contains(server.id)
-                                ? '--${e.key}=${e.value}'
-                                : '--${e.key}=${_maskValue(e.value.toString())}',
-                            style: const TextStyle(
-                                fontSize: 10,
-                                fontFamily: 'monospace',
-                                color: Color(0xFFA1A1AA)),
-                          ),
-                        ))
+                        ),
+                      ),
+                    )
                     .toList(),
               ),
             ],
@@ -558,7 +665,6 @@ class _MCPScreenState extends State<MCPScreen> {
     );
   }
 }
-
 
 // ── Helper class for key-value entries ──────────────────────────────
 
@@ -573,7 +679,6 @@ class _KVEntry {
     value.dispose();
   }
 }
-
 
 // ── Dialog content as StatefulWidget (so KV lists can update) ───────
 
@@ -590,7 +695,8 @@ class _ServerDialogContent extends StatefulWidget {
     Map<String, dynamic> env,
     Map<String, dynamic> args,
     Map<String, dynamic> registryCredentials,
-  ) onSave;
+  )
+  onSave;
   final VoidCallback onCancel;
 
   const _ServerDialogContent({
@@ -664,10 +770,12 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
             InkWell(
               onTap: () {
                 setState(() {
-                  entries.add(_KVEntry(
-                    key: TextEditingController(),
-                    value: TextEditingController(),
-                  ));
+                  entries.add(
+                    _KVEntry(
+                      key: TextEditingController(),
+                      value: TextEditingController(),
+                    ),
+                  );
                 });
               },
               child: Container(
@@ -681,7 +789,13 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                   children: [
                     Icon(Icons.add, size: 14, color: const Color(0xFF8B5CF6)),
                     const SizedBox(width: 4),
-                    Text('Add', style: TextStyle(fontSize: 11, color: const Color(0xFF8B5CF6))),
+                    Text(
+                      'Add',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: const Color(0xFF8B5CF6),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -700,7 +814,10 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
             child: Center(
               child: Text(
                 'No entries. Click Add to add one.',
-                style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.2)),
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.white.withOpacity(0.2),
+                ),
               ),
             ),
           )
@@ -716,49 +833,83 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                     flex: 2,
                     child: TextField(
                       controller: entry.key,
-                      style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      ),
                       decoration: InputDecoration(
                         hintText: keyHint,
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.15)),
+                        hintStyle: TextStyle(
+                          color: Colors.white.withOpacity(0.15),
+                        ),
                         filled: true,
                         fillColor: Colors.black.withOpacity(0.2),
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 12,
+                        ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+                          borderSide: BorderSide(
+                            color: Colors.white.withOpacity(0.05),
+                          ),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                          borderSide: const BorderSide(
+                            color: Color(0xFF8B5CF6),
+                            width: 1.5,
+                          ),
                         ),
                       ),
                     ),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 6),
-                    child: Text('=', style: TextStyle(color: Colors.white.withOpacity(0.2), fontSize: 16)),
+                    child: Text(
+                      '=',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.2),
+                        fontSize: 16,
+                      ),
+                    ),
                   ),
                   Expanded(
                     flex: 3,
                     child: TextField(
                       controller: entry.value,
                       obscureText: obscureValues,
-                      style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                      ),
                       decoration: InputDecoration(
                         hintText: valueHint,
-                        hintStyle: TextStyle(color: Colors.white.withOpacity(0.15)),
+                        hintStyle: TextStyle(
+                          color: Colors.white.withOpacity(0.15),
+                        ),
                         filled: true,
                         fillColor: Colors.black.withOpacity(0.2),
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 12,
+                        ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
+                          borderSide: BorderSide(
+                            color: Colors.white.withOpacity(0.05),
+                          ),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                          borderSide: const BorderSide(
+                            color: Color(0xFF8B5CF6),
+                            width: 1.5,
+                          ),
                         ),
                       ),
                     ),
@@ -773,7 +924,11 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                     },
                     child: Padding(
                       padding: const EdgeInsets.all(4),
-                      child: Icon(Icons.close, size: 16, color: Colors.red.withOpacity(0.6)),
+                      child: Icon(
+                        Icons.close,
+                        size: 16,
+                        color: Colors.red.withOpacity(0.6),
+                      ),
                     ),
                   ),
                 ],
@@ -813,17 +968,27 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: TextStyle(color: Colors.white.withOpacity(0.2)),
-            prefixIcon: Icon(icon, size: 20, color: Colors.white.withOpacity(0.3)),
+            prefixIcon: Icon(
+              icon,
+              size: 20,
+              color: Colors.white.withOpacity(0.3),
+            ),
             filled: true,
             fillColor: Colors.black.withOpacity(0.2),
-            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 16,
+            ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
               borderSide: BorderSide(color: Colors.white.withOpacity(0.05)),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(14),
-              borderSide: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+              borderSide: const BorderSide(
+                color: Color(0xFF8B5CF6),
+                width: 1.5,
+              ),
             ),
           ),
         ),
@@ -838,7 +1003,9 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
         color: Colors.transparent,
         child: Container(
           width: 520,
-          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
           decoration: BoxDecoration(
             color: const Color(0xFF1C1C26),
             borderRadius: BorderRadius.circular(28),
@@ -866,7 +1033,9 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Icon(
-                        widget.isEdit ? Icons.edit_note_rounded : Icons.add_link_rounded,
+                        widget.isEdit
+                            ? Icons.edit_note_rounded
+                            : Icons.add_link_rounded,
                         color: const Color(0xFF8B5CF6),
                       ),
                     ),
@@ -892,7 +1061,8 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                 _buildModernInput(
                   controller: widget.imageController,
                   label: 'Docker Image',
-                  hint: 'e.g. mcp/temporal:latest or registry.example.com/team/server:latest',
+                  hint:
+                      'e.g. mcp/temporal:latest or registry.example.com/team/server:latest',
                   icon: Icons.layers_outlined,
                 ),
                 const SizedBox(height: 20),
@@ -928,7 +1098,10 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                 const SizedBox(height: 8),
                 Text(
                   'Leave registry credentials blank for public images. Private registry credentials are encrypted at rest.',
-                  style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.35)),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.white.withOpacity(0.35),
+                  ),
                 ),
                 const SizedBox(height: 20),
                 _buildKVEditor(
@@ -955,11 +1128,15 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                         onPressed: widget.onCancel,
                         style: TextButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
                         ),
                         child: Text(
                           'Cancel',
-                          style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.5),
+                          ),
                         ),
                       ),
                     ),
@@ -979,20 +1156,39 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                                   setState(() => _isSaving = true);
                                   final env = _entriesToMap(widget.envEntries);
                                   final args = _entriesToMap(widget.argEntries);
-                                  await widget.onSave(env, args, _registryCredentials());
-                                  if (mounted) setState(() => _isSaving = false);
+                                  await widget.onSave(
+                                    env,
+                                    args,
+                                    _registryCredentials(),
+                                  );
+                                  if (mounted)
+                                    setState(() => _isSaving = false);
                                 },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: Colors.transparent,
                             shadowColor: Colors.transparent,
                             padding: const EdgeInsets.symmetric(vertical: 16),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14),
+                            ),
                           ),
                           child: _isSaving
-                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                )
                               : Text(
-                                  widget.isEdit ? 'Save Changes' : 'Connect Server',
-                                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                                  widget.isEdit
+                                      ? 'Save Changes'
+                                      : 'Connect Server',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
                                 ),
                         ),
                       ),

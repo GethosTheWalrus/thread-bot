@@ -2,36 +2,167 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
+import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
+import 'package:threadbot/widgets/thread_participant_manager.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
-  const ChatScreen({super.key, this.initialThreadId});
+  final VoidCallback? onUnauthorized;
+  const ChatScreen({super.key, this.initialThreadId, this.onUnauthorized});
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
+class _AgentSetupSheet extends StatefulWidget {
+  @override
+  State<_AgentSetupSheet> createState() => _AgentSetupSheetState();
+}
+
+class _AgentSetupSheetState extends State<_AgentSetupSheet> {
+  final _name = TextEditingController(text: 'My Agent');
+  final _instructions = TextEditingController(
+    text: 'Be helpful, precise, and explain your reasoning clearly.',
+  );
+  String? _error;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _instructions.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _name.text.trim();
+    final prompt = _instructions.text.trim();
+    if (name.isEmpty) {
+      setState(() => _error = 'Give your agent a name.');
+      return;
+    }
+    if (prompt.isEmpty) {
+      setState(
+        () => _error = 'Add a few instructions so the agent knows how to help.',
+      );
+      return;
+    }
+    Navigator.pop(context, {'name': name, 'prompt': prompt});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    final availableHeight = MediaQuery.sizeOf(context).height - bottom - 32;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(24, 12, 24, 20 + bottom),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: availableHeight.clamp(320.0, 720.0),
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 38,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  'Create an Agent Thread',
+                  style: TextStyle(fontSize: 23, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Give a focused assistant a durable identity. Your existing thread context will be included when it runs.',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: .62),
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _name,
+                  textInputAction: TextInputAction.next,
+                  decoration: const InputDecoration(
+                    labelText: 'Agent name',
+                    hintText: 'e.g. Research partner',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                TextField(
+                  controller: _instructions,
+                  minLines: 5,
+                  maxLines: 10,
+                  decoration: const InputDecoration(
+                    labelText: 'Instructions',
+                    hintText:
+                        'What should this agent do, and how should it respond?',
+                    alignLabelWithHint: true,
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(_error!, style: TextStyle(color: Color(0xFFFCA5A5))),
+                ],
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _submit,
+                  icon: const Icon(Icons.auto_awesome),
+                  label: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 13),
+                    child: Text('Create agent'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Not now'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
-  final ApiService _api = ApiService();
+  late final ApiService _api;
   final ScrollController _scrollController = ScrollController();
   // No GlobalKey needed — use Builder + Scaffold.of() for drawer access
 
   // State
   List<ThreadListItem> _threads = [];
   String? _activeThreadId;
+  String _activeThreadMode = 'chat';
   List<Message> _messages = [];
   bool _isLoadingThreads = false;
   bool _isLoadingMessages = false;
   bool _isSending = false;
+  bool _isCreatingAgent = false;
+  bool _isChangingThreadMode = false;
   String? _error;
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
@@ -45,25 +176,34 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   int _contextWindow = 8192;
   Timer? _threadRefreshTimer;
   WebSocketChannel? _broadcastChannel;
+  Timer? _broadcastRetry;
+  int _broadcastAttempt = 0;
+  bool _disposed = false;
   bool _continuePromptOpen = false;
 
   // Animation
-  late final AnimationController _fadeController;
-  late final Animation<double> _fadeAnimation;
+  late final AutonomyApiService _autonomyApi;
+  Agent? _agent;
+  ThreadAgentSummary? _threadAgentSummary;
+  List<ThreadAgentSummary> _participants = const [];
+  final Map<String, ThreadRunSummary> _activeRunSummaries = {};
+  int _pendingApprovals = 0;
+  final Map<String, Run> _activeRuns = {};
+  final Map<String, List<RunEvent>> _runEvents = {};
+  final Map<String, int> _runCursors = {};
+  final Map<String, int> _runPollFailures = {};
+  final Map<String, DateTime> _runRetryAt = {};
+  Timer? _runPollTimer;
+  final Set<String> _runPollInFlight = {};
+  int _runGeneration = 0;
 
   @override
   void initState() {
     super.initState();
 
-    _fadeController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 400),
-    );
-    _fadeAnimation = CurvedAnimation(
-      parent: _fadeController,
-      curve: Curves.easeOut,
-    );
-    _fadeController.forward();
+    _api = ApiService(onUnauthorized: widget.onUnauthorized);
+    _autonomyApi = AutonomyApiService(onUnauthorized: widget.onUnauthorized);
+
     _scrollController.addListener(_onScroll);
     _loadThreads().then((_) {
       if (widget.initialThreadId != null) {
@@ -75,14 +215,19 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       const Duration(seconds: 10),
       (_) => _loadThreads(silent: true),
     );
-    _subscribeToBroadcast();
+    if (kIsWeb) _subscribeToBroadcast();
   }
 
   void _subscribeToBroadcast() {
+    if (_disposed) return;
+    _broadcastRetry?.cancel();
+    _broadcastChannel?.sink.close();
     _broadcastChannel = _api.subscribeBroadcast();
     _broadcastChannel?.stream.listen(
       (data) {
+        if (_disposed) return;
         final event = jsonDecode(data as String) as Map<String, dynamic>;
+        _broadcastAttempt = 0;
         if (event['type'] == 'thread_updated') {
           if (mounted) {
             setState(() {
@@ -105,15 +250,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
       },
       onError: (_) {},
-      onDone: () => _subscribeToBroadcast(),
+      onDone: () {
+        _scheduleBroadcastReconnect();
+      },
     );
+  }
+
+  void _scheduleBroadcastReconnect() {
+    if (_disposed || _broadcastRetry?.isActive == true) return;
+    final delay = Duration(
+      milliseconds: 250 * (1 << _broadcastAttempt.clamp(0, 6)),
+    );
+    _broadcastAttempt++;
+    _broadcastRetry = Timer(delay, _subscribeToBroadcast);
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    _resetRunTracking();
     _broadcastChannel?.sink.close();
+    _broadcastRetry?.cancel();
+    _runPollTimer?.cancel();
     _threadRefreshTimer?.cancel();
-    _fadeController.dispose();
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -125,7 +284,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     // Consider "at bottom" if within 80px of the max extent
     final atBottom = pos.pixels >= pos.maxScrollExtent - 80;
     if (atBottom != _isAtBottom) {
-      _isAtBottom = atBottom;
+      if (mounted) {
+        setState(() => _isAtBottom = atBottom);
+      } else {
+        _isAtBottom = atBottom;
+      }
     }
   }
 
@@ -137,7 +300,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       final threads = await _api.getThreads();
       if (mounted) {
         setState(() {
-          _threads = threads;
+          _threads = {
+            for (final thread in threads) thread.id: thread,
+          }.values.toList();
           if (!silent) _isLoadingThreads = false;
         });
       }
@@ -163,21 +328,37 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadThread(String threadId) async {
+    final switchingThread = _activeThreadId != threadId;
+    _runPollTimer?.cancel();
+    final knownThread = _threads.where((t) => t.id == threadId).firstOrNull;
     setState(() {
       _isLoadingMessages = true;
       _activeThreadId = threadId;
+      // Preserve the displayed mode and agent while the request is in flight.
+      // In particular, do not briefly turn a generating agent thread into chat.
+      if (switchingThread) _resetRunTracking();
+      _isSending = knownThread?.isGenerating == true;
       _error = null;
       _hasToolOverrides = false;
       _hasLlmOverrides = false;
+      if (switchingThread) _isAtBottom = true;
     });
     try {
       SystemNavigator.routeInformationUpdated(
         uri: Uri.parse('/thread/$threadId'),
       );
       final thread = await _api.getThread(threadId);
-      if (mounted) {
+      if (mounted && _activeThreadId == threadId) {
         setState(() {
           _messages = thread.messages;
+          _activeThreadMode = thread.mode;
+          if (thread.mode != 'agent') _agent = null;
+          _threadAgentSummary = thread.agent;
+          _participants = thread.agents;
+          _pendingApprovals = thread.pendingApprovals;
+          _activeRunSummaries
+            ..clear()
+            ..addEntries(thread.activeRuns.map((run) => MapEntry(run.id, run)));
           _discordLink = thread.discordLink;
           _reachyBinding = ReachyBinding(
             enabled: _reachyBinding?.enabled ?? false,
@@ -193,8 +374,20 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _contextEstimatedTokens = thread.estimatedTokens;
           _contextWindow = thread.contextWindow;
           _isLoadingMessages = false;
+          _isSending = thread.isGenerating;
         });
-        _scrollToBottom(force: true);
+        _reconcileRunSummaries(thread.activeRuns, thread.id);
+        _scrollToBottom(force: true, jump: true, settleLayout: true);
+        if (thread.agents.isEmpty) {
+          try {
+            final roster = await _api.getThreadAgents(threadId);
+            if (mounted && _activeThreadId == threadId) {
+              setState(() => _participants = roster);
+            }
+          } catch (_) {}
+        }
+        await _loadAgentForThread(thread);
+        if (!mounted || _activeThreadId != threadId) return;
 
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
@@ -208,7 +401,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      if (mounted)
+      if (mounted && _activeThreadId == threadId)
         setState(() {
           _error = 'Failed to load thread';
           _isLoadingMessages = false;
@@ -220,7 +413,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final data = await _api.getThreadToolOverrides(threadId);
       final overrides = data['overrides'] as List<dynamic>? ?? [];
-      if (mounted) {
+      if (mounted && _activeThreadId == threadId) {
         setState(
           () => _hasToolOverrides = overrides.any((o) => o['enabled'] == false),
         );
@@ -230,10 +423,114 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  Future<void> _loadAgentForThread(Thread thread) async {
+    if (thread.mode != 'agent' || thread.agent == null) {
+      if (mounted && _activeThreadId == thread.id) {
+        setState(() => _agent = null);
+      }
+      return;
+    }
+    try {
+      final summary = thread.agent!;
+      final agent = await _autonomyApi.agent(summary.id);
+      if (!mounted || _activeThreadId != thread.id) return;
+      setState(() => _agent = agent);
+      final runs = await _autonomyApi.runs(agent.id);
+      final active = runs.items.where(
+        (run) => run.threadId == thread.id && !_isTerminalRun(run.status),
+      );
+      if (mounted && _activeThreadId == thread.id) {
+        for (final run in active) _upsertRun(run);
+        _startRunStatus();
+      }
+    } catch (_) {
+      // Keep the nested thread summary and any known agent. A failed detail
+      // request must not make a genuine agent thread look like chat.
+    }
+  }
+
+  void _resetRunTracking() {
+    _runGeneration++;
+    _runPollTimer?.cancel();
+    _activeRuns.clear();
+    _runEvents.clear();
+    _runCursors.clear();
+    _runPollFailures.clear();
+    _runRetryAt.clear();
+    _runPollInFlight.clear();
+  }
+
+  void _upsertRun(Run run) {
+    if (run.id.isEmpty || _isTerminalRun(run.status)) return;
+    _activeRuns[run.id] = run;
+    _runEvents.putIfAbsent(run.id, () => <RunEvent>[]);
+    _runCursors.putIfAbsent(run.id, () => 0);
+  }
+
+  void _reconcileRunSummaries(
+    List<ThreadRunSummary> summaries,
+    String threadId,
+  ) {
+    final ids = summaries.map((r) => r.id).where((id) => id.isNotEmpty).toSet();
+    setState(() {
+      for (final summary in summaries) {
+        if (!_isTerminalRun(summary.status)) {
+          _upsertRun(
+            Run(
+              id: summary.id,
+              agentId: summary.agentId ?? '',
+              threadId: threadId,
+              status: summary.status,
+              mode: summary.mode,
+              agentName: summary.agentName,
+              agentHandle: summary.agentHandle,
+              outputSummary: summary.outputSummary,
+            ),
+          );
+        }
+      }
+      for (final id in _activeRuns.keys.toList()) {
+        if (!ids.contains(id)) _removeRun(id);
+      }
+      if (_activeRuns.isNotEmpty) _isSending = true;
+    });
+    for (final summary in summaries) {
+      if (!_isTerminalRun(summary.status)) {
+        _loadRunDetail(summary.id, _runGeneration);
+      }
+    }
+    if (_activeRuns.isNotEmpty) _startRunStatus();
+  }
+
+  Future<void> _loadRunDetail(String runId, int generation) async {
+    try {
+      final run = await _autonomyApi.runDetail(runId);
+      if (!mounted ||
+          generation != _runGeneration ||
+          _activeThreadId != run.threadId)
+        return;
+      if (_isTerminalRun(run.status)) {
+        setState(() => _removeRun(runId));
+      } else {
+        setState(() => _upsertRun(run));
+      }
+    } catch (_) {}
+  }
+
+  void _removeRun(String runId) {
+    _activeRuns.remove(runId);
+    _runEvents.remove(runId);
+    _runCursors.remove(runId);
+    _runPollFailures.remove(runId);
+    _runRetryAt.remove(runId);
+    _runPollInFlight.remove(runId);
+    if (_activeRuns.isEmpty && mounted) _isSending = false;
+  }
+
   Future<void> _loadLlmOverrideStatus(String threadId) async {
     try {
       final overrides = await _api.getThreadLlmOverrides(threadId);
-      if (mounted) {
+      if (mounted && _activeThreadId == threadId) {
         setState(() => _hasLlmOverrides = !overrides.isEmpty);
       }
     } catch (_) {
@@ -440,6 +737,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   void _showThreadControls() {
     final threadId = _activeThreadId;
+    final thread = _threads.where((item) => item.id == threadId).firstOrNull;
     final sheetHeight = MediaQuery.sizeOf(context).height * .94;
     showModalBottomSheet(
       context: context,
@@ -480,6 +778,29 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   _loadLlmOverrideStatus(threadId);
                 }
               },
+        threadMode: _activeThreadMode,
+        modeChangeBusy:
+            _isSending ||
+            _activeRuns.isNotEmpty ||
+            _isChangingThreadMode ||
+            _isCreatingAgent,
+        participants: _participants,
+        turnLimit: thread?.agentTurnLimit ?? 0,
+        activeRunCount: _activeRunSummaries.length,
+        pendingApprovals: _pendingApprovals,
+        onModeChanged: threadId == null ? null : _changeThreadMode,
+        onParticipantsChanged: threadId == null
+            ? null
+            : () {
+                _loadThread(threadId);
+                _loadThreads(silent: true);
+              },
+        onOpenAgent: (agentId) =>
+            Navigator.pushNamed(context, '/agent-details/$agentId'),
+        onOpenAllAgents: () => Navigator.pushNamed(context, '/agents-list'),
+        onOpenWorkspaceSettings: _openSettings,
+        onOpenMcp: _openMCP,
+        onOpenSkills: _openSkills,
       ),
     );
   }
@@ -557,6 +878,47 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     // Track temporary message IDs for cleanup on reload
     final tempIds = <String>[optimisticMsg.id];
 
+    if (_agent != null && _activeThreadId != null) {
+      try {
+        setState(
+          () => _upsertRun(
+            Run(
+              id: 'starting-${DateTime.now().microsecondsSinceEpoch}',
+              threadId: _activeThreadId!,
+              status: 'starting',
+              agentId: _agent!.id,
+              agentName: _agent!.name,
+              agentHandle: _agent!.handle,
+            ),
+          ),
+        );
+        final run = await _autonomyApi.runThread(
+          _activeThreadId!,
+          AgentRunRequest(message: content),
+          idempotencyKey: AutonomyApiService.newIdempotencyKey(),
+        );
+        if (mounted) {
+          setState(() {
+            _activeRuns.removeWhere((id, _) => id.startsWith('starting-'));
+            _upsertRun(run);
+          });
+          _startRunStatus();
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _messages.removeWhere((m) => m.id == optimisticMsg.id);
+            _resetRunTracking();
+            _isSending = false;
+          });
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Agent run failed: $e')));
+        }
+      }
+      return;
+    }
+
     // Add a placeholder assistant message so the loading shimmer appears immediately
     final placeholderId = 'temp-ast-${DateTime.now().millisecondsSinceEpoch}';
     tempIds.add(placeholderId);
@@ -614,6 +976,205 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         );
       }
     }
+  }
+
+  void _startRunStatus() {
+    if (_runPollTimer?.isActive == true || _activeRuns.isEmpty) return;
+    _runPollTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _pollRuns(),
+    );
+  }
+
+  Future<void> _pollRuns() async {
+    if (_disposed || _runPollInFlight.length >= _activeRuns.length) return;
+    final generation = _runGeneration;
+    final snapshot = _activeRuns.values.toList();
+    await Future.wait(snapshot.map((run) => _pollRun(run, generation)));
+    if (_activeRuns.isEmpty) _runPollTimer?.cancel();
+  }
+
+  Future<void> _pollRun(Run run, int generation) async {
+    if (_runPollInFlight.contains(run.id) ||
+        (_runRetryAt[run.id]?.isAfter(DateTime.now()) ?? false))
+      return;
+    _runPollInFlight.add(run.id);
+    try {
+      final page = await _autonomyApi.events(
+        run.id,
+        after: _runCursors[run.id] ?? 0,
+      );
+      if (!mounted ||
+          generation != _runGeneration ||
+          !_activeRuns.containsKey(run.id))
+        return;
+      if (page.items.isNotEmpty) {
+        setState(() {
+          final events = _runEvents.putIfAbsent(run.id, () => <RunEvent>[]);
+          final known = events.map((event) => event.sequence).toSet();
+          events.addAll(page.items.where((event) => known.add(event.sequence)));
+          _runCursors[run.id] = events.isEmpty ? 0 : events.last.sequence;
+        });
+      }
+      final latest = await _autonomyApi.runDetail(run.id);
+      if (!mounted ||
+          generation != _runGeneration ||
+          !_activeRuns.containsKey(run.id))
+        return;
+      if (_isTerminalRun(latest.status)) {
+        await _reloadThreadSilently();
+        if (mounted && generation == _runGeneration)
+          setState(() => _removeRun(run.id));
+      } else {
+        setState(() => _activeRuns[run.id] = latest);
+      }
+      _runPollFailures[run.id] = 0;
+      _runRetryAt.remove(run.id);
+    } catch (e) {
+      final failures = (_runPollFailures[run.id] ?? 0) + 1;
+      _runPollFailures[run.id] = failures;
+      _runRetryAt[run.id] = DateTime.now().add(
+        Duration(seconds: 1 << (failures.clamp(1, 5) - 1)),
+      );
+      if (mounted && failures == 3) {
+        _showAgentError(
+          'Run status is temporarily unavailable. Retrying with backoff; the run is still active.',
+        );
+      }
+    } finally {
+      _runPollInFlight.remove(run.id);
+    }
+  }
+
+  bool _isTerminalRun(String status) => const {
+    'completed',
+    'succeeded',
+    'failed',
+    'cancelled',
+    'canceled',
+    'rejected',
+    'exhausted',
+    'timed_out',
+    'suppressed',
+    'dead_lettered',
+    'outcome_unknown',
+  }.contains(status.toLowerCase());
+
+  List<Widget> _buildRunChips() {
+    if (_activeRuns.isEmpty) return const [];
+    final runs = _activeRuns.values.toList()
+      ..sort((a, b) {
+        final left = a.queuedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final right = b.queuedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return left.compareTo(right);
+      });
+    return runs.map(_buildRunChip).toList();
+  }
+
+  Widget _buildRunChip(Run run) {
+    final events = _runEvents[run.id] ?? const <RunEvent>[];
+    final latest = events.isEmpty ? null : events.last;
+    final waiting = run.status.toLowerCase() == 'waiting_approval';
+    final identity = [
+      if (run.agentName?.isNotEmpty == true) run.agentName,
+      if (run.agentHandle?.isNotEmpty == true) '@${run.agentHandle}',
+    ].join(' ');
+    final output = _compactMarkdown(
+      run.outputSummary ?? _safeEventText(latest),
+    );
+    final statusColor = waiting
+        ? const Color(0xFFFBBF24)
+        : const Color(0xFF8B5CF6);
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Tooltip(
+        message: 'Open ${identity.isEmpty ? 'agent' : identity} run details',
+        child: Semantics(
+          button: true,
+          label: '${identity.isEmpty ? 'Agent' : identity} run, ${run.status}',
+          child: Material(
+            color: const Color(0xFF1A1527),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+              side: BorderSide(color: statusColor.withValues(alpha: 0.35)),
+            ),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: () =>
+                  Navigator.pushNamed(context, '/agent-runs/${run.id}'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      waiting
+                          ? Icons.hourglass_top_rounded
+                          : Icons.autorenew_rounded,
+                      size: 16,
+                      color: waiting ? const Color(0xFFFBBF24) : statusColor,
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        '${identity.isEmpty ? 'Agent' : identity} · ${run.status.replaceAll('_', ' ')}${run.route.isEmpty ? '' : ' · ${run.route.replaceAll('_', ' ')}'}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFE9D5FF),
+                          fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (output?.isNotEmpty == true) ...[
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          output!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.white54,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18,
+                      color: Colors.white.withValues(alpha: 0.3),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String? _safeEventText(RunEvent? event) {
+    if (event == null) return null;
+    final value =
+        event.payload['display_content'] ??
+        event.payload['content'] ??
+        event.payload['message'] ??
+        event.payload['error'];
+    return value is String ? value : null;
+  }
+
+  String? _compactMarkdown(String? value) {
+    if (value == null || value.trim().isEmpty) return null;
+    return value
+        .replaceAll(RegExp(r'```[\s\S]*?```'), ' code ')
+        .replaceAll(RegExp(r'[`*_>#\[\]]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
   }
 
   /// Handle a single structured JSON event from the stream.
@@ -867,6 +1428,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       _hasToolOverrides = false;
       _hasLlmOverrides = false;
       _discordLink = null;
+      _agent = null;
+      _resetRunTracking();
+      _isSending = false;
     });
   }
 
@@ -909,6 +1473,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               ),
               const SizedBox(height: 18),
               _NewThreadChoiceTile(
+                icon: Icons.smart_toy_outlined,
+                title: 'Agent Thread',
+                subtitle:
+                    'A configured agent conversation with runs and actions',
+                badgeText: 'A',
+                onTap: () => Navigator.pop(context, 'agent'),
+              ),
+              const SizedBox(height: 10),
+              _NewThreadChoiceTile(
                 icon: Icons.chat_bubble_outline,
                 title: 'Regular Thread',
                 subtitle: 'Private ThreadBot conversation',
@@ -928,10 +1501,166 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       ),
     );
 
-    if (choice == 'discord') {
+    if (choice == 'agent') {
+      await _startAgentNewChat();
+    } else if (choice == 'discord') {
       await _startDiscordNewChat();
     } else if (choice == 'regular') {
       await _startRegularNewChat();
+    }
+  }
+
+  Future<void> _startAgentNewChat() async {
+    if (_isCreatingAgent) return;
+    setState(() => _isCreatingAgent = true);
+    final result = await _showAgentSetupSheet();
+    if (result == null) {
+      if (mounted) setState(() => _isCreatingAgent = false);
+      return;
+    }
+    try {
+      final agent = await _autonomyApi.createAgent({
+        'name': result['name'],
+        'description': result['prompt'],
+        'execution_mode': 'act',
+      });
+      // Establish the new thread before touching its draft. If setup fails,
+      // the user is still left on the correct thread with agent controls.
+      await _loadThread(agent.threadId);
+      if (!mounted) return;
+      if (_activeThreadId == agent.threadId && _agent == null) {
+        setState(() {
+          _agent = agent;
+          _activeThreadMode = 'agent';
+          _threadAgentSummary = ThreadAgentSummary(
+            id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            executionMode: agent.executionMode,
+            activeVersionId: agent.activeVersionId,
+          );
+        });
+      }
+      await _initializeAgent(agent.id, result['prompt']!);
+      await _loadThread(agent.threadId);
+      _loadThreads();
+    } catch (e) {
+      if (mounted)
+        _showAgentError(
+          'Agent thread created, but setup is incomplete. Open Agent controls to finish it. ($e)',
+          action: 'Agent controls',
+        );
+    } finally {
+      if (mounted) setState(() => _isCreatingAgent = false);
+    }
+  }
+
+  Future<Map<String, String>?> _showAgentSetupSheet() async {
+    return showModalBottomSheet<Map<String, String>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF16161E),
+      constraints: const BoxConstraints(maxWidth: 680),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => _AgentSetupSheet(),
+    );
+  }
+
+  Future<void> _initializeAgent(String agentId, String instructions) async {
+    Draft draft;
+    try {
+      draft = await _autonomyApi.draft(agentId);
+    } on ApiException catch (error) {
+      if (error.status != 404) rethrow;
+      draft = Draft(agentId: agentId);
+    }
+    await _autonomyApi.saveDraft(agentId, {
+      'optimistic_lock_version': draft.optimisticLockVersion,
+      'schema_version': draft.schemaVersion,
+      'config': draft.config,
+      'prompt_template': instructions,
+      'tool_selection': draft.toolSelection,
+      'skill_selection': draft.skillSelection,
+      'credential_bindings': draft.credentialBindings,
+    });
+    await _autonomyApi.activate(agentId);
+  }
+
+  void _showAgentError(String message, {String? action}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red.shade800,
+        action: action == null
+            ? null
+            : SnackBarAction(label: action, onPressed: _showThreadControls),
+      ),
+    );
+  }
+
+  Future<void> _changeThreadMode(String mode) async {
+    final id = _activeThreadId;
+    if (id == null ||
+        mode == _activeThreadMode ||
+        _isSending ||
+        _activeRuns.isNotEmpty ||
+        _isChangingThreadMode)
+      return;
+    final target = mode == 'agent' ? 'Agent Thread' : 'Chat Thread';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Switch to $target?'),
+        content: Text(
+          mode == 'agent'
+              ? 'This keeps the conversation history and uses an agent for future messages.'
+              : 'The agent, its configuration, and history stay attached. Only this composer switches back to normal chat.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _isChangingThreadMode = true);
+    try {
+      final needsSetup = _threadAgentSummary?.activeVersionId == null;
+      Map<String, String>? setup;
+      if (mode == 'agent' && needsSetup) {
+        setup = await _showAgentSetupSheet();
+        if (setup == null) return;
+      }
+      final updated = await _api.setThreadMode(
+        id,
+        mode: mode,
+        agentName: setup?['name'],
+      );
+      await _loadThread(id);
+      if (!mounted || _activeThreadId != id) return;
+      if (mode == 'agent' &&
+          updated.agent != null &&
+          updated.agent!.activeVersionId == null &&
+          setup != null) {
+        await _initializeAgent(updated.agent!.id, setup['prompt']!);
+        await _loadThread(id);
+      }
+      if (mounted && _activeThreadId == id) {
+        setState(() => _activeThreadMode = updated.mode);
+      }
+      await _loadThreads(silent: true);
+    } catch (e) {
+      if (mounted) _showAgentError('Could not switch thread mode: $e');
+    } finally {
+      if (mounted) setState(() => _isChangingThreadMode = false);
     }
   }
 
@@ -1081,6 +1810,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _activeThreadId = null;
           _messages = [];
           _discordLink = null;
+          _agent = null;
+          _resetRunTracking();
+          _isSending = false;
         });
       }
       _loadThreads();
@@ -1101,6 +1833,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         _activeThreadId = null;
         _messages = [];
         _discordLink = null;
+        _agent = null;
+        _resetRunTracking();
+        _isSending = false;
       });
       _loadThreads();
     } catch (e) {
@@ -1149,16 +1884,30 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  void _scrollToBottom({bool force = false}) {
+  void _scrollToBottom({
+    bool force = false,
+    bool jump = false,
+    bool settleLayout = false,
+  }) {
     if (!force && !_isAtBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
+      if (!_scrollController.hasClients) return;
+      final target = _scrollController.position.maxScrollExtent;
+      if (jump) {
+        _scrollController.jumpTo(target);
+      } else {
         _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
+          target,
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
-        _isAtBottom = true;
+      }
+      if (!_isAtBottom && mounted) setState(() => _isAtBottom = true);
+      if (settleLayout) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scrollController.hasClients || !_isAtBottom) return;
+          _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        });
       }
     });
   }
@@ -1344,46 +2093,71 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
     return Scaffold(
       // key not needed — Builder provides scaffold context for drawer
-      body: Row(
+      body: Stack(
         children: [
-          // Sidebar
-          if (_sidebarOpen && isWide)
-            Sidebar(
-              threads: _threads,
-              activeThreadId: _activeThreadId,
-              isLoading: _isLoadingThreads,
-              onThreadTap: _loadThread,
-              onNewChat: _startNewChat,
-              onDelete: _deleteThread,
-              onRename: _renameThread,
-              onPin: _setThreadPinned,
-              onDeleteAll: _deleteAllThreads,
-              onMCP: _openMCP,
-              onSkills: _openSkills,
-              onSettings: _openSettings,
-            ),
+          Row(
+            children: [
+              // Sidebar
+              if (_sidebarOpen && isWide)
+                Sidebar(
+                  threads: _threads,
+                  activeThreadId: _activeThreadId,
+                  isLoading: _isLoadingThreads,
+                  onThreadTap: _loadThread,
+                  onNewChat: _startNewChat,
+                  onDelete: _deleteThread,
+                  onRename: _renameThread,
+                  onPin: _setThreadPinned,
+                  onDeleteAll: _deleteAllThreads,
+                  onMCP: _openMCP,
+                  onSkills: _openSkills,
+                  onSettings: _openSettings,
+                  onAgents: () => Navigator.pushNamed(context, '/agents-list'),
+                ),
 
-          // Main chat area
-          Expanded(
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: Column(
-                children: [
-                  _buildTopBar(isWide),
-                  Expanded(child: _buildChatArea()),
-                  ChatInput(
-                    onSend: _sendMessage,
-                    isSending: _isSending,
-                    onThreadControlsPressed: _showThreadControls,
-                    hasToolOverrides: _hasToolOverrides,
-                    hasLlmOverrides: _hasLlmOverrides,
-                    estimatedTokens: _contextEstimatedTokens,
-                    contextWindow: _contextWindow,
+              // Main chat area
+              Expanded(
+                child: Column(
+                  children: [
+                    _buildTopBar(isWide),
+                    Expanded(child: _buildChatArea()),
+                    ChatInput(
+                      onSend: _sendMessage,
+                      isSending: _isSending,
+                      onThreadControlsPressed: _showThreadControls,
+                      hasToolOverrides: _hasToolOverrides,
+                      hasLlmOverrides: _hasLlmOverrides,
+                      estimatedTokens: _contextEstimatedTokens,
+                      contextWindow: _contextWindow,
+                      participants: _participants,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (_isCreatingAgent)
+            Positioned.fill(
+              child: ColoredBox(
+                color: Color(0x990D0D12),
+                child: Center(
+                  child: Card(
+                    color: Color(0xFF242432),
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(),
+                          SizedBox(height: 14),
+                          Text('Creating agent thread…'),
+                        ],
+                      ),
+                    ),
                   ),
-                ],
+                ),
               ),
             ),
-          ),
         ],
       ),
 
@@ -1419,6 +2193,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                   onSettings: () {
                     Navigator.pop(context);
                     _openSettings();
+                  },
+                  onAgents: () {
+                    Navigator.pop(context);
+                    Navigator.pushNamed(context, '/agents-list');
                   },
                 ),
               ),
@@ -1569,23 +2347,50 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       return _buildWelcomeScreen();
     }
 
-    return ChatMessageList(
-      messages: _messages,
-      scrollController: _scrollController,
-      isSending: _isSending,
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: ChatMessageList(
+            messages: _messages,
+            scrollController: _scrollController,
+            isSending: _isSending,
+            footerWidgets: _buildRunChips(),
+          ),
+        ),
+        if (!_isAtBottom)
+          Positioned(
+            right: 18,
+            bottom: 14,
+            child: Semantics(
+              button: true,
+              label: 'Scroll to latest message',
+              child: Tooltip(
+                message: 'Scroll to latest message',
+                child: FloatingActionButton.small(
+                  heroTag: null,
+                  onPressed: () => _scrollToBottom(force: true),
+                  backgroundColor: const Color(0xFF272336),
+                  foregroundColor: const Color(0xFFE9D5FF),
+                  elevation: 5,
+                  child: const Icon(Icons.arrow_downward_rounded, size: 20),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
   Widget _buildWelcomeScreen() {
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(horizontal: 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             // Glowing 3D Poly-Bot Avatar
             const ThreadbotAvatar(
-              size: 200,
+              size: 120,
               showBackground: false,
               showShadow: true,
             ),
@@ -1820,6 +2625,19 @@ class _ThreadControlsSheet extends StatefulWidget {
   final ValueChanged<bool>? onToolChanged;
   final ValueChanged<List<Map<String, dynamic>>>? onPendingToolsChanged;
   final ValueChanged<bool>? onLlmChanged;
+  final String threadMode;
+  final bool modeChangeBusy;
+  final List<ThreadAgentSummary> participants;
+  final int turnLimit;
+  final int activeRunCount;
+  final int pendingApprovals;
+  final ValueChanged<String>? onModeChanged;
+  final VoidCallback? onParticipantsChanged;
+  final ValueChanged<String> onOpenAgent;
+  final VoidCallback onOpenAllAgents;
+  final VoidCallback onOpenWorkspaceSettings;
+  final VoidCallback onOpenMcp;
+  final VoidCallback onOpenSkills;
 
   const _ThreadControlsSheet({
     required this.threadId,
@@ -1832,6 +2650,19 @@ class _ThreadControlsSheet extends StatefulWidget {
     this.onToolChanged,
     this.onPendingToolsChanged,
     this.onLlmChanged,
+    required this.threadMode,
+    required this.modeChangeBusy,
+    required this.participants,
+    required this.turnLimit,
+    required this.activeRunCount,
+    required this.pendingApprovals,
+    this.onModeChanged,
+    this.onParticipantsChanged,
+    required this.onOpenAgent,
+    required this.onOpenAllAgents,
+    required this.onOpenWorkspaceSettings,
+    required this.onOpenMcp,
+    required this.onOpenSkills,
   });
 
   @override
@@ -1849,7 +2680,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -1881,6 +2712,11 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
       () => _hasToolOverrides = overrides.any((o) => o['enabled'] == false),
     );
     widget.onPendingToolsChanged?.call(overrides);
+  }
+
+  void _closeAndRun(VoidCallback action) {
+    Navigator.pop(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) => action());
   }
 
   @override
@@ -1924,7 +2760,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                       children: [
                         const Expanded(
                           child: Text(
-                            'Thread controls',
+                            'Thread settings',
                             style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w600,
@@ -1951,6 +2787,8 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                         return TabBar(
                           controller: _tabController,
                           onTap: (index) => _selectTab(index, animate: false),
+                          isScrollable: true,
+                          tabAlignment: TabAlignment.start,
                           labelPadding: EdgeInsets.symmetric(
                             horizontal: compact ? 4 : 12,
                           ),
@@ -1960,6 +2798,8 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                           labelColor: Colors.white,
                           unselectedLabelColor: Colors.white54,
                           tabs: [
+                            const Tab(text: 'General'),
+                            const Tab(text: 'Agents'),
                             const Tab(text: 'Context'),
                             Tab(
                               child: _TabLabel(
@@ -1983,15 +2823,49 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                     child: IndexedStack(
                       index: _tab,
                       children: [
+                        _GeneralControlsTab(
+                          hasThread: widget.threadId != null,
+                          threadMode: widget.threadMode,
+                          modeChangeBusy: widget.modeChangeBusy,
+                          participantCount: widget.participants.length,
+                          activeRunCount: widget.activeRunCount,
+                          pendingApprovals: widget.pendingApprovals,
+                          onModeChanged: widget.onModeChanged == null
+                              ? null
+                              : (mode) => _closeAndRun(
+                                  () => widget.onModeChanged!(mode),
+                                ),
+                          onOpenAllAgents: () =>
+                              _closeAndRun(widget.onOpenAllAgents),
+                          onOpenWorkspaceSettings: () =>
+                              _closeAndRun(widget.onOpenWorkspaceSettings),
+                          onOpenMcp: () => _closeAndRun(widget.onOpenMcp),
+                          onOpenSkills: () => _closeAndRun(widget.onOpenSkills),
+                        ),
+                        widget.threadId == null
+                            ? const _UnavailableControlTab(
+                                message:
+                                    'Send the first message to save this thread before adding agents.',
+                              )
+                            : ThreadParticipantManager(
+                                threadId: widget.threadId!,
+                                participants: widget.participants,
+                                turnLimit: widget.turnLimit,
+                                embedded: true,
+                                onChanged: widget.onParticipantsChanged,
+                                onOpenConfig: (agentId) => _closeAndRun(
+                                  () => widget.onOpenAgent(agentId),
+                                ),
+                              ),
                         _ContextTab(
                           threadId: widget.threadId,
                           api: widget.api,
                           estimatedTokens: widget.estimatedTokens,
                           contextWindow: widget.contextWindow,
                           canCustomize: widget.threadId != null,
-                          onResponse: () => _selectTab(1),
+                          onResponse: () => _selectTab(3),
                         ),
-                        if (_visitedTabs.contains(1))
+                        if (_visitedTabs.contains(3))
                           widget.threadId == null
                               ? const _DisabledResponseTab()
                               : _LlmOverridesSheet(
@@ -2001,7 +2875,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                                 )
                         else
                           const SizedBox.shrink(),
-                        if (_visitedTabs.contains(2))
+                        if (_visitedTabs.contains(4))
                           _ToolOverridesSheet(
                             threadId: widget.threadId,
                             api: widget.api,
@@ -2022,6 +2896,274 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
       ),
     );
   }
+}
+
+class _GeneralControlsTab extends StatelessWidget {
+  final bool hasThread;
+  final String threadMode;
+  final bool modeChangeBusy;
+  final int participantCount;
+  final int activeRunCount;
+  final int pendingApprovals;
+  final ValueChanged<String>? onModeChanged;
+  final VoidCallback onOpenAllAgents;
+  final VoidCallback onOpenWorkspaceSettings;
+  final VoidCallback onOpenMcp;
+  final VoidCallback onOpenSkills;
+
+  const _GeneralControlsTab({
+    required this.hasThread,
+    required this.threadMode,
+    required this.modeChangeBusy,
+    required this.participantCount,
+    required this.activeRunCount,
+    required this.pendingApprovals,
+    required this.onModeChanged,
+    required this.onOpenAllAgents,
+    required this.onOpenWorkspaceSettings,
+    required this.onOpenMcp,
+    required this.onOpenSkills,
+  });
+
+  @override
+  Widget build(BuildContext context) => SingleChildScrollView(
+    padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Thread behavior',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 5),
+        const Text(
+          'Choose how new messages are handled. Agent Threads route messages to the moderator or an @mentioned agent.',
+          style: TextStyle(color: Colors.white54, height: 1.4),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(
+                value: 'chat',
+                icon: Icon(Icons.chat_bubble_outline, size: 18),
+                label: Text('Chat Thread'),
+              ),
+              ButtonSegment(
+                value: 'agent',
+                icon: Icon(Icons.smart_toy_outlined, size: 18),
+                label: Text('Agent Thread'),
+              ),
+            ],
+            selected: {threadMode},
+            showSelectedIcon: false,
+            onSelectionChanged: !hasThread || modeChangeBusy
+                ? null
+                : (selected) {
+                    final mode = selected.first;
+                    if (mode != threadMode) onModeChanged?.call(mode);
+                  },
+          ),
+        ),
+        if (!hasThread || modeChangeBusy) ...[
+          const SizedBox(height: 8),
+          Text(
+            !hasThread
+                ? 'Send the first message before changing thread type.'
+                : 'Thread type cannot change while work is running.',
+            style: const TextStyle(fontSize: 12, color: Colors.white38),
+          ),
+        ],
+        if (threadMode == 'agent') ...[
+          const SizedBox(height: 20),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _StatusPill(
+                icon: Icons.groups_outlined,
+                label:
+                    '$participantCount agent${participantCount == 1 ? '' : 's'}',
+              ),
+              _StatusPill(
+                icon: Icons.play_circle_outline,
+                label: '$activeRunCount running',
+              ),
+              _StatusPill(
+                icon: Icons.fact_check_outlined,
+                label:
+                    '$pendingApprovals approval${pendingApprovals == 1 ? '' : 's'}',
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Use the Agents tab to add agents, choose the moderator, configure heartbeats, or open detailed settings.',
+            style: TextStyle(fontSize: 12, color: Colors.white54, height: 1.4),
+          ),
+        ],
+        const SizedBox(height: 28),
+        Text(
+          'Workspace settings',
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 5),
+        const Text(
+          'Common configuration is available here without adding more buttons to the thread header.',
+          style: TextStyle(color: Colors.white54),
+        ),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth < 520
+                ? constraints.maxWidth
+                : (constraints.maxWidth - 10) / 2;
+            return Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                _ControlShortcut(
+                  width: width,
+                  icon: Icons.smart_toy_outlined,
+                  title: 'All agents',
+                  subtitle: 'Browse agents and activity',
+                  onTap: onOpenAllAgents,
+                ),
+                _ControlShortcut(
+                  width: width,
+                  icon: Icons.settings_outlined,
+                  title: 'App settings',
+                  subtitle: 'Models, media, Discord, security',
+                  onTap: onOpenWorkspaceSettings,
+                ),
+                _ControlShortcut(
+                  width: width,
+                  icon: Icons.terminal_rounded,
+                  title: 'MCP servers',
+                  subtitle: 'External tools and connections',
+                  onTap: onOpenMcp,
+                ),
+                _ControlShortcut(
+                  width: width,
+                  icon: Icons.auto_awesome_outlined,
+                  title: 'Skills',
+                  subtitle: 'Reusable instructions and expertise',
+                  onTap: onOpenSkills,
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    ),
+  );
+}
+
+class _StatusPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _StatusPill({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+    decoration: BoxDecoration(
+      color: Colors.white.withValues(alpha: .045),
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: Colors.white10),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 15, color: const Color(0xFFC4B5FD)),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ],
+    ),
+  );
+}
+
+class _ControlShortcut extends StatelessWidget {
+  final double width;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+  const _ControlShortcut({
+    required this.width,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: width,
+    child: Material(
+      color: const Color(0xFF1D1D28),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(13),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: const Color(0xFFC4B5FD)),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Colors.white54,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 18,
+                color: Colors.white30,
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _UnavailableControlTab extends StatelessWidget {
+  final String message;
+  const _UnavailableControlTab({required this.message});
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(28),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: const TextStyle(color: Colors.white54),
+      ),
+    ),
+  );
 }
 
 class _ActiveDot extends StatelessWidget {

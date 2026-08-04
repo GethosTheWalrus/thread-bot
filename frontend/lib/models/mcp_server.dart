@@ -28,7 +28,9 @@ class MCPServer {
       image: json['image'],
       envVars: Map<String, dynamic>.from(json['env_vars'] ?? {}),
       args: Map<String, dynamic>.from(json['args'] ?? {}),
-      registryCredentials: Map<String, dynamic>.from(json['registry_credentials'] ?? {}),
+      registryCredentials: Map<String, dynamic>.from(
+        json['registry_credentials'] ?? {},
+      ),
       isActive: json['is_active'] ?? true,
       createdAt: DateTime.parse(json['created_at']),
     );

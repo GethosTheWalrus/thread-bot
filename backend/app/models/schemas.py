@@ -25,6 +25,8 @@ class ThreadCreateRequest(BaseModel):
     parent_id: Optional[UUID] = Field(None, description="Parent thread ID for branching")
     tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides")
     skill_overrides: Optional[list[SkillOverrideItem]] = Field(None, description="Initial skill overrides")
+    mode: str = Field(default="chat", pattern="^(chat|agent)$")
+    agent_name: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -34,10 +36,21 @@ class ChatRequest(BaseModel):
     tool_overrides: Optional[list[ToolOverrideItem]] = Field(None, description="Initial tool overrides for new threads")
     skill_overrides: Optional[list[SkillOverrideItem]] = Field(None, description="Initial skill overrides for new threads")
     image_urls: Optional[list[str]] = Field(None, description="Optional image URLs to include in the user message")
+    response_mode: str = Field(default="both", pattern="^(response|actions|both)$")
 
 
 class ContinueWorkflowRequest(BaseModel):
     should_continue: bool = Field(..., description="Whether the active workflow should continue iterating")
+
+
+class SecurityModeRequest(BaseModel):
+    mode: str = Field(..., pattern="^(local|admin_token)$")
+
+
+class SecurityResponse(BaseModel):
+    mode: str
+    token_auth_enabled: bool
+    token: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -76,6 +89,15 @@ class ThreadResponse(BaseModel):
     context_window: int = 8192
     has_llm_overrides: bool = False
     is_pinned: bool = False
+    mode: str = "chat"
+    archived_at: Optional[datetime] = None
+    agent: Optional[dict] = None
+    agents: list[dict] = []
+    active_runs: list[dict] = []
+    agent_turn_limit: int = Field(4, ge=1, le=8)
+    moderator: Optional[dict] = None
+    latest_active_run: Optional[dict] = None
+    pending_approvals: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -127,6 +149,14 @@ class ThreadListItem(BaseModel):
     is_reachy_thread: bool = False
     has_llm_overrides: bool = False
     is_pinned: bool = False
+    mode: str = "chat"
+    agent: Optional[dict] = None
+    agents: list[dict] = []
+    active_runs: list[dict] = []
+    agent_turn_limit: int = Field(4, ge=1, le=8)
+    moderator: Optional[dict] = None
+    latest_active_run: Optional[dict] = None
+    pending_approvals: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -156,6 +186,10 @@ class SettingsResponse(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str
+
+class ThreadModeRequest(BaseModel):
+    mode: str = Field(pattern="^(chat|agent)$")
+    agent_name: Optional[str] = None
 
 
 class ThreadPinRequest(BaseModel):

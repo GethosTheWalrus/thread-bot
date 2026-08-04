@@ -10,33 +10,15 @@ import aiohttp
 from temporalio.client import Client as TemporalClient
 
 from app.config import get_discord_config, get_llm_config, get_settings
+from app.discord_mentions import (
+    allowed_mentions_payload,
+    mention_display_names,
+    normalize_discord_user_mentions,
+    replace_readable_mentions,
+)
 
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
-
-
-def normalize_discord_user_mentions(content: str, mentions: list | None = None) -> str:
-    """Make Discord user mention tokens readable to the LLM."""
-    text = content or ""
-    for mention in mentions or []:
-        user_id = None
-        display_name = None
-        if isinstance(mention, dict):
-            user_id = mention.get("id")
-            display_name = mention.get("global_name") or mention.get("username")
-        else:
-            user_id = getattr(mention, "id", None)
-            display_name = (
-                getattr(mention, "global_name", None)
-                or getattr(mention, "display_name", None)
-                or getattr(mention, "name", None)
-            )
-        if not user_id:
-            continue
-        label = f"@{display_name}" if display_name else f"Discord user {user_id}"
-        text = text.replace(f"<@{user_id}>", f"{label} (Discord user)")
-        text = text.replace(f"<@!{user_id}>", f"{label} (Discord user)")
-    return re.sub(r"<@!?(\d+)>", r"Discord user <@\1>", text)
 
 
 def _discord_user_content(content: str, mentions: list | None = None) -> str:
@@ -595,6 +577,7 @@ async def post_discord_message(
     discord_config: dict | None = None,
     reply_to_message_id: str | None = None,
     files: list[dict] | None = None,
+    allowed_user_mentions: list[str] | None = None,
 ) -> str | None:
     config = discord_config or await _load_fresh_discord_config()
     if not _discord_enabled(config):
@@ -602,7 +585,10 @@ async def post_discord_message(
     last_id = None
     chunks = [content[i:i + 1900] for i in range(0, len(content), 1900)] or [" "]
     for index, chunk in enumerate(chunks):
-        payload = {"content": chunk}
+        payload = {
+            "content": chunk,
+            "allowed_mentions": allowed_mentions_payload(allowed_user_mentions),
+        }
         if reply_to_message_id and index == 0:
             payload["message_reference"] = {
                 "message_id": reply_to_message_id,
@@ -642,7 +628,10 @@ async def edit_discord_message(
     await _request(
         "PATCH",
         f"/channels/{discord_thread_id}/messages/{message_id}",
-        json={"content": content[:1900] or " "},
+        json={
+            "content": content[:1900] or " ",
+            "allowed_mentions": allowed_mentions_payload(),
+        },
         discord_config=config,
     )
 
@@ -1056,20 +1045,11 @@ async def _discord_files_from_image_urls(urls: list[dict] | list[str], discord_c
     return files
 
 
-def _mention_display_names(user: dict) -> list[str]:
-    names = []
-    for key in ("global_name", "display_name", "username"):
-        value = (user or {}).get(key)
-        if value and value not in names:
-            names.append(str(value))
-    return names
-
-
 async def _resolve_readable_mentions_for_discord(
     discord_thread_id: str,
     content: str,
     discord_config: dict | None = None,
-) -> str:
+) -> tuple[str, list[str]]:
     """Convert known readable @names back to Discord mention tokens.
 
     Incoming Discord mentions are normalized for the LLM as @display_name.
@@ -1077,34 +1057,28 @@ async def _resolve_readable_mentions_for_discord(
     outbound message contains the real <@user_id> token.
     """
     if not content or "@" not in content:
-        return content
+        return content, []
 
     try:
         messages = await fetch_discord_messages(discord_thread_id, limit=100)
     except Exception:
-        return content
+        return content, []
 
-    name_to_id = {}
+    name_to_ids: dict[str, set[str]] = {}
     for message in messages:
         author = message.get("author") or {}
         author_id = author.get("id")
         if author_id:
-            for name in _mention_display_names(author):
-                name_to_id.setdefault(name.casefold(), str(author_id))
+            for name in mention_display_names(author):
+                name_to_ids.setdefault(name.casefold(), set()).add(str(author_id))
         for mention in message.get("mentions") or []:
             mention_id = mention.get("id")
             if not mention_id:
                 continue
-            for name in _mention_display_names(mention):
-                name_to_id.setdefault(name.casefold(), str(mention_id))
+            for name in mention_display_names(mention):
+                name_to_ids.setdefault(name.casefold(), set()).add(str(mention_id))
 
-    resolved = content
-    for name_key, user_id in sorted(name_to_id.items(), key=lambda item: len(item[0]), reverse=True):
-        if not name_key:
-            continue
-        pattern = re.compile(rf"(?<![\w<])@{re.escape(name_key)}(?![\w])", re.IGNORECASE)
-        resolved = pattern.sub(f"<@{user_id}>", resolved)
-    return resolved
+    return replace_readable_mentions(content, name_to_ids)
 
 
 async def sync_message_to_discord(
@@ -1122,6 +1096,10 @@ async def sync_message_to_discord(
         return None
     if role == "assistant":
         formatted = _format_assistant_for_discord(formatted, config)
+        agent_handle = (metadata or {}).get("agent_handle")
+        agent_name = (metadata or {}).get("agent_name")
+        if agent_handle:
+            formatted = f"**{agent_name or agent_handle} (@{agent_handle})**\n{formatted}"
 
     discord_thread_id = config.get("discord_thread_id")
     if not discord_thread_id:
@@ -1135,13 +1113,24 @@ async def sync_message_to_discord(
             discord_thread_id = link.discord_thread_id
     try:
         files = []
+        allowed_user_mentions = None
         image_attachments = (metadata or {}).get("image_attachments") or []
         if role == "assistant":
-            formatted = await _resolve_readable_mentions_for_discord(
+            origin_id = (metadata or {}).get("origin_id") or (metadata or {}).get("sender_id")
+            if origin_id:
+                # @user is the only reserved outbound token.  It is never
+                # resolved through names or allowed to ping roles/everyone.
+                parts = re.split(r"(```[\s\S]*?```|`[^`\n]*`)", formatted)
+                for index in range(0, len(parts), 2):
+                    parts[index] = re.sub(r"(?<![\w@])@user(?![\w])", f"<@{origin_id}>", parts[index], flags=re.IGNORECASE)
+                formatted = "".join(parts)
+            formatted, allowed_user_mentions = await _resolve_readable_mentions_for_discord(
                 discord_thread_id,
                 formatted,
                 discord_config=config,
             )
+            if origin_id and f"<@{origin_id}>" in formatted and origin_id not in (allowed_user_mentions or []):
+                allowed_user_mentions = [*(allowed_user_mentions or []), str(origin_id)]
             formatted, markdown_files = await _discord_files_from_generated_media_links(formatted, discord_config=config)
             files.extend(markdown_files)
         if image_attachments:
@@ -1154,6 +1143,7 @@ async def sync_message_to_discord(
             discord_config=config,
             reply_to_message_id=reply_to_message_id,
             files=files or None,
+            allowed_user_mentions=allowed_user_mentions,
         )
         if role == "assistant":
             try:
@@ -1268,6 +1258,7 @@ async def start_thread_from_discord_prompt(
     temporal_client: TemporalClient,
     prompt: str,
     sender_name: str,
+    sender_id: str | None = None,
     *,
     source_message_id: str | None = None,
     source_message_link: str | None = None,
@@ -1325,6 +1316,8 @@ async def start_thread_from_discord_prompt(
             "sender_name": sender_name,
             "command": "threadbot",
         }
+        if sender_id:
+            metadata["sender_id"] = sender_id
         if image_attachments:
             metadata["image_attachments"] = image_attachments
         if source_message_id:
@@ -1486,6 +1479,50 @@ async def start_discord_reply_workflow(
     ))
 
 
+async def start_discord_agent_dispatch(
+    temporal_client: TemporalClient,
+    *,
+    link,
+    agent,
+    message,
+    input_message_id,
+    discord_message_id: str,
+    sender_id: str | None,
+    sender_name: str,
+) -> None:
+    """Create one attributed Discord trigger and route it through the agent coordinator."""
+    from uuid import uuid4
+    from app.database import AsyncSessionLocal
+    from app.database.autonomy import create_trigger_event
+    from app.workflows.agent_workflows import TriggerDispatchWorkflow
+
+    async with AsyncSessionLocal() as db:
+        event, created = await create_trigger_event(
+            db, id=uuid4(), workspace_id=agent.workspace_id, agent_id=agent.id,
+            trigger_id=None, schema_version=1, source="discord",
+            event_type="discord.message", subject={
+                "agent_handle": agent.handle, "guild_id": link.guild_id,
+                "channel_id": link.discord_thread_id,
+            }, occurred_at=datetime.now(timezone.utc),
+            dedupe_key=f"message:{discord_message_id}", correlation_id=uuid4(),
+            causation_id=None, origin_chain=[], trust="untrusted_content",
+            payload={
+                "message": message, "input_message_id": str(input_message_id),
+                "origin_id": sender_id, "origin_message_id": discord_message_id,
+                "origin_channel_id": link.discord_thread_id,
+                "origin_guild_id": link.guild_id, "sender_name": sender_name,
+                "response_mode": "both", "route": "discord_agent_mention",
+            }, content_refs=[],
+        )
+        await db.commit()
+    if not created:
+        return
+    await temporal_client.start_workflow(
+        TriggerDispatchWorkflow.run, {"event_id": str(event.id)},
+        id=f"trigger-dispatch:{event.id}", task_queue=get_settings().TEMPORAL_TASK_QUEUE,
+    )
+
+
 async def _active_thread_workflow_id(temporal_client: TemporalClient, thread_id) -> str | None:
     for prefix in (f"thread-{thread_id}-", f"discord-thread-{thread_id}-", f"reachy-thread-{thread_id}-"):
         query = f'ExecutionStatus="Running" AND WorkflowId STARTS_WITH "{prefix}"'
@@ -1587,6 +1624,7 @@ async def reply_to_existing_discord_thread(
     guild_name: str | None = None,
     discord_thread_name: str | None = None,
     sender_name: str,
+    sender_id: str | None = None,
     prompt: str,
     source_message_id: str | None,
     source_message_link: str | None = None,
@@ -1652,6 +1690,8 @@ async def reply_to_existing_discord_thread(
             "source": "discord",
             "sender_name": sender_name,
         }
+        if sender_id:
+            metadata["sender_id"] = sender_id
         if source_message_id:
             metadata["discord_message_id"] = source_message_id
         if source_message_link:
@@ -1727,6 +1767,36 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 raw_content = message.get("content") or ""
                 mentions = message.get("mentions") or []
                 should_reply = _discord_mentions_user(raw_content, mentions, bot_user_id)
+                agent_target = None
+                inactive_target = False
+                async with AsyncSessionLocal() as roster_db:
+                    from sqlalchemy import select
+                    from app.models.models import Thread
+                    from app.models.agent_models import Agent
+                    from app.discord_mentions import classify_inbound_agent_route, has_explicit_handle
+                    thread_row = await roster_db.get(Thread, link.thread_id)
+                    if thread_row and thread_row.mode == "agent":
+                        roster = list((await roster_db.execute(select(Agent).where(
+                            Agent.thread_id == link.thread_id, Agent.status != "archived"))).scalars())
+                        explicit_handle = has_explicit_handle(raw_content)
+                        agent_target = classify_inbound_agent_route(raw_content, [a.handle for a in roster], bot_mentioned=should_reply)
+                        target = next((a for a in roster if agent_target and a.handle.casefold() == agent_target.casefold()), None)
+                        if explicit_handle and not target:
+                            # Unknown handles are never silently redirected to
+                            # the moderator.
+                            agent_target = "__unknown__"
+                            should_reply = False
+                        elif target and target.status != "active":
+                            # An explicit inactive destination must never fall
+                            # through to the moderator.
+                            should_reply = False
+                            inactive_target = True
+                        elif target:
+                            should_reply = True
+                        elif should_reply:
+                            agent_target = next((a.handle for a in roster if a.is_moderator and a.status == "active"), "moderator")
+                        else:
+                            agent_target = None
                 content = _strip_discord_user_mention(raw_content, bot_user_id) if should_reply else raw_content.strip()
                 image_attachments = await persist_discord_image_attachments(_discord_image_attachments(message))
                 if not content and not image_attachments:
@@ -1754,13 +1824,18 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 metadata = {
                     "source": "discord",
                     "sender_name": username,
+                    "sender_id": str(author.get("id")) if author.get("id") else None,
                     "discord_message_id": str(message.get("id")),
+                    "discord_channel_id": link.discord_thread_id,
+                    "discord_guild_id": link.guild_id,
                     "reply_requested": should_reply,
+                    "agent_target_handle": agent_target,
                 }
                 if image_attachments:
                     metadata["image_attachments"] = image_attachments
+                input_message = None
                 async with AsyncSessionLocal() as db:
-                    await add_message(
+                    input_message = await add_message(
                         db,
                         link.thread_id,
                         "user",
@@ -1770,11 +1845,40 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                     await db.commit()
                 from app.api.routes import broadcast_thread_updated
                 await broadcast_thread_updated(str(link.thread_id))
-                if should_reply:
+                target = None
+                if should_reply and agent_target:
+                    async with AsyncSessionLocal() as roster_db:
+                        from sqlalchemy import select
+                        from app.models.agent_models import Agent
+                        target = await roster_db.scalar(select(Agent).where(
+                            Agent.thread_id == link.thread_id,
+                            Agent.handle.ilike(agent_target),
+                            Agent.status == "active",
+                        ))
+                if agent_target == "__unknown__":
+                    await post_discord_message(
+                        link.discord_thread_id,
+                        "I couldn't find an active agent for that handle. Please mention an active agent or mention ThreadBot for the moderator.",
+                        discord_config=await _load_fresh_discord_config(),
+                        reply_to_message_id=str(message.get("id")),
+                    )
+                elif should_reply and target:
+                    await start_discord_agent_dispatch(
+                        temporal_client, link=link, agent=target, message=local_content,
+                        input_message_id=input_message.id,
+                        discord_message_id=str(message.get("id")), sender_id=str(author.get("id")) if author.get("id") else None,
+                        sender_name=username,
+                    )
+                elif should_reply and not agent_target:
                     await start_discord_reply_workflow(
-                        temporal_client,
-                        link,
-                        local_content,
+                        temporal_client, link, local_content,
+                        reply_to_message_id=str(message.get("id")),
+                    )
+                elif inactive_target:
+                    await post_discord_message(
+                        link.discord_thread_id,
+                        "That agent is not active and cannot receive this message.",
+                        discord_config=await _load_fresh_discord_config(),
                         reply_to_message_id=str(message.get("id")),
                     )
 

@@ -13,9 +13,13 @@ class Settings(BaseSettings):
     TEMPORAL_PORT: int = 7233
     TEMPORAL_NAMESPACE: str = "default"
     TEMPORAL_TASK_QUEUE: str = "chatbot-task-queue"
+    AGENT_TASK_QUEUE: str = "threadbot-agent"
+    CONNECTOR_TASK_QUEUE: str = "threadbot-connectors"
+    NOTIFICATION_TASK_QUEUE: str = "threadbot-notifications"
     TEMPORAL_PAYLOAD_CODEC_ENABLED: bool = False
     TEMPORAL_PAYLOAD_CODEC_KEY: str = ""
     TEMPORAL_PAYLOAD_CODEC_KEY_FILE: str = ""
+    TEMPORAL_SEARCH_ATTRIBUTES_ENABLED: bool = False
 
     # LLM API
     LLM_API_URL: str = "http://host.docker.internal:11434/v1"
@@ -125,6 +129,25 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     CORS_ORIGINS: str = "*"
+
+    # Control-plane security. Local is deliberately compatible with the existing UI;
+    # autonomy remains disabled regardless of these defaults.
+    SECURITY_MODE: str = "local"
+    ADMIN_TOKEN_HASH: str = ""
+    ADMIN_BOOTSTRAP_TOKEN: str = ""
+    AUTONOMY_ENABLED: bool = False
+    AUTONOMY_SIDE_EFFECTS_ENABLED: bool = False
+    AUTONOMY_WEBHOOKS_ENABLED: bool = False
+    AGENTS_ENABLED: bool = False
+    AGENTS_MANUAL_RUN_ENABLED: bool = False
+    AGENTS_SCHEDULES_ENABLED: bool = False
+    AGENTS_CONNECTORS_ENABLED: bool = False
+    AGENTS_ACTIONS_ENABLED: bool = False
+    AGENTS_APPROVALS_ENABLED: bool = False
+    AGENTS_HANDOFFS_ENABLED: bool = False
+    AGENTS_REPLAY_ENABLED: bool = False
+    AGENTS_CANARY_ENABLED: bool = False
+    AGENTS_REACHY_ACTIONS_ENABLED: bool = False
 
     # App
     APP_NAME: str = "ThreadBot"
@@ -242,6 +265,9 @@ async def load_settings_from_db() -> None:
         "discord_poll_interval_seconds": int,
         "reachy_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
         "reachy_speech_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "autonomy_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "autonomy_side_effects_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
+        "autonomy_webhooks_enabled": lambda v: str(v).lower() in ("1", "true", "yes", "on"),
     }
     for key, value in rows.items():
         coerce = _type_map.get(key)

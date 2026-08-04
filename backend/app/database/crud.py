@@ -17,8 +17,8 @@ from app.models.models import (
 )
 
 
-async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None) -> Thread:
-    thread = Thread(title=title, parent_id=parent_id)
+async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None, mode: str = "chat", workspace_id: UUID | None = None) -> Thread:
+    thread = Thread(title=title, parent_id=parent_id, mode=mode, workspace_id=workspace_id)
     db.add(thread)
     await db.flush()
     await db.refresh(thread)

@@ -3,16 +3,18 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
+import 'package:threadbot/widgets/security_settings.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback? onUnauthorized;
+  const SettingsScreen({super.key, this.onUnauthorized});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _api = ApiService();
+  late final ApiService _api;
   final _apiUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
   final _modelController = TextEditingController();
@@ -124,6 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _api = ApiService(onUnauthorized: widget.onUnauthorized);
     _loadSettings();
   }
 
@@ -892,7 +895,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : _loadFailed
           ? _buildLoadError()
           : DefaultTabController(
-              length: 5,
+              length: 6,
               child: Column(
                 children: [
                   Container(
@@ -909,6 +912,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Tab(text: 'Media'),
                         Tab(text: 'Discord'),
                         Tab(text: 'Tools'),
+                        Tab(text: 'Security'),
                       ],
                     ),
                   ),
@@ -920,6 +924,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _buildMediaSettingsTab(),
                         _buildDiscordSettingsTab(),
                         _buildToolsSettingsTab(),
+                        SecuritySettingsSection(api: _api),
                       ],
                     ),
                   ),

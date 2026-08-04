@@ -14,6 +14,7 @@ class Sidebar extends StatefulWidget {
   final VoidCallback onMCP;
   final VoidCallback onSkills;
   final VoidCallback onSettings;
+  final VoidCallback onAgents;
 
   const Sidebar({
     super.key,
@@ -29,6 +30,7 @@ class Sidebar extends StatefulWidget {
     required this.onMCP,
     required this.onSkills,
     required this.onSettings,
+    required this.onAgents,
   });
 
   @override
@@ -167,10 +169,7 @@ class _SidebarState extends State<Sidebar> {
                   child: Row(
                     children: [
                       _buildFilterChip('All', _SidebarSourceFilter.all),
-                      _buildFilterChip(
-                        'ThreadBot',
-                        _SidebarSourceFilter.threadbot,
-                      ),
+                      _buildFilterChip('Chat', _SidebarSourceFilter.threadbot),
                       _buildFilterChip('Discord', _SidebarSourceFilter.discord),
                       _buildFilterChip('Reachy', _SidebarSourceFilter.reachy),
                       _buildFilterChip('Pinned', _SidebarSourceFilter.pinned),
@@ -327,6 +326,36 @@ class _SidebarState extends State<Sidebar> {
                           const SizedBox(width: 10),
                           const Text(
                             'MCP Servers',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFFE4E4E7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: widget.onAgents,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.smart_toy_outlined,
+                            size: 18,
+                            color: const Color(
+                              0xFF8B5CF6,
+                            ).withValues(alpha: 0.7),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'Agents',
                             style: TextStyle(
                               fontSize: 13,
                               color: Color(0xFFE4E4E7),
@@ -619,15 +648,20 @@ class _SidebarState extends State<Sidebar> {
   }
 
   String _sourceLabel(ThreadListItem thread) {
+    if (thread.mode == 'agent') {
+      final approvals = thread.pendingApprovals;
+      return 'Agent · ${thread.agent?.status ?? 'ready'}${approvals > 0 ? ' · $approvals approval${approvals == 1 ? '' : 's'}' : ''}';
+    }
     if (thread.isReachyThread) return 'Reachy';
     if (thread.isDiscordThread) {
       final serverName = thread.discordServerName?.trim();
       return serverName?.isNotEmpty == true ? serverName! : 'Discord';
     }
-    return 'ThreadBot';
+    return 'Chat';
   }
 
   Color _sourceColor(ThreadListItem thread, bool isActive) {
+    if (thread.mode == 'agent') return const Color(0xFFF59E0B);
     if (thread.isReachyThread) return const Color(0xFF34D399);
     if (thread.isDiscordThread) return const Color(0xFF5865F2);
     return isActive
@@ -637,7 +671,9 @@ class _SidebarState extends State<Sidebar> {
 
   Widget _sourceBadge(ThreadListItem thread, bool isActive) {
     final color = _sourceColor(thread, isActive);
-    final icon = thread.isReachyThread
+    final icon = thread.mode == 'agent'
+        ? Icons.smart_toy_outlined
+        : thread.isReachyThread
         ? Icons.smart_toy_outlined
         : thread.isDiscordThread
         ? Icons.discord

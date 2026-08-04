@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:threadbot/screens/chat_screen.dart';
-import 'package:threadbot/screens/mcp_screen.dart';
-import 'package:threadbot/screens/settings_screen.dart';
-import 'package:threadbot/screens/skills_screen.dart';
+import 'package:threadbot/navigation/router.dart';
+import 'package:threadbot/services/autonomy_api.dart';
 import 'package:threadbot/services/view_registry.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 
@@ -43,47 +41,31 @@ class ThreadBotApp extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
             borderSide: BorderSide.none,
           ),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 16,
+          ),
           hintStyle: const TextStyle(color: Color(0xFF52525B)),
         ),
       ),
       initialRoute: '/',
-      onGenerateRoute: (settings) {
-        final uri = Uri.parse(settings.name ?? '/');
-        
-        if (uri.pathSegments.length == 2 && uri.pathSegments.first == 'thread') {
-          return MaterialPageRoute(
-            builder: (_) => ChatScreen(initialThreadId: uri.pathSegments[1]),
-            settings: settings,
-          );
-        }
-
-        if (uri.path == '/skills') {
-          return MaterialPageRoute(
-            builder: (_) => const SkillsScreen(),
-            settings: settings,
-          );
-        }
-
-        if (uri.path == '/mcp') {
-          return MaterialPageRoute(
-            builder: (_) => const MCPScreen(),
-            settings: settings,
-          );
-        }
-
-        if (uri.path == '/settings') {
-          return MaterialPageRoute(
-            builder: (_) => const SettingsScreen(),
-            settings: settings,
-          );
-        }
-
-        return MaterialPageRoute(
-          builder: (_) => const ChatScreen(),
-          settings: settings,
-        );
-      },
+      navigatorKey: rootNavigatorKey,
+      onGenerateRoute: (settings) => appRoute(
+        settings,
+        AutonomyApiService(
+          onUnauthorized: () {
+            if (!_authRedirectingForApp) {
+              _authRedirectingForApp = true;
+              rootNavigatorKey.currentState
+                  ?.pushNamed('/auth')
+                  .whenComplete(() => _authRedirectingForApp = false);
+            }
+          },
+        ),
+      ),
     );
   }
 }
+
+final rootNavigatorKey = GlobalKey<NavigatorState>();
+bool _authRedirectingForApp = false;

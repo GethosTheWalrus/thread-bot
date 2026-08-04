@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-agent-worker
+  namespace: threadbot
+spec:
+  # Enable now that autonomy/heartbeat/side-effects are configured.
+  replicas: 1
+  selector:
+    matchLabels: {app: threadbot-agent-worker}
+  template:
+    metadata: {labels: {app: threadbot-agent-worker}}
+    spec:
+      serviceAccountName: threadbot-sa
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+      containers:
+        - name: agent-worker
+          image: git.home:5050/mike/thread-bot/worker:latest
+          imagePullPolicy: Always
+          command: ["python", "-m", "app.agent_worker"]
+          envFrom:
+            - configMapRef:
+                name: threadbot-config
+          env:
+            - name: AGENT_TASK_QUEUE
+              value: threadbot-agent
+            - name: AUTONOMY_ENABLED
+              value: "true"
+            - name: AUTONOMY_SIDE_EFFECTS_ENABLED
+              value: "true"
+            - name: AUTONOMY_WEBHOOKS_ENABLED
+              value: "false"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: threadbot-notification-worker
+  namespace: threadbot
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: threadbot-notification-worker}}
+  template:
+    metadata: {labels: {app: threadbot-notification-worker}}
+    spec:
+      serviceAccountName: threadbot-sa
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+      containers:
+        - name: notification-worker
+          image: git.home:5050/mike/thread-bot/worker:latest
+          imagePullPolicy: Always
+          command: ["python", "-m", "app.notification_worker"]
+          envFrom:
+            - configMapRef:
+                name: threadbot-config
+          env:
+            - name: NOTIFICATION_TASK_QUEUE
+              value: threadbot-notifications
+            - name: AUTONOMY_ENABLED
+              value: "true"

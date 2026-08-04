@@ -40,7 +40,11 @@ Future<WebImageFile> _toWebImageFile(html.File file) async {
   final bytes = await _readFileBytes(file);
   final filename = file.name.isNotEmpty ? file.name : 'image.png';
   final contentType = file.type.isNotEmpty ? file.type : 'image/png';
-  return WebImageFile(bytes: bytes, filename: filename, contentType: contentType);
+  return WebImageFile(
+    bytes: bytes,
+    filename: filename,
+    contentType: contentType,
+  );
 }
 
 Future<List<WebImageFile>> pickImageFiles({bool multiple = true}) async {
@@ -85,7 +89,8 @@ StreamSubscription<html.Event>? listenForImagePaste(
 ) {
   return html.document.onPaste.listen((event) async {
     final active = html.document.activeElement;
-    final isTextInput = active is html.InputElement || active is html.TextAreaElement;
+    final isTextInput =
+        active is html.InputElement || active is html.TextAreaElement;
     if (!isTextInput) return;
 
     final clipboard = event.clipboardData;
