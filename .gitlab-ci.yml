@@ -107,7 +107,7 @@ update-k8s-images:
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - k8s/deployment.yaml
+        - k8s/*.yaml
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - backend/**/*
@@ -148,8 +148,12 @@ update-k8s-images:
 
       changed=0
       if [ "$want_backend" = "1" ]; then
-        sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" k8s/deployment.yaml
-        sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" k8s/deployment.yaml
+        for manifest in k8s/deployment.yaml k8s/migration-job.yaml; do
+          sed -i -E "s|image: .*/backend:.*|image: $REGISTRY_IMAGE/backend:$IMAGE_TAG|" "$manifest"
+        done
+        for manifest in k8s/deployment.yaml k8s/agent-worker.yaml k8s/connector-worker.yaml k8s/notification-worker.yaml; do
+          sed -i -E "s|image: .*/worker:.*|image: $REGISTRY_IMAGE/worker:$IMAGE_TAG|" "$manifest"
+        done
         changed=1
       fi
       if [ "$want_frontend" = "1" ]; then
@@ -164,7 +168,7 @@ update-k8s-images:
         echo "No images built for $IMAGE_TAG; leaving manifest unchanged."
         exit 0
       fi
-      git add k8s/deployment.yaml
+      git add k8s/deployment.yaml k8s/migration-job.yaml k8s/agent-worker.yaml k8s/connector-worker.yaml k8s/notification-worker.yaml
       if git diff --cached --quiet; then exit 0; fi
       git commit -m "chore: update threadbot images to $IMAGE_TAG [skip ci]"
       git push "${CI_SERVER_PROTOCOL}://oauth2:${CI_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:main"

@@ -14,7 +14,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: notification-worker
-          image: git.home:5050/mike/thread-bot/worker:latest
+          image: git.home:5050/mike/thread-bot/worker:906e95d5
           imagePullPolicy: Always
           command: ["python", "-m", "app.notification_worker"]
           envFrom:
@@ -25,3 +25,8 @@ spec:
               value: threadbot-notifications
             - name: AUTONOMY_ENABLED
               value: "true"
+            - name: TEMPORAL_PAYLOAD_CODEC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codec-encryption-key
+                  key: key
