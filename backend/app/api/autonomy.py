@@ -158,7 +158,7 @@ async def archive(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):
 @router.put("/agents/{agent_id}/draft",response_model=DraftResponse)
 async def draft(agent_id:UUID,body:DraftUpsert,db=Depends(get_db),actor=Depends(actor_dep)):
     try:
-        row=await upsert_draft(db,agent_id,actor.workspace_id,body.model_dump(mode="json")); await audit_mutation(db,actor.workspace_id,actor,"agent.draft_updated","agent",agent_id); return row
+        row=await upsert_draft(db,agent_id,actor.workspace_id,body.model_dump(mode="json")); await db.refresh(row); await audit_mutation(db,actor.workspace_id,actor,"agent.draft_updated","agent",agent_id); return row
     except ValueError as exc: raise HTTPException(409,str(exc))
 @router.get("/agents/{agent_id}/draft",response_model=DraftResponse)
 async def get_draft(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):

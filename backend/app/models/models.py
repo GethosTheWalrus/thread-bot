@@ -30,7 +30,7 @@ class Thread(Base):
     conversation_summary_turn_count = Column(Integer, nullable=False, default=0, server_default="0")
     mode = Column(String(16), nullable=False, default="chat", server_default="chat")
     archived_at = Column(DateTime(timezone=True), nullable=True)
-    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True)
+    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     agent_turn_limit = Column(Integer, nullable=False, default=4, server_default="4")
 
     messages = relationship("Message", back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at")

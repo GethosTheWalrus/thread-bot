@@ -161,6 +161,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   bool _isLoadingThreads = false;
   bool _isLoadingMessages = false;
   bool _isSending = false;
+  bool _isPostingAgentRun = false;
   bool _isCreatingAgent = false;
   bool _isChangingThreadMode = false;
   String? _error;
@@ -337,7 +338,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       // Preserve the displayed mode and agent while the request is in flight.
       // In particular, do not briefly turn a generating agent thread into chat.
       if (switchingThread) _resetRunTracking();
-      _isSending = knownThread?.isGenerating == true;
+      _isSending =
+          knownThread?.isGenerating == true && knownThread?.mode != 'agent';
       _error = null;
       _hasToolOverrides = false;
       _hasLlmOverrides = false;
@@ -374,7 +376,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _contextEstimatedTokens = thread.estimatedTokens;
           _contextWindow = thread.contextWindow;
           _isLoadingMessages = false;
-          _isSending = thread.isGenerating;
+          _isSending = thread.isGenerating && thread.mode != 'agent';
         });
         _reconcileRunSummaries(thread.activeRuns, thread.id);
         _scrollToBottom(force: true, jump: true, settleLayout: true);
@@ -482,6 +484,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               threadId: threadId,
               status: summary.status,
               mode: summary.mode,
+              inputMessageId: summary.inputMessageId,
               agentName: summary.agentName,
               agentHandle: summary.agentHandle,
               outputSummary: summary.outputSummary,
@@ -492,7 +495,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       for (final id in _activeRuns.keys.toList()) {
         if (!ids.contains(id)) _removeRun(id);
       }
-      if (_activeRuns.isNotEmpty) _isSending = true;
+      if (_activeRuns.isNotEmpty && _activeThreadMode != 'agent') {
+        _isSending = true;
+      }
     });
     for (final summary in summaries) {
       if (!_isTerminalRun(summary.status)) {
@@ -512,7 +517,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       if (_isTerminalRun(run.status)) {
         setState(() => _removeRun(runId));
       } else {
-        setState(() => _upsertRun(run));
+        final previous = _activeRuns[runId];
+        setState(
+          () => _upsertRun(
+            run.inputMessageId == null && previous?.inputMessageId != null
+                ? run.copyWith(inputMessageId: previous!.inputMessageId)
+                : run,
+          ),
+        );
       }
     } catch (_) {}
   }
@@ -524,7 +536,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _runPollFailures.remove(runId);
     _runRetryAt.remove(runId);
     _runPollInFlight.remove(runId);
-    if (_activeRuns.isEmpty && mounted) _isSending = false;
+    if (_activeRuns.isEmpty && mounted && _activeThreadMode != 'agent') {
+      _isSending = false;
+    }
   }
 
   Future<void> _loadLlmOverrideStatus(String threadId) async {
@@ -853,9 +867,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     String content, [
     List<String> imageUrls = const [],
   ]) async {
-    if (_isSending) return;
+    final agentComposer = _activeThreadMode == 'agent' && _agent != null;
+    if (agentComposer ? _isPostingAgentRun : _isSending) return;
 
-    setState(() => _isSending = true);
+    setState(() {
+      if (agentComposer) {
+        _isPostingAgentRun = true;
+      } else {
+        _isSending = true;
+      }
+    });
 
     final messageMetadata = imageUrls.isNotEmpty
         ? {
@@ -878,7 +899,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     // Track temporary message IDs for cleanup on reload
     final tempIds = <String>[optimisticMsg.id];
 
-    if (_agent != null && _activeThreadId != null) {
+    if (agentComposer && _activeThreadId != null) {
       try {
         setState(
           () => _upsertRun(
@@ -889,6 +910,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               agentId: _agent!.id,
               agentName: _agent!.name,
               agentHandle: _agent!.handle,
+              inputMessageId: optimisticMsg.id,
             ),
           ),
         );
@@ -900,7 +922,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         if (mounted) {
           setState(() {
             _activeRuns.removeWhere((id, _) => id.startsWith('starting-'));
-            _upsertRun(run);
+            _upsertRun(
+              run.inputMessageId == null
+                  ? run.copyWith(inputMessageId: optimisticMsg.id)
+                  : run,
+            );
           });
           _startRunStatus();
         }
@@ -908,14 +934,15 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         if (mounted) {
           setState(() {
             _messages.removeWhere((m) => m.id == optimisticMsg.id);
-            _resetRunTracking();
-            _isSending = false;
+            _activeRuns.removeWhere((id, _) => id.startsWith('starting-'));
+            _isPostingAgentRun = false;
           });
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('Agent run failed: $e')));
         }
       }
+      if (mounted) setState(() => _isPostingAgentRun = false);
       return;
     }
 
@@ -1026,7 +1053,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         if (mounted && generation == _runGeneration)
           setState(() => _removeRun(run.id));
       } else {
-        setState(() => _activeRuns[run.id] = latest);
+        setState(
+          () => _activeRuns[run.id] = latest.copyWith(
+            inputMessageId: latest.inputMessageId ?? run.inputMessageId,
+            agentName: latest.agentName ?? run.agentName,
+            agentHandle: latest.agentHandle ?? run.agentHandle,
+          ),
+        );
       }
       _runPollFailures[run.id] = 0;
       _runRetryAt.remove(run.id);
@@ -1059,123 +1092,6 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     'dead_lettered',
     'outcome_unknown',
   }.contains(status.toLowerCase());
-
-  List<Widget> _buildRunChips() {
-    if (_activeRuns.isEmpty) return const [];
-    final runs = _activeRuns.values.toList()
-      ..sort((a, b) {
-        final left = a.queuedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final right = b.queuedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return left.compareTo(right);
-      });
-    return runs.map(_buildRunChip).toList();
-  }
-
-  Widget _buildRunChip(Run run) {
-    final events = _runEvents[run.id] ?? const <RunEvent>[];
-    final latest = events.isEmpty ? null : events.last;
-    final waiting = run.status.toLowerCase() == 'waiting_approval';
-    final identity = [
-      if (run.agentName?.isNotEmpty == true) run.agentName,
-      if (run.agentHandle?.isNotEmpty == true) '@${run.agentHandle}',
-    ].join(' ');
-    final output = _compactMarkdown(
-      run.outputSummary ?? _safeEventText(latest),
-    );
-    final statusColor = waiting
-        ? const Color(0xFFFBBF24)
-        : const Color(0xFF8B5CF6);
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: Tooltip(
-        message: 'Open ${identity.isEmpty ? 'agent' : identity} run details',
-        child: Semantics(
-          button: true,
-          label: '${identity.isEmpty ? 'Agent' : identity} run, ${run.status}',
-          child: Material(
-            color: const Color(0xFF1A1527),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: BorderSide(color: statusColor.withValues(alpha: 0.35)),
-            ),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () =>
-                  Navigator.pushNamed(context, '/agent-runs/${run.id}'),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      waiting
-                          ? Icons.hourglass_top_rounded
-                          : Icons.autorenew_rounded,
-                      size: 16,
-                      color: waiting ? const Color(0xFFFBBF24) : statusColor,
-                    ),
-                    const SizedBox(width: 8),
-                    Flexible(
-                      child: Text(
-                        '${identity.isEmpty ? 'Agent' : identity} · ${run.status.replaceAll('_', ' ')}${run.route.isEmpty ? '' : ' · ${run.route.replaceAll('_', ' ')}'}',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFFE9D5FF),
-                          fontWeight: FontWeight.w500,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    if (output?.isNotEmpty == true) ...[
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          output!,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.white54,
-                          ),
-                        ),
-                      ),
-                    ],
-                    const SizedBox(width: 4),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      size: 18,
-                      color: Colors.white.withValues(alpha: 0.3),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  String? _safeEventText(RunEvent? event) {
-    if (event == null) return null;
-    final value =
-        event.payload['display_content'] ??
-        event.payload['content'] ??
-        event.payload['message'] ??
-        event.payload['error'];
-    return value is String ? value : null;
-  }
-
-  String? _compactMarkdown(String? value) {
-    if (value == null || value.trim().isEmpty) return null;
-    return value
-        .replaceAll(RegExp(r'```[\s\S]*?```'), ' code ')
-        .replaceAll(RegExp(r'[`*_>#\[\]]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-  }
 
   /// Handle a single structured JSON event from the stream.
   void _handleStreamEvent(Map<String, dynamic> event, List<String> tempIds) {
@@ -2123,7 +2039,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
                     Expanded(child: _buildChatArea()),
                     ChatInput(
                       onSend: _sendMessage,
-                      isSending: _isSending,
+                      isSending: _activeThreadMode == 'agent'
+                          ? _isPostingAgentRun
+                          : _isSending,
                       onThreadControlsPressed: _showThreadControls,
                       hasToolOverrides: _hasToolOverrides,
                       hasLlmOverrides: _hasLlmOverrides,
@@ -2354,7 +2272,22 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
             messages: _messages,
             scrollController: _scrollController,
             isSending: _isSending,
-            footerWidgets: _buildRunChips(),
+            activeRuns:
+                (_activeRuns.values.toList()..sort((a, b) {
+                      final time = (a.queuedAt ?? DateTime(1970)).compareTo(
+                        b.queuedAt ?? DateTime(1970),
+                      );
+                      return time != 0 ? time : a.id.compareTo(b.id);
+                    }))
+                    .map(
+                      (run) => ActiveRunPresentation(
+                        run: run,
+                        events: _runEvents[run.id] ?? const <RunEvent>[],
+                      ),
+                    )
+                    .toList(),
+            onRunTap: (runId) =>
+                Navigator.pushNamed(context, '/agent-runs/$runId'),
           ),
         ),
         if (!_isAtBottom)

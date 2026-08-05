@@ -207,15 +207,33 @@ async def _publish(redis_url: str, stream_channel: str, event):
 
 
 # ── Inline DB save helper (used by multiple activities) ───────────────
-async def _save_inline(thread_id: str, role: str, content: str, metadata: dict | None = None):
+async def _save_inline(thread_id: str, role: str, content: str, metadata: dict | None = None, agent_context: dict | None = None):
     """Persist a message to the DB immediately."""
     if not thread_id:
         return
     from uuid import UUID
     from app.database import AsyncSessionLocal
     from app.database.crud import add_message
+    agent_context = agent_context or {}
+    if agent_context:
+        metadata = {**(metadata or {}), "agent_name": agent_context.get("agent_name"), "agent_handle": agent_context.get("agent_handle"), "agent_run_id": agent_context.get("agent_run_id")}
     async with AsyncSessionLocal() as db:
-        await add_message(db, UUID(thread_id), role, content, metadata=metadata)
+        await add_message(db, UUID(thread_id), role, content, metadata=metadata,
+                           agent_id=UUID(str(agent_context["agent_id"])) if agent_context.get("agent_id") else None,
+                           agent_version_id=UUID(str(agent_context["agent_version_id"])) if agent_context.get("agent_version_id") else None,
+                           agent_run_id=UUID(str(agent_context["agent_run_id"])) if agent_context.get("agent_run_id") else None,
+                           agent_handle=agent_context.get("agent_handle"))
+        await db.commit()
+
+async def _append_agent_tool_event(config: dict, event_type: str, tool: str) -> None:
+    context = (config or {}).get("agent_context") or {}
+    if not context.get("agent_run_id"):
+        return
+    from uuid import UUID
+    from app.database import AsyncSessionLocal
+    from app.database.autonomy import append_run_event
+    async with AsyncSessionLocal() as db:
+        await append_run_event(db, UUID(str(context["agent_run_id"])), event_type, {"tool": str(tool)[:255]})
         await db.commit()
 
 
@@ -280,8 +298,11 @@ async def _sync_discord_tool_event(config: dict, event: dict) -> None:
     if not discord_config or not discord_config.get("enabled"):
         return
     try:
-        from app.discord_integration import sync_discord_tool_activity
-        await sync_discord_tool_activity(event, discord_config=discord_config)
+        from app.discord_integration import sync_agent_run_tool_activity, sync_discord_tool_activity
+        if (config or {}).get("agent_context", {}).get("agent_run_id"):
+            await sync_agent_run_tool_activity(config["agent_context"]["agent_run_id"], event)
+        else:
+            await sync_discord_tool_activity(event, discord_config=discord_config)
     except Exception as exc:
         print(f"[discord] tool activity sync failed: {exc}", flush=True)
 
@@ -801,6 +822,10 @@ async def _execute_agent_tool(
     if not tool_call_id:
         tool_call_id = f"{tool_name}-{uuid.uuid4().hex[:8]}"
     agent_attempt = config.get("agent_attempt")
+    async def save_tool_inline(role, content, metadata=None):
+        result = await _save_inline(thread_id, role, content, metadata=metadata, agent_context=config.get("agent_context"))
+        await _append_agent_tool_event(config, "tool_call" if role == "tool_call" else "tool_result", (metadata or {}).get("tool_name", content[:120]))
+        return result
     tool_call = {
         "id": tool_call_id,
         "type": "function",
@@ -817,8 +842,7 @@ async def _execute_agent_tool(
             skill_label = str(skill_args.get("skill_name") or skill_args.get("skill_id") or "skill").strip() or "skill"
             display_name = f"skill:{skill_label}"
         if tool_name != "continue_thinking":
-            await _save_inline(
-                thread_id,
+            await save_tool_inline(
                 "tool_call",
                 f"Calling {display_name}",
                 metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
@@ -834,8 +858,7 @@ async def _execute_agent_tool(
 
         result_text = await _execute_builtin(tool_name, tool_args, thread_id, redis_url, stream_channel, config)
         if tool_name != "continue_thinking":
-            await _save_inline(
-                thread_id,
+            await save_tool_inline(
                 "tool_result",
                 result_text,
                 metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
@@ -875,8 +898,7 @@ async def _execute_agent_tool(
             tool_name = map_name
     if tool_name not in mcp_tools_map:
         not_found = "Tool not found"
-        await _save_inline(
-            thread_id,
+        await save_tool_inline(
             "tool_result",
             not_found,
             metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
@@ -894,8 +916,7 @@ async def _execute_agent_tool(
 
     info = mcp_tools_map[tool_name]
     display_name = f"{info['server_name']}:{info['original_name']}"
-    await _save_inline(
-        thread_id,
+    await save_tool_inline(
         "tool_call",
         f"Calling {display_name}",
         metadata={"tool_calls": [tool_call], "agent_attempt": agent_attempt},
@@ -939,8 +960,7 @@ async def _execute_agent_tool(
                 result_text = "\n".join([c.text for c in result.content if hasattr(c, "text")])
     except Exception as e:
         result_text = f"Error executing tool: {str(e)}"
-        await _save_inline(
-            thread_id,
+        await save_tool_inline(
             "tool_result",
             result_text,
             metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
@@ -956,8 +976,7 @@ async def _execute_agent_tool(
         await _sync_discord_tool_event(config, event)
         return result_text
 
-    await _save_inline(
-        thread_id,
+    await save_tool_inline(
         "tool_result",
         result_text,
         metadata={"tool_call_id": tool_call_id, "tool_name": tool_name, "agent_attempt": agent_attempt},
@@ -4902,6 +4921,9 @@ async def save_message(args: dict) -> dict:
     role = args["role"]
     content = args["content"]
     metadata = args.get("metadata")
+    agent_context = args.get("agent_context") or {}
+    if agent_context:
+        metadata = {**(metadata or {}), "agent_name": agent_context.get("agent_name"), "agent_handle": agent_context.get("agent_handle"), "agent_run_id": agent_context.get("agent_run_id")}
     idempotency_key = args.get("idempotency_key")
     if idempotency_key:
         metadata = dict(metadata or {})
@@ -4917,7 +4939,11 @@ async def save_message(args: dict) -> dict:
                 ).limit(1)
             )).scalar_one_or_none()
         if not existing:
-            await add_message(db, UUID(thread_id), role, content, metadata=metadata)
+            await add_message(db, UUID(thread_id), role, content, metadata=metadata,
+                               agent_id=UUID(str(agent_context["agent_id"])) if agent_context.get("agent_id") else None,
+                               agent_version_id=UUID(str(agent_context["agent_version_id"])) if agent_context.get("agent_version_id") else None,
+                               agent_run_id=UUID(str(agent_context["agent_run_id"])) if agent_context.get("agent_run_id") else None,
+                               agent_handle=agent_context.get("agent_handle"))
         completed_turns = None
         if not existing and args.get("completed_turn") is True:
             result = await db.execute(

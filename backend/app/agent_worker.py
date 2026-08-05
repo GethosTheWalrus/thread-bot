@@ -10,9 +10,10 @@ from app.activities.agent_activities import load_agent_run, persist_runtime_snap
 from app.activities.autonomy_activities import (
     prepare_runtime, plan_model_step, persist_planned_action,
     evaluate_policy_and_reserve_budget, load_verified_approval, create_approval_request,
+    expire_approval_request,
     recheck_authorization, execute_authorized_action, persist_action_result,
     finalize_turn, start_runtime, transition_action_status, transition_run_status, settle_budget,
-    reconcile_expired_runtimes, renew_thread_lease,
+    reconcile_expired_runtimes, renew_thread_lease, release_runtime, append_progress_event,
 )
 from app.activities.heartbeat_activities import (
     load_heartbeat_state, materialize_heartbeat_run, complete_heartbeat_run,
@@ -44,7 +45,7 @@ async def run_agent_worker():
     async with AsyncSessionLocal() as db:
         triggers=list((await db.execute(select(AgentTrigger))).scalars().all())
     await reconcile_schedules(client,triggers)
-    worker = Worker(client, task_queue=getattr(settings, "AGENT_TASK_QUEUE", "threadbot-agent"), workflows=[PolicyAwareThreadTurnWorkflow, AgentCoordinatorWorkflow, ThreadTurnCoordinatorWorkflow, AgentRunWorkflow, TriggerDispatchWorkflow, HandoffSLAWorkflow, ArtifactRetentionWorkflow, AgentHeartbeatWorkflow], activities=[prepare_runtime, plan_model_step, persist_planned_action, evaluate_policy_and_reserve_budget, load_verified_approval, create_approval_request, recheck_authorization, execute_authorized_action, persist_action_result, finalize_turn, start_runtime, transition_action_status, transition_run_status, settle_budget, reconcile_expired_runtimes, renew_thread_lease, load_agent_run, persist_runtime_snapshot, project_run_terminal, recover_coordinator_queue, recover_thread_queue, route_agent_output, materialize_trigger_event, claim_event_run, mark_run_workflow, fail_run, suppress_event, reconcile_phase2_dead_letters, poll_connector, capture_connector_snapshot, persist_state_diff, fire_handoff_escalation, complete_handoff, acknowledge_handoff, handoff_to_agent, list_orphan_handoff_slas, retain_expired_artifacts, load_heartbeat_state, materialize_heartbeat_run, complete_heartbeat_run, reconcile_heartbeats, evaluate_heartbeat_step], workflow_runner=UnsandboxedWorkflowRunner())
+    worker = Worker(client, task_queue=getattr(settings, "AGENT_TASK_QUEUE", "threadbot-agent"), workflows=[PolicyAwareThreadTurnWorkflow, AgentCoordinatorWorkflow, ThreadTurnCoordinatorWorkflow, AgentRunWorkflow, TriggerDispatchWorkflow, HandoffSLAWorkflow, ArtifactRetentionWorkflow, AgentHeartbeatWorkflow], activities=[prepare_runtime, plan_model_step, persist_planned_action, evaluate_policy_and_reserve_budget, load_verified_approval, create_approval_request, expire_approval_request, recheck_authorization, execute_authorized_action, persist_action_result, finalize_turn, start_runtime, transition_action_status, transition_run_status, settle_budget, reconcile_expired_runtimes, renew_thread_lease, release_runtime, append_progress_event, load_agent_run, persist_runtime_snapshot, project_run_terminal, recover_coordinator_queue, recover_thread_queue, route_agent_output, materialize_trigger_event, claim_event_run, mark_run_workflow, fail_run, suppress_event, reconcile_phase2_dead_letters, poll_connector, capture_connector_snapshot, persist_state_diff, fire_handoff_escalation, complete_handoff, acknowledge_handoff, handoff_to_agent, list_orphan_handoff_slas, retain_expired_artifacts, load_heartbeat_state, materialize_heartbeat_run, complete_heartbeat_run, reconcile_heartbeats, evaluate_heartbeat_step], workflow_runner=UnsandboxedWorkflowRunner())
 
     async def reconcile_loop():
         while True:

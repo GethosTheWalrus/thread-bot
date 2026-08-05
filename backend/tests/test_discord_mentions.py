@@ -13,8 +13,10 @@ from app.discord_mentions import (
     normalize_discord_user_mentions,
     replace_readable_mentions,
     classify_inbound_agent_route,
+    discord_agent_label,
     has_explicit_handle,
 )
+from app.discord_integration import _format_activity_trace
 
 
 class DiscordMentionTests(unittest.TestCase):
@@ -59,6 +61,30 @@ class DiscordMentionTests(unittest.TestCase):
 
     def test_unmentioned_chatter_has_no_agent_route(self):
         assert classify_inbound_agent_route("just chatting", ["research"], bot_mentioned=False) is None
+
+    def test_agent_label_is_readable_and_strips_discord_markdown(self):
+        assert discord_agent_label("OSRS **Researcher**", "osrs_researcher") == "OSRS Researcher (@osrs_researcher)"
+        assert discord_agent_label(None, "mod") == "mod (@mod)"
+
+    def test_agent_action_traces_keep_identity_and_tools_run_scoped(self):
+        osrs = _format_activity_trace({
+            "agent_name": "OSRS Researcher",
+            "agent_handle": "osrs",
+            "order": ["action-a"],
+            "steps": {"action-a": {"tool": "mcp:DuckDuckGo:search", "status": "running"}},
+        })
+        moderator = _format_activity_trace({
+            "agent_name": "Moderator",
+            "agent_handle": "mod",
+            "order": ["action-b"],
+            "steps": {"action-b": {"tool": "builtin:calculator", "status": "done", "success": True}},
+        })
+        assert "OSRS Researcher (@osrs)" in osrs
+        assert "mcp:DuckDuckGo:search" in osrs
+        assert "Moderator (@mod)" not in osrs
+        assert "Moderator (@mod)" in moderator
+        assert "builtin:calculator" in moderator
+        assert "OSRS Researcher (@osrs)" not in moderator
 
 
 if __name__ == "__main__":

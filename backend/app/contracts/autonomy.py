@@ -70,7 +70,7 @@ class TriggerPreview(StrictModel):
 class RunRequest(StrictModel):
     message:str=Field(min_length=1,max_length=100000); mode:RunMode=RunMode.live; trigger_id:UUID|None=None; response_mode:ResponseMode=ResponseMode.both
 class RunResponse(StrictModel):
-    id:UUID; agent_id:UUID; agent_version_id:UUID; thread_id:UUID; status:RunStatus; mode:RunMode; trigger_event_id:UUID|None; output_summary:str|None; queued_at:datetime; started_at:datetime|None; completed_at:datetime|None
+    id:UUID; agent_id:UUID; agent_version_id:UUID; thread_id:UUID; status:RunStatus; mode:RunMode; route:str=""; input_message_id:UUID|None=None; agent_name:str|None=None; agent_handle:str|None=None; trigger_event_id:UUID|None; output_summary:str|None; queued_at:datetime; started_at:datetime|None; completed_at:datetime|None
 class EventResponse(StrictModel):
     sequence:int; event_type:str; payload:dict; created_at:datetime
 class ForecastResponse(StrictModel):

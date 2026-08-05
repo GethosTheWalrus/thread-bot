@@ -14,6 +14,7 @@ with workflow.unsafe.imports_passed_through():
     from agents import Agent, FunctionTool, ModelSettings, Runner
     from agents.exceptions import MaxTurnsExceeded
     from app.agents_provider import encode_agents_model_config
+    from app.text_sanitize import strip_hidden_reasoning
 
 
 _REACHY_TOOL_ANNOUNCEMENTS = {
@@ -27,6 +28,25 @@ _REACHY_TOOL_ANNOUNCEMENTS = {
 _REACHY_TOOL_ANNOUNCEMENT_PREFIXES = {
     "temporal_": "Checking Temporal",
 }
+
+
+def _filter_agent_tools(openai_tools: list[dict], mcp_tools_map: dict, selected_tools: list | None) -> tuple[list[dict], dict]:
+    selected = {str(item) for item in (selected_tools or [])}
+    filtered = []
+    filtered_map = {}
+    for tool in openai_tools:
+        name = (tool.get("function") or {}).get("name", "")
+        info = mcp_tools_map.get(name) or {}
+        identity = tool.get("x-threadbot-identity")
+        if not identity and info.get("server_name") and info.get("original_name"):
+            identity = f"mcp:{info['server_name']}:{info['original_name']}"
+        identity = identity or f"builtin:{name}"
+        legacy = identity[4:] if identity.startswith("mcp:") else name
+        if identity in selected or legacy in selected or (identity.startswith("builtin:") and name in selected):
+            filtered.append(tool)
+            if name in mcp_tools_map:
+                filtered_map[name] = mcp_tools_map[name]
+    return filtered, filtered_map
 
 
 def _reachy_tool_announcement(tool_name: str, args: str) -> str:
@@ -98,7 +118,12 @@ class RunThreadWorkflow:
     async def respond_continue(self, should_continue: bool) -> None:
         self._continue_decision = bool(should_continue)
 
-    def _agents_input(self, messages: list[dict]) -> list[dict]:
+    def _agents_input(
+        self,
+        messages: list[dict],
+        *,
+        merge_consecutive_assistant: bool = False,
+    ) -> list[dict]:
         """Convert OpenAI chat history into Agents SDK input items."""
         result = []
         for msg in messages:
@@ -109,7 +134,15 @@ class RunThreadWorkflow:
                 result.append({"role": role, "content": content})
             elif role == "assistant":
                 if content:
-                    result.append({"role": "assistant", "content": content})
+                    if (
+                        merge_consecutive_assistant
+                        and result
+                        and result[-1].get("role") == "assistant"
+                    ):
+                        prior = str(result[-1].get("content") or "").rstrip()
+                        result[-1]["content"] = f"{prior}\n\n{content}" if prior else content
+                    else:
+                        result.append({"role": "assistant", "content": content})
                 elif msg.get("tool_calls"):
                     # Tool-call rows are persisted for UI/timeline state. Do not
                     # feed a textual placeholder back to the model or it may
@@ -155,6 +188,7 @@ class RunThreadWorkflow:
         tool_call_id: str,
         thread_id: str,
         llm_config: dict,
+        agent_context: dict | None = None,
     ) -> str:
         import json
 
@@ -170,7 +204,7 @@ class RunThreadWorkflow:
 
         await execute_activity(
             save_message_activity,
-            {"thread_id": thread_id, "role": "tool_call", "content": call_content, "metadata": {"tool_calls": [tool_call]}},
+            {"thread_id": thread_id, "role": "tool_call", "content": call_content, "metadata": {"tool_calls": [tool_call]}, **({"agent_context": agent_context} if agent_context is not None else {})},
             start_to_close_timeout=timedelta(seconds=10),
         )
         await self._publish_event(llm_config, {
@@ -234,6 +268,7 @@ class RunThreadWorkflow:
                 "role": "tool_result",
                 "content": result_text,
                 "metadata": tool_result_metadata,
+                **({"agent_context": agent_context} if agent_context is not None else {}),
             },
             start_to_close_timeout=timedelta(seconds=10),
         )
@@ -286,6 +321,7 @@ class RunThreadWorkflow:
         execute_reachy_tool_activity,
         save_message_activity,
         reachy_speech_handle=None,
+        agent_context=None,
     ):
         tools = []
         tool_timeout = int(llm_config.get("tool_timeout") or llm_config.get("stream_timeout") or 600)
@@ -312,6 +348,7 @@ class RunThreadWorkflow:
                         tool_call_id=getattr(ctx, "tool_call_id", "") or "",
                         thread_id=thread_id,
                         llm_config=llm_config,
+                        agent_context=agent_context,
                     )
 
                 effective_tool_timeout = tool_timeout
@@ -395,6 +432,7 @@ class RunThreadWorkflow:
         thread_id = input["thread_id"]
         message = input["message"]
         llm_config = input.get("llm_config", {})
+        agent_context = input.get("agent_context")
         reachy_speech_handle = None
 
         try:
@@ -451,6 +489,7 @@ class RunThreadWorkflow:
                             "compacted_at": compacted_at,
                             "original_message_count": compact_result["compacted_count"],
                         },
+                        **({"agent_context": agent_context} if agent_context is not None else {}),
                     },
                     start_to_close_timeout=timedelta(seconds=10),
                 )
@@ -1274,6 +1313,11 @@ class RunThreadWorkflow:
                 })
             openai_tools.extend(builtin_tools)
 
+            if agent_context is not None:
+                openai_tools, mcp_tools_map = _filter_agent_tools(
+                    openai_tools, mcp_tools_map, agent_context.get("selected_tools")
+                )
+
             # ── Build initial message list ───────────────────────────────
             current_messages = list(chat_history)
             custom_system_prompt = str(llm_config.get("system_prompt") or "").strip()
@@ -1291,7 +1335,8 @@ class RunThreadWorkflow:
                     for server, tools in sorted(server_tools.items())
                 ],
                 "Available built-in tools: " + ", ".join(
-                    tool["function"]["name"] for tool in builtin_tools
+                    tool["function"]["name"] for tool in openai_tools
+                    if tool["function"]["name"] in {item["function"]["name"] for item in builtin_tools}
                 ),
                 "Do not claim access to disabled or absent tool servers.",
             ]
@@ -1325,6 +1370,14 @@ class RunThreadWorkflow:
                 instructions_parts.append(
                     "Highest priority thread-specific instructions (follow these over any other guidance below):\n"
                     f"{custom_system_prompt}"
+                )
+            if (agent_context or {}).get("route") == "heartbeat":
+                instructions_parts.append(
+                    "This turn was started automatically by the Agent heartbeat at "
+                    f"{agent_context.get('scheduled_at') or 'the scheduled wake time'}. "
+                    "There is no new user message. Follow your highest-priority Agent instructions proactively. "
+                    "Treat the conversation as context, not as a new request. If your instructions do not require "
+                    "work at this wake, return no text."
                 )
             if active_skills:
                 skill_sections = []
@@ -1389,7 +1442,7 @@ class RunThreadWorkflow:
                 )
 
             agent = Agent(
-                name="ThreadBot",
+                name=(agent_context or {}).get("agent_name") or "ThreadBot",
                 instructions="\n\n".join(instructions_parts),
                 model=encode_agents_model_config(agent_llm_config),
                 model_settings=self._agent_model_settings(agent_llm_config),
@@ -1402,16 +1455,24 @@ class RunThreadWorkflow:
                     execute_reachy_tool_activity,
                     save_message,
                     reachy_speech_handle,
+                    agent_context,
                 ),
             )
 
+            automatic_continuations = 0
+            merge_consecutive_assistant = workflow.patched(
+                "merge-consecutive-assistant-v1"
+            )
             while True:
                 full_response_content = ""
                 reasoning_buffer = ""
                 max_turns_exceeded = False
                 result = Runner.run_streamed(
                     agent,
-                    input=self._agents_input(current_messages),
+                    input=self._agents_input(
+                        current_messages,
+                        merge_consecutive_assistant=merge_consecutive_assistant,
+                    ),
                     max_turns=agent_llm_config.get("max_iterations", 25),
                 )
                 try:
@@ -1458,7 +1519,7 @@ class RunThreadWorkflow:
                                     await reachy_speech_handle.signal("start_thinking")
                                 await execute_activity(
                                     save_message,
-                                    {"thread_id": thread_id, "role": "thinking", "content": thinking},
+                                    {"thread_id": thread_id, "role": "thinking", "content": thinking, **({"agent_context": agent_context} if agent_context is not None else {})},
                                     start_to_close_timeout=timedelta(seconds=10),
                                 )
                                 await self._publish_event(agent_llm_config, {"type": "thinking", "content": thinking})
@@ -1472,22 +1533,42 @@ class RunThreadWorkflow:
                         raise result.run_loop_exception
 
                 if not max_turns_exceeded:
-                    llm_response = str(result.final_output or full_response_content or "(Agent completed without a response.)")
+                    final_output = result.final_output or full_response_content
+                    if not final_output and (agent_context or {}).get("route") == "heartbeat":
+                        llm_response = ""
+                    else:
+                        llm_response = str(final_output or "(Agent completed without a response.)")
                     break
 
-                await self._publish_event(agent_llm_config, {
-                    "type": "continue_prompt",
-                    "thread_id": thread_id,
-                    "content": "I hit my tool/turn limit before finishing. Continue iterating?",
-                })
-                if agent_llm_config.get("discord"):
-                    await execute_activity(
-                        send_continue_prompt,
-                        {"thread_id": thread_id, "discord": agent_llm_config.get("discord")},
-                        start_to_close_timeout=timedelta(seconds=15),
+                if agent_context is not None and automatic_continuations < 1:
+                    automatic_continuations += 1
+                    await self._publish_event(agent_llm_config, {
+                        "type": "thinking",
+                        "content": "Continuing automatically to finish the Agent turn.",
+                    })
+                    current_messages = await execute_activity(
+                        get_messages,
+                        thread_id,
+                        start_to_close_timeout=timedelta(seconds=10),
                     )
-                self._continue_decision = None
-                await workflow.wait_condition(lambda: self._continue_decision is not None)
+                    continue
+
+                if agent_context is not None:
+                    self._continue_decision = False
+                else:
+                    await self._publish_event(agent_llm_config, {
+                        "type": "continue_prompt",
+                        "thread_id": thread_id,
+                        "content": "I hit my tool/turn limit before finishing. Continue iterating?",
+                    })
+                    if agent_llm_config.get("discord"):
+                        await execute_activity(
+                            send_continue_prompt,
+                            {"thread_id": thread_id, "discord": agent_llm_config.get("discord")},
+                            start_to_close_timeout=timedelta(seconds=15),
+                        )
+                    self._continue_decision = None
+                    await workflow.wait_condition(lambda: self._continue_decision is not None)
                 if self._continue_decision:
                     await self._publish_event(agent_llm_config, {
                         "type": "thinking",
@@ -1511,21 +1592,29 @@ class RunThreadWorkflow:
                     llm_response = notice
                     await self._publish_final_response(agent_llm_config, notice)
                 break
+            strip_reasoning = workflow.patched("strip-hidden-reasoning-v1")
+            if strip_reasoning:
+                llm_response = strip_hidden_reasoning(llm_response)
+                full_response_content = strip_hidden_reasoning(full_response_content)
+
             if reasoning_buffer.strip():
                 await execute_activity(
                     save_message,
-                    {"thread_id": thread_id, "role": "thinking", "content": reasoning_buffer.strip()},
+                    {"thread_id": thread_id, "role": "thinking", "content": reasoning_buffer.strip(), **({"agent_context": agent_context} if agent_context is not None else {})},
                     start_to_close_timeout=timedelta(seconds=10),
                 )
                 await self._publish_event(agent_llm_config, {"type": "thinking", "content": reasoning_buffer.strip()})
-            if result.final_output and not full_response_content:
+            if strip_reasoning:
+                if llm_response and not full_response_content:
+                    await self._publish_event(agent_llm_config, {"type": "text", "content": llm_response})
+            elif result.final_output and not full_response_content:
                 await self._publish_event(agent_llm_config, {"type": "text", "content": str(result.final_output)})
 
             missing_image_markdown = await execute_activity(
                 generated_images_for_latest_turn,
                 {"thread_id": thread_id, "assistant_content": llm_response},
                 start_to_close_timeout=timedelta(seconds=10),
-            )
+            ) if llm_response else []
             if missing_image_markdown:
                 image_block = "\n\n" + "\n".join(missing_image_markdown)
                 llm_response = f"{llm_response.rstrip()}{image_block}"
@@ -1545,18 +1634,22 @@ class RunThreadWorkflow:
                     workflow.logger.exception("Reachy speech workflow failed while finishing")
 
             # ── Save final assistant response ────────────────────────────
-            await execute_activity(
-                save_message,
-                {
+            final_message_args = {
                     "thread_id": thread_id,
                     "role": "assistant",
                     "content": llm_response,
                     "discord": llm_config.get("discord"),
                     "completed_turn": True,
                     "idempotency_key": workflow.info().workflow_id,
-                },
-                start_to_close_timeout=timedelta(seconds=10),
-            )
+                }
+            if agent_context is not None:
+                final_message_args["agent_context"] = agent_context
+            if llm_response:
+                await execute_activity(
+                    save_message,
+                    final_message_args,
+                    start_to_close_timeout=timedelta(seconds=10),
+                )
 
             retained_messages = await execute_activity(
                 get_messages,
@@ -1584,7 +1677,9 @@ class RunThreadWorkflow:
                 )
             except Exception:
                 workflow.logger.exception("Conversation summary refresh failed")
-            should_title = len(chat_history) <= 5 or len(chat_history) % 5 == 1
+            should_title = (agent_context or {}).get("route") != "heartbeat" and (
+                len(chat_history) <= 5 or len(chat_history) % 5 == 1
+            )
 
             return {
                 "thread_id": thread_id,

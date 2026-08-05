@@ -17,10 +17,6 @@ def builtin_descriptors(selection=None) -> list[dict]:
         selected = set(SAFE_BUILTIN_TOOLS)
     else:
         selected = set(selection) & SAFE_BUILTIN_TOOLS
-    # An explicit legacy selection names only the original safe catalog; the
-    # expanded autonomy catalog is advertised by the default capability set.
-    if selection is not None:
-        selected.discard("web_fetch")
     return [{"type": "function", "function": {"name": name, "description": "Server-approved pure local operation.", "parameters": _SCHEMAS[name]}, "x-threadbot-identity": f"builtin:{name}"} for name in sorted(selected)]
 
 

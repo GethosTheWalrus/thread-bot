@@ -20,7 +20,8 @@ class HeartbeatConfigSheet extends StatefulWidget {
   @override
   State<HeartbeatConfigSheet> createState() => _HeartbeatConfigSheetState();
 
-  static Future<void> show(BuildContext context, {
+  static Future<void> show(
+    BuildContext context, {
     required String agentId,
     required String agentName,
     required AutonomyApiService api,
@@ -108,7 +109,9 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
         _busy = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_enabled ? 'Heartbeat enabled' : 'Heartbeat disabled')),
+        SnackBar(
+          content: Text(_enabled ? 'Heartbeat enabled' : 'Heartbeat disabled'),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -132,9 +135,9 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
         _status = status;
         _busy = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Wake signal sent')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Wake signal sent')));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -203,13 +206,19 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
                         if (_status!.nextWakeAt != null)
-                          Text('Next wake: ${_formatTime(_status!.nextWakeAt!)}'),
+                          Text(
+                            'Next wake: ${_formatTime(_status!.nextWakeAt!)}',
+                          ),
                         if (_status!.lastWakeAt != null)
-                          Text('Last wake: ${_formatTime(_status!.lastWakeAt!)}'),
+                          Text(
+                            'Last wake: ${_formatTime(_status!.lastWakeAt!)}',
+                          ),
                         if (_status!.lastDecision != null)
                           Text('Last decision: ${_status!.lastDecision}'),
                         if (_status!.consecutiveNoops > 0)
-                          Text('Idle backoff: ${_status!.consecutiveNoops} no-ops'),
+                          Text(
+                            'Idle backoff: ${_status!.consecutiveNoops} no-ops',
+                          ),
                         if (_status!.lastError != null)
                           Text(
                             'Error: ${_status!.lastError}',
@@ -256,13 +265,17 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
                     labelText: 'Idle backoff factor (1.0 - 10.0)',
                     border: OutlineInputBorder(),
                   ),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   enabled: !_busy,
                 ),
                 if (_error != null) ...[
                   const SizedBox(height: 12),
-                  Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                  Text(
+                    _error!,
+                    style: const TextStyle(color: Colors.redAccent),
+                  ),
                 ],
                 const SizedBox(height: 16),
                 Row(
@@ -274,7 +287,9 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.save),
                         label: const Text('Save'),

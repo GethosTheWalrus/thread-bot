@@ -62,6 +62,15 @@ def test_builtin_descriptors_empty_selection_yields_no_tools():
     assert builtin_descriptors(None)  # default = all safe built-ins
 
 
+def test_builtin_descriptors_honors_explicit_web_fetch_selection():
+    from app.tools.catalog import builtin_descriptors, identity_for_descriptor
+    descriptors = builtin_descriptors(["web_fetch"])
+    assert [
+        identity_for_descriptor(item, item["function"]["name"])
+        for item in descriptors
+    ] == ["builtin:web_fetch"]
+
+
 def test_builtin_descriptors_none_selection_yields_all_safe():
     from app.tools.catalog import builtin_descriptors, SAFE_BUILTIN_TOOLS
     descriptors = builtin_descriptors(None)

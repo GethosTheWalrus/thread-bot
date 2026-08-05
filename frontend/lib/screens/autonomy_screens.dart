@@ -23,7 +23,6 @@ class NewAgentScreen extends StatefulWidget {
 
 class _NewAgentState extends State<NewAgentScreen> {
   final name = TextEditingController(), description = TextEditingController();
-  String mode = 'observe';
   String? template;
   bool saving = false;
   List<Map<String, dynamic>> templates = const [];
@@ -54,7 +53,7 @@ class _NewAgentState extends State<NewAgentScreen> {
         'description': description.text.trim().isEmpty
             ? null
             : description.text.trim(),
-        'execution_mode': mode,
+        'execution_mode': 'act',
         if (template != null) 'template_id': template,
         'concurrency_limit': 1,
         'queue_limit': 100,
@@ -95,24 +94,6 @@ class _NewAgentState extends State<NewAgentScreen> {
                     decoration: const InputDecoration(labelText: 'Description'),
                   ),
                 ],
-              ),
-            ),
-            section(
-              'Execution',
-              DropdownButtonFormField<String>(
-                initialValue: mode,
-                items: const [
-                  DropdownMenuItem(value: 'observe', child: Text('Observe')),
-                  DropdownMenuItem(
-                    value: 'recommend',
-                    child: Text('Recommend'),
-                  ),
-                  DropdownMenuItem(value: 'act', child: Text('Act')),
-                ],
-                onChanged: (v) {
-                  if (v != null) setState(() => mode = v);
-                },
-                decoration: const InputDecoration(labelText: 'Execution mode'),
               ),
             ),
             section(
@@ -242,9 +223,7 @@ class _AgentsState extends State<AgentsScreen> {
                   child: ListTile(
                     onTap: () => Navigator.pushNamed(c, '/agents/${item.id}'),
                     title: Text(item.name),
-                    subtitle: Text(
-                      '${item.status} • ${item.executionMode}\n${item.description ?? ''}',
-                    ),
+                    subtitle: Text('${item.status}\n${item.description ?? ''}'),
                     isThreeLine: true,
                   ),
                 ),
@@ -665,9 +644,6 @@ class _EditorState extends State<AgentEditorScreen> {
                       Chip(label: Text('@${agent!.handle}')),
                     if (agent!.isModerator)
                       const Chip(label: Text('Moderator')),
-                    Chip(
-                      label: Text(agent!.executionMode.replaceAll('_', ' ')),
-                    ),
                   ],
                 ),
               ),

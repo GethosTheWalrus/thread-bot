@@ -306,6 +306,7 @@ class ThreadAgentSummary {
 class ThreadRunSummary {
   final String id, status, mode;
   final String? agentId, agentName, agentHandle;
+  final String? inputMessageId;
   final String? outputSummary;
   const ThreadRunSummary({
     required this.id,
@@ -314,6 +315,7 @@ class ThreadRunSummary {
     this.agentId,
     this.agentName,
     this.agentHandle,
+    this.inputMessageId,
     this.outputSummary,
   });
 }
@@ -356,6 +358,7 @@ ThreadRunSummary? _threadRun(dynamic value) {
     agentId: j['agent_id']?.toString(),
     agentName: j['agent_name']?.toString(),
     agentHandle: (j['agent_handle'] ?? j['handle'])?.toString(),
+    inputMessageId: (j['input_message_id'] ?? j['inputMessageId'])?.toString(),
     outputSummary: j['output_summary']?.toString(),
   );
 }

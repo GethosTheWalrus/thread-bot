@@ -204,7 +204,11 @@ async def policy_explain(body: dict, actor=Depends(actor_dep)):
 
 @router.get("/approvals", response_model=list[ApprovalResponse])
 async def approvals(db=Depends(get_db), actor=Depends(actor_dep)):
-    return (await db.execute(select(ApprovalRequest).where(ApprovalRequest.workspace_id == actor.workspace_id, ApprovalRequest.status == "pending").order_by(ApprovalRequest.expires_at))).scalars().all()
+    return (await db.execute(select(ApprovalRequest).where(
+        ApprovalRequest.workspace_id == actor.workspace_id,
+        ApprovalRequest.status == "pending",
+        ApprovalRequest.expires_at > datetime.now(timezone.utc),
+    ).order_by(ApprovalRequest.expires_at))).scalars().all()
 
 
 @router.post("/approvals/{approval_id}/decision")

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/widgets/agent_tools_sheet.dart';
 import 'package:threadbot/widgets/heartbeat_config_sheet.dart';
 
 class ThreadParticipantManager extends StatefulWidget {
@@ -295,7 +296,7 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
                       ],
                     ),
                     Text(
-                      '@${agent.mentionName} · ${agent.status} · ${agent.executionMode}',
+                      '@${agent.mentionName} · ${agent.status}',
                       style: const TextStyle(
                         fontSize: 12,
                         color: Colors.white54,
@@ -347,6 +348,23 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
                         ).then((_) => _reloadParticipants()),
                   icon: const Icon(Icons.favorite_border, size: 16),
                   label: const Text('Heartbeat'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _busy
+                      ? null
+                      : () => AgentToolsSheet.show(
+                          context,
+                          agentId: agent.id,
+                          agentName: agent.name,
+                          api: _api,
+                          autonomy: _autonomy,
+                          onSaved: () {
+                            _reloadParticipants();
+                            widget.onChanged?.call();
+                          },
+                        ),
+                  icon: const Icon(Icons.extension_outlined, size: 16),
+                  label: const Text('Agent tools'),
                 ),
               ],
             ),

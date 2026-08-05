@@ -65,6 +65,9 @@ _IMAGE_RE = re.compile(r"!\[([^\]\n]*)\]\(([^)\n]*)\)")
 _HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>\n]*>")
 _LATEX_INLINE_RE = re.compile(r"\$([^$\n]+)\$")
 _LATEX_BLOCK_RE = re.compile(r"\$\$[\s\S]*?\$\$")
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>[\s\S]*?</think\s*>", re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
 
 # Common emoji ranges. We do not try to be exhaustive (Unicode keeps growing);
 # these cover BMP symbols, dingbats, emoticons, transport, geometric shapes,
@@ -116,6 +119,29 @@ def _collapse_whitespace(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     return text.strip()
+
+
+def strip_hidden_reasoning(text: str | None) -> str:
+    """Remove model-only ``<think>`` blocks from user-visible output.
+
+    Some reasoning models place private reasoning in their normal text field.
+    Truncated and orphaned tags are handled fail-closed so that content is not
+    persisted, streamed, spoken, or synchronized to an external channel.
+    """
+    if not text:
+        return ""
+
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+
+    opening = _THINK_OPEN_RE.search(cleaned)
+    if opening:
+        cleaned = cleaned[:opening.start()]
+
+    closings = list(_THINK_CLOSE_RE.finditer(cleaned))
+    if closings:
+        cleaned = cleaned[closings[-1].end():]
+
+    return _collapse_whitespace(cleaned)
 
 
 def strip_markdown_for_tts(text: str) -> str:

@@ -81,10 +81,7 @@ void main() {
     });
 
     test('serializes with expected_revision when provided', () {
-      final j = HeartbeatConfig(
-        enabled: false,
-        expectedRevision: 3,
-      ).toJson();
+      final j = HeartbeatConfig(enabled: false, expectedRevision: 3).toJson();
       expect(j['expected_revision'], 3);
       expect(j['enabled'], isFalse);
     });

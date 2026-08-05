@@ -110,6 +110,9 @@ metadata:
     app: threadbot-worker
 spec:
   replicas: 3
+  # Give every workflow/activity poller time to register with Temporal before
+  # the controller validates task-queue compatibility and starts ramping.
+  minReadySeconds: 180
   workerOptions:
     connectionRef:
       name: temporal

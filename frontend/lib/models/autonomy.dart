@@ -155,6 +155,7 @@ class Trigger {
 class Run {
   final String id, agentId, agentVersionId, threadId, status, mode;
   final String route;
+  final String? inputMessageId;
   final String? agentName, agentHandle;
   final String? outputSummary, triggerEventId;
   final DateTime? queuedAt, startedAt, completedAt;
@@ -166,6 +167,7 @@ class Run {
     this.status = 'unknown',
     this.mode = 'unknown',
     this.route = '',
+    this.inputMessageId,
     this.agentName,
     this.agentHandle,
     this.outputSummary,
@@ -182,6 +184,7 @@ class Run {
     status: _enum(j['status'], 'unknown'),
     mode: _enum(j['mode'], 'unknown'),
     route: _string(j['route']) ?? '',
+    inputMessageId: _string(j['input_message_id'] ?? j['inputMessageId']),
     agentName: _string(j['agent_name']),
     agentHandle: _string(j['agent_handle'] ?? j['handle']),
     outputSummary: _string(j['output_summary']),
@@ -190,6 +193,39 @@ class Run {
     startedAt: _date(j['started_at']),
     completedAt: _date(j['completed_at']),
   );
+
+  Run copyWith({
+    String? inputMessageId,
+    String? agentName,
+    String? agentHandle,
+  }) => Run(
+    id: id,
+    agentId: agentId,
+    agentVersionId: agentVersionId,
+    threadId: threadId,
+    status: status,
+    mode: mode,
+    route: route,
+    inputMessageId: inputMessageId ?? this.inputMessageId,
+    agentName: agentName ?? this.agentName,
+    agentHandle: agentHandle ?? this.agentHandle,
+    outputSummary: outputSummary,
+    triggerEventId: triggerEventId,
+    queuedAt: queuedAt,
+    startedAt: startedAt,
+    completedAt: completedAt,
+  );
+}
+
+@immutable
+class ActiveRunPresentation {
+  final Run run;
+  final List<RunEvent> events;
+
+  const ActiveRunPresentation({required this.run, this.events = const []});
+
+  String get id => run.id;
+  String? get inputMessageId => run.inputMessageId;
 }
 
 class RunEvent {

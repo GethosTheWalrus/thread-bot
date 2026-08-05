@@ -9,7 +9,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.text_sanitize import strip_markdown_for_tts
+from app.text_sanitize import strip_hidden_reasoning, strip_markdown_for_tts
 
 
 class StripMarkdownForTTSTests(unittest.TestCase):
@@ -153,6 +153,38 @@ class StripMarkdownForTTSTests(unittest.TestCase):
         self.assertNotIn("|", result)
         self.assertIn("Value 1", result)
         self.assertIn("Value 2", result)
+
+
+class StripHiddenReasoningTests(unittest.TestCase):
+    def test_removes_complete_think_block(self):
+        self.assertEqual(
+            strip_hidden_reasoning("<think>private chain</think>\n\nVisible answer."),
+            "Visible answer.",
+        )
+
+    def test_removes_multiple_case_insensitive_blocks(self):
+        self.assertEqual(
+            strip_hidden_reasoning("Before <THINK>a</THINK> middle <think>b</think> after"),
+            "Before middle after",
+        )
+
+    def test_truncated_opening_tag_fails_closed(self):
+        self.assertEqual(
+            strip_hidden_reasoning("Visible answer.\n<think>unfinished private chain"),
+            "Visible answer.",
+        )
+
+    def test_orphaned_closing_tag_discards_hidden_prefix(self):
+        self.assertEqual(
+            strip_hidden_reasoning("private chain</think>Visible answer."),
+            "Visible answer.",
+        )
+
+    def test_plain_markdown_is_preserved(self):
+        self.assertEqual(
+            strip_hidden_reasoning("**Visible** answer with `code`."),
+            "**Visible** answer with `code`.",
+        )
 
 
 if __name__ == "__main__":

@@ -15,10 +15,32 @@ from app.models.models import (
     DiscordServer,
     DiscordServerToolOverride,
 )
+# Message attribution references autonomy tables. Register the complete model
+# graph before any isolated worker activity flushes a Message.
+from app.models import (  # noqa: F401
+    agent_models,
+    approval_models,
+    budget_models,
+    foundation_models,
+    phase2_models,
+    phase3_models,
+    phase4_models,
+    policy_models,
+    run_models,
+    runtime_models,
+)
+
+
+DEFAULT_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 async def create_thread(db: AsyncSession, title: str, parent_id: UUID | None = None, mode: str = "chat", workspace_id: UUID | None = None) -> Thread:
-    thread = Thread(title=title, parent_id=parent_id, mode=mode, workspace_id=workspace_id)
+    thread = Thread(
+        title=title,
+        parent_id=parent_id,
+        mode=mode,
+        workspace_id=workspace_id or DEFAULT_WORKSPACE_ID,
+    )
     db.add(thread)
     await db.flush()
     await db.refresh(thread)
@@ -105,8 +127,14 @@ async def add_message(
     content: str,
     metadata: dict | None = None,
     created_at: datetime | None = None,
+    agent_id: UUID | None = None,
+    agent_version_id: UUID | None = None,
+    agent_run_id: UUID | None = None,
+    agent_handle: str | None = None,
 ) -> Message:
-    message = Message(thread_id=thread_id, role=role, content=content, metadata_=metadata)
+    message = Message(thread_id=thread_id, role=role, content=content, metadata_=metadata,
+                      agent_id=agent_id, agent_version_id=agent_version_id,
+                      agent_run_id=agent_run_id, agent_handle=agent_handle)
     if created_at is not None:
         message.created_at = created_at
     db.add(message)

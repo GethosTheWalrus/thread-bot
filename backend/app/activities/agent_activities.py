@@ -15,13 +15,31 @@ async def load_agent_run(args):
         event=await db.get(TriggerEvent, run.trigger_event_id) if run.trigger_event_id else None
         trigger=await db.get(AgentTrigger, event.trigger_id) if event and event.trigger_id else None
         agent = await db.get(Agent, run.agent_id)
+        from app.config import get_llm_config, apply_thread_llm_overrides, get_settings
+        from app.models.models import Thread, DiscordThreadLink
+        thread = await db.get(Thread, run.thread_id)
+        effective_config = dict(get_llm_config())
+        if thread and thread.llm_overrides:
+            effective_config = apply_thread_llm_overrides(effective_config, thread.llm_overrides)
+        effective_config.update(dict(version.config or {}))
+        effective_config["system_prompt"] = version.prompt_template or ""
+        selected_skills = []
+        requested_skills = {str(item) for item in (version.skill_selection or [])} if version else set()
+        if requested_skills:
+            from app.models.models import Skill
+            skills = (await db.execute(select(Skill).where(Skill.is_active.is_(True)))).scalars().all()
+            selected_skills = [{"name": skill.name, "description": skill.description or "", "content": skill.content} for skill in skills if str(skill.id) in requested_skills or skill.name in requested_skills]
+        effective_config["skills"] = selected_skills
+        link = await db.scalar(select(DiscordThreadLink).where(DiscordThreadLink.thread_id == run.thread_id, DiscordThreadLink.is_active.is_(True)))
+        if link and get_settings().DISCORD_ENABLED:
+            effective_config["discord"] = {"enabled": True, "bot_token": get_settings().DISCORD_BOT_TOKEN, "guild_id": link.guild_id, "channel_id": link.channel_id, "discord_thread_id": link.discord_thread_id, "discord_thread_name": link.discord_thread_name}
         budget={}
         if version and version.budget_profile_id:
             from app.models.budget_models import BudgetProfile
             profile=await db.get(BudgetProfile,version.budget_profile_id); budget=(profile.limits or {}) if profile else {}
         from app.temporal_client import autonomy_search_attributes
         from app.security import security_mode
-        return {"found":True,"run_id":str(run.id),"workspace_id":str(run.workspace_id),"agent_id":str(run.agent_id),"thread_id":str(run.thread_id),"version_id":str(version.id),"version_config":version.config,"prompt_template":version.prompt_template,"tool_selection":version.tool_selection,"skill_selection":version.skill_selection,"credential_bindings":version.credential_bindings,"policy_version":str(version.policy_set_id or "default"),"connector_id":(trigger.config or {}).get("connector_id") if trigger else None,"subject":(event.subject or {}) if event else {},"response_mode":((event.payload or {}).get("response_mode", "both") if event else "both"),"origin":(event.payload or {}) if event else {},"agent_status":agent.status if agent else "archived","status":run.status,"mode":run.mode,"route":run.route or "","input_message_id":str(run.input_message_id) if run.input_message_id else None,"authentication_method":"admin_token" if security_mode() == "admin_token" else "local","search_attributes":autonomy_search_attributes(str(run.workspace_id), str(run.agent_id), run.mode),"deadline_at":run.deadline_at.isoformat() if run.deadline_at else None,"budget_snapshot":run.budget_snapshot or budget,"budget_profile_id":str(version.budget_profile_id) if version and version.budget_profile_id else None}
+        return {"found":True,"run_id":str(run.id),"workspace_id":str(run.workspace_id),"agent_id":str(run.agent_id),"thread_id":str(run.thread_id),"version_id":str(version.id),"version_config":version.config,"llm_config":effective_config,"chat_task_queue":get_settings().TEMPORAL_TASK_QUEUE,"prompt_template":version.prompt_template,"tool_selection":version.tool_selection,"skill_selection":version.skill_selection,"selected_skills":selected_skills or (version.config or {}).get("selected_skills", []),"credential_bindings":version.credential_bindings,"agent_name":agent.name if agent else None,"agent_handle":agent.handle if agent else None,"policy_version":str(version.policy_set_id or "default"),"connector_id":(trigger.config or {}).get("connector_id") if trigger else None,"subject":(event.subject or {}) if event else {},"response_mode":((event.payload or {}).get("response_mode", "both") if event else "both"),"origin":(event.payload or {}) if event else {},"agent_status":agent.status if agent else "archived","status":run.status,"mode":run.mode,"route":run.route or "","input_message_id":str(run.input_message_id) if run.input_message_id else None,"authentication_method":"admin_token" if security_mode() == "admin_token" else "local","search_attributes":autonomy_search_attributes(str(run.workspace_id), str(run.agent_id), run.mode),"deadline_at":run.deadline_at.isoformat() if run.deadline_at else None,"budget_snapshot":run.budget_snapshot or budget,"budget_profile_id":str(version.budget_profile_id) if version and version.budget_profile_id else None}
 
 @defn
 async def materialize_trigger_event(args):
@@ -58,7 +76,7 @@ async def claim_event_run(args):
     from app.database import AsyncSessionLocal
     from app.models.agent_models import TriggerEvent, Agent, AgentVersion
     from app.models.run_models import AgentRun
-    from app.models.agent_models import AgentVersion, TriggerEvent
+    from app.models.agent_models import AgentVersion
     from app.models.models import Message
     from app.database.autonomy import append_run_event
     async with AsyncSessionLocal() as db:
@@ -210,18 +228,6 @@ async def project_run_terminal(args):
                     delivery, _ = await enqueue_delivery(db, run.workspace_id, "run.terminal", {"channel": route.channel, "config": route.config, "filters": route.filters, "credential_binding_id": str(route.credential_binding_id) if route.credential_binding_id else None}, payload, f"run:{run.id}:run.terminal:{route.id}:1", route.profile_id)
                     delivery_ids.append(str(delivery.id))
                     await append_run_event(db, run.id, "notification_queued", {"delivery_id": str(delivery.id), "channel": route.channel})
-            event = await db.get(TriggerEvent, run.trigger_event_id) if run.trigger_event_id else None
-            origin = (event.payload or {}) if event else {}
-            if event and event.source == "discord" and origin.get("origin_channel_id") and run.status == "succeeded":
-                label = origin.get("agent_handle") or origin.get("target_handle") or (event.subject or {}).get("agent_handle") or "agent"
-                delivery, _ = await enqueue_delivery(
-                    db, run.workspace_id, "run.terminal",
-                    {"channel": "discord_thread", "config": {"discord_thread_id": origin["origin_channel_id"]}},
-                    {"run_id": str(run.id), "message": f"[@{label}] {run.output_summary or ''}", "mode": run.mode},
-                    f"run:{run.id}:discord-thread",
-                )
-                delivery_ids.append(str(delivery.id))
-                await append_run_event(db, run.id, "notification_queued", {"delivery_id": str(delivery.id), "channel": "discord_thread"})
         await db.commit(); return {"status":run.status, "delivery_ids": delivery_ids}
 
 @defn

@@ -4,6 +4,7 @@ import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/widgets/chat_input.dart';
+import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/thread_participant_manager.dart';
 
 void main() {
@@ -98,6 +99,107 @@ void main() {
     expect(agent.threadTitle, 'Temporal Operations');
   });
 
+  test('active run presentations keep events scoped to their run', () {
+    final first = ActiveRunPresentation(
+      run: Run(
+        id: 'run-a',
+        status: 'running',
+        agentName: 'Researcher',
+        inputMessageId: 'm-a',
+      ),
+      events: const [RunEvent(type: 'planning')],
+    );
+    final second = ActiveRunPresentation(
+      run: Run(
+        id: 'run-b',
+        status: 'waiting_approval',
+        agentName: 'Reviewer',
+        inputMessageId: 'm-b',
+      ),
+      events: const [RunEvent(type: 'action_started')],
+    );
+
+    expect(first.id, isNot(second.id));
+    expect(first.events.single.type, 'planning');
+    expect(second.events.single.type, 'action_started');
+    expect(first.inputMessageId, 'm-a');
+    expect(second.inputMessageId, 'm-b');
+  });
+
+  testWidgets(
+    'concurrent agent bubbles have independent skeletons and anchors',
+    (tester) async {
+      final messages = [
+        Message(
+          id: 'm-a',
+          threadId: 't',
+          role: 'user',
+          content: 'research',
+          createdAt: DateTime(2026),
+        ),
+        Message(
+          id: 'm-b',
+          threadId: 't',
+          role: 'user',
+          content: 'review',
+          createdAt: DateTime(2026),
+        ),
+      ];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ChatMessageList(
+              messages: messages,
+              scrollController: ScrollController(),
+              activeRuns: [
+                ActiveRunPresentation(
+                  run: Run(
+                    id: 'run-a',
+                    status: 'running',
+                    agentName: 'Researcher',
+                    agentHandle: 'research',
+                    inputMessageId: 'm-a',
+                  ),
+                  events: const [
+                    RunEvent(
+                      type: 'action_planned',
+                      payload: {'tool_identity': 'mcp:DuckDuckGo:search'},
+                    ),
+                  ],
+                ),
+                ActiveRunPresentation(
+                  run: Run(
+                    id: 'run-b',
+                    status: 'waiting_approval',
+                    agentName: 'Reviewer',
+                    agentHandle: 'review',
+                    inputMessageId: 'm-b',
+                  ),
+                  events: const [RunEvent(type: 'approval_requested')],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('RESEARCHER @RESEARCH'), findsOneWidget);
+      expect(find.text('REVIEWER @REVIEW'), findsOneWidget);
+      expect(find.text('running'), findsOneWidget);
+      expect(find.text('waiting approval'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is Tooltip &&
+              widget.message == 'Using mcp:DuckDuckGo:search',
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(FractionallySizedBox), findsAtLeastNWidgets(10));
+    },
+  );
+
   testWidgets('embedded participant manager presents unified agent controls', (
     tester,
   ) async {
@@ -129,6 +231,8 @@ void main() {
     expect(find.text('Moderator'), findsWidgets);
     expect(find.text('Details & settings'), findsOneWidget);
     expect(find.text('Heartbeat'), findsOneWidget);
+    expect(find.text('Agent tools'), findsOneWidget);
+    expect(find.text('@mod · active'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

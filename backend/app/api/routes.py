@@ -338,6 +338,7 @@ async def broadcast_thread_updated(thread_id: str) -> None:
 
 
 def _build_message_response(m) -> MessageResponse:
+    metadata = m.metadata_ or {}
     return MessageResponse(
         id=m.id,
         thread_id=m.thread_id,
@@ -345,6 +346,11 @@ def _build_message_response(m) -> MessageResponse:
         content=m.content,
         created_at=m.created_at,
         metadata=m.metadata_,
+        agent_id=m.agent_id,
+        agent_version_id=m.agent_version_id,
+        agent_run_id=m.agent_run_id,
+        agent_handle=m.agent_handle or metadata.get("agent_handle"),
+        agent_name=metadata.get("agent_name"),
     )
 
 
@@ -460,6 +466,7 @@ def _agent_run_projection(run, agent=None):
         return None
     agent = agent or getattr(run, "agent", None)
     return {"id": run.id, "agent_id": getattr(run, "agent_id", None), "agent_name": getattr(agent, "name", None), "agent_handle": getattr(agent, "handle", None), "status": run.status, "mode": run.mode,
+            "route": getattr(run, "route", ""), "input_message_id": getattr(run, "input_message_id", None),
             "output_summary": run.output_summary, "failure_summary": run.failure_summary,
             "queued_at": run.queued_at, "started_at": run.started_at,
             "completed_at": run.completed_at}

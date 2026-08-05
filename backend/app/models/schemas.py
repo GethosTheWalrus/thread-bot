@@ -60,6 +60,11 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     metadata: Optional[dict] = None
+    agent_id: Optional[UUID] = None
+    agent_version_id: Optional[UUID] = None
+    agent_run_id: Optional[UUID] = None
+    agent_handle: Optional[str] = None
+    agent_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

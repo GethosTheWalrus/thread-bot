@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
+import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:threadbot/services/inline_video.dart';
@@ -11,6 +12,8 @@ class ChatMessageList extends StatelessWidget {
   final ScrollController scrollController;
   final bool isSending;
   final List<Widget> footerWidgets;
+  final List<ActiveRunPresentation> activeRuns;
+  final ValueChanged<String>? onRunTap;
 
   const ChatMessageList({
     super.key,
@@ -18,6 +21,8 @@ class ChatMessageList extends StatelessWidget {
     required this.scrollController,
     this.isSending = false,
     this.footerWidgets = const [],
+    this.activeRuns = const [],
+    this.onRunTap,
   });
 
   @override
@@ -251,18 +256,47 @@ class ChatMessageList extends StatelessWidget {
       assistantTimelines[i] = steps;
     }
 
+    final anchoredRuns = <String, List<ActiveRunPresentation>>{};
+    final trailingRuns = <ActiveRunPresentation>[];
+    final messageIds = messages.map((message) => message.id).toSet();
+    for (final presentation in activeRuns) {
+      final anchor = presentation.inputMessageId;
+      if (anchor != null && messageIds.contains(anchor)) {
+        anchoredRuns.putIfAbsent(anchor, () => []).add(presentation);
+      } else {
+        trailingRuns.add(presentation);
+      }
+    }
+    final entries = <Object>[];
+    for (final message in messages) {
+      entries.add(message);
+      entries.addAll(
+        anchoredRuns[message.id] ?? const <ActiveRunPresentation>[],
+      );
+    }
+    entries.addAll(trailingRuns);
+
     return ListView.builder(
       controller: scrollController,
       padding: const EdgeInsets.symmetric(vertical: 24),
-      itemCount: messages.length + footerWidgets.length,
+      itemCount: entries.length + footerWidgets.length,
       itemBuilder: (context, index) {
-        if (index >= messages.length) {
-          return footerWidgets[index - messages.length];
+        if (index >= entries.length) {
+          return footerWidgets[index - entries.length];
         }
-        final msg = messages[index];
+        final entry = entries[index];
+        if (entry is ActiveRunPresentation) {
+          return _ActiveAgentBubble(
+            key: ValueKey('active-agent-run-${entry.id}'),
+            presentation: entry,
+            onTap: onRunTap == null ? null : () => onRunTap!(entry.id),
+          );
+        }
+        final msg = entry as Message;
+        final messageIndex = messages.indexOf(msg);
         if (msg.isCompactionSummary) return _CompactionDivider(message: msg);
         // Hide thinking messages claimed by an assistant message
-        if (msg.isThinking && claimedThinkingIndices.contains(index)) {
+        if (msg.isThinking && claimedThinkingIndices.contains(messageIndex)) {
           return const SizedBox.shrink();
         }
         // Unclaimed thinking (still streaming, no assistant response yet)
@@ -270,22 +304,22 @@ class ChatMessageList extends StatelessWidget {
           return _ThinkingBubble(message: msg);
         }
         // Hide tool_calls claimed by an assistant message
-        if (msg.isToolCall && claimedToolCallIndices.contains(index)) {
+        if (msg.isToolCall && claimedToolCallIndices.contains(messageIndex)) {
           return const SizedBox.shrink();
         }
         // Unclaimed tool_call (no assistant message follows at all — rare edge case)
         if (msg.isToolCall) {
           final hasAssistantAfter = messages
-              .skip(index + 1)
+              .skip(messageIndex + 1)
               .any((m) => m.isAssistant);
           return _ToolCallBubble(
             message: msg,
             isLoading: isSending && !hasAssistantAfter,
-            results: toolCallResults[index] ?? [],
+            results: toolCallResults[messageIndex] ?? [],
           );
         }
         // Hide tool_results that are claimed by a tool_call group
-        if (msg.isToolResult && claimedResultIndices.contains(index)) {
+        if (msg.isToolResult && claimedResultIndices.contains(messageIndex)) {
           return const SizedBox.shrink();
         }
         // Unclaimed tool_result (shouldn't happen, but render standalone just in case)
@@ -293,8 +327,8 @@ class ChatMessageList extends StatelessWidget {
         if (msg.isSystem) return const SizedBox.shrink();
         return _ChatBubble(
           message: msg,
-          preItems: assistantPreItems[index] ?? [],
-          timelineSteps: assistantTimelines[index] ?? [],
+          preItems: assistantPreItems[messageIndex] ?? [],
+          timelineSteps: assistantTimelines[messageIndex] ?? [],
           isLoading: isSending && msg.content.isEmpty,
         );
       },
@@ -1083,9 +1117,11 @@ class _InlineThinkingBlockState extends State<_InlineThinkingBlock> {
 // ── Timeline Step Types ──────────────────────────────────────────────────────
 
 enum _TimelineStepType {
+  queued,
   thinking,
   toolCall,
   toolResult,
+  approval,
   compaction,
   text,
   textActive,
@@ -1187,6 +1223,11 @@ class _ResponseTimeline extends StatelessWidget {
     _TimelineStep step,
   ) {
     return switch (step.type) {
+      _TimelineStepType.queued => (
+        icon: Icons.schedule_rounded,
+        color: const Color(0xFF71717A),
+        label: 'Queued',
+      ),
       _TimelineStepType.thinking => (
         icon: Icons.psychology_rounded,
         color: const Color(0xFFF59E0B),
@@ -1201,6 +1242,11 @@ class _ResponseTimeline extends StatelessWidget {
         icon: Icons.inventory_2_rounded,
         color: const Color(0xFF10B981),
         label: 'Tool result',
+      ),
+      _TimelineStepType.approval => (
+        icon: Icons.verified_user_rounded,
+        color: const Color(0xFFFBBF24),
+        label: 'Approval wait',
       ),
       _TimelineStepType.compaction => (
         icon: Icons.compress_rounded,
@@ -1357,6 +1403,168 @@ class _PulsingWidgetState extends State<_PulsingWidget>
   @override
   Widget build(BuildContext context) {
     return FadeTransition(opacity: _opacity, child: widget.child);
+  }
+}
+
+List<_TimelineStep> _activeRunTimeline(ActiveRunPresentation presentation) {
+  final run = presentation.run;
+  final steps = <_TimelineStep>[];
+  final status = run.status.toLowerCase();
+  if (status == 'queued' || status == 'starting') {
+    steps.add(const _TimelineStep(_TimelineStepType.queued));
+  }
+  if (status == 'planning' || status == 'thinking' || status == 'running') {
+    steps.add(
+      const _TimelineStep(_TimelineStepType.thinking, label: 'Planning'),
+    );
+  }
+  if (status == 'executing' || status == 'action' || status == 'tool_call') {
+    steps.add(const _TimelineStep(_TimelineStepType.toolCall, label: 'Action'));
+  }
+  for (final event in presentation.events) {
+    final type = event.type.toLowerCase();
+    final payload = event.payload;
+    final content =
+        payload['display_content'] ??
+        payload['content'] ??
+        payload['message'] ??
+        payload['error'];
+    final text = content is String ? content : null;
+    final isApproval = type.contains('approval') || type.contains('authorize');
+    final isAction =
+        type.contains('action') ||
+        type.contains('tool') ||
+        type.contains('execute');
+    final isResult =
+        type.contains('action_result') || type.contains('tool_result');
+    final isThinking =
+        type.contains('plan') ||
+        type.contains('think') ||
+        type.contains('reason') ||
+        type.contains('llm');
+    final stepType = isApproval
+        ? _TimelineStepType.approval
+        : isResult
+        ? _TimelineStepType.toolResult
+        : isAction
+        ? _TimelineStepType.toolCall
+        : isThinking
+        ? _TimelineStepType.thinking
+        : null;
+    if (stepType != null) {
+      steps.add(
+        _TimelineStep(
+          stepType,
+          label: switch (stepType) {
+            _TimelineStepType.approval => 'Waiting for approval',
+            _TimelineStepType.toolCall =>
+              payload['tool_identity'] is String
+                  ? 'Using ${payload['tool_identity']}'
+                  : 'Action',
+            _TimelineStepType.toolResult => 'Action result',
+            _TimelineStepType.thinking => 'Planning',
+            _ => null,
+          },
+          content: text,
+        ),
+      );
+    }
+  }
+  if (status == 'waiting_approval' &&
+      !steps.any((step) => step.type == _TimelineStepType.approval)) {
+    steps.add(const _TimelineStep(_TimelineStepType.approval));
+  }
+  steps.add(const _TimelineStep(_TimelineStepType.textActive));
+  return steps;
+}
+
+class _ActiveAgentBubble extends StatelessWidget {
+  final ActiveRunPresentation presentation;
+  final VoidCallback? onTap;
+
+  const _ActiveAgentBubble({super.key, required this.presentation, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final run = presentation.run;
+    final name = run.agentName?.trim().isNotEmpty == true
+        ? run.agentName!
+        : 'Agent';
+    final handle = run.agentHandle?.trim().isNotEmpty == true
+        ? ' @${run.agentHandle}'
+        : '';
+    final timeline = _activeRunTimeline(presentation);
+    final body = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      color: Colors.white.withValues(alpha: 0.02),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _agentAvatar(name),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          '$name$handle'.toUpperCase(),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.5,
+                            color: Color(0xFF8B5CF6),
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          run.status.replaceAll('_', ' '),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Color(0xFFA1A1AA),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    _ResponseTimeline(steps: timeline),
+                    const SizedBox(height: 8),
+                    const _TypingDots(),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    return Semantics(
+      button: onTap != null,
+      label: '$name$handle agent run',
+      child: onTap == null ? body : InkWell(onTap: onTap, child: body),
+    );
+  }
+
+  Widget _agentAvatar(String name) {
+    final color = const Color(0xFF8B5CF6);
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: .22),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: .55)),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        name[0].toUpperCase(),
+        style: TextStyle(color: color, fontWeight: FontWeight.w800),
+      ),
+    );
   }
 }
 

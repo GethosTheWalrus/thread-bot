@@ -17,6 +17,7 @@ from app.api.routes import (
     set_thread_mode,
     thread_agent_run,
 )
+from app.api.autonomy import draft as update_agent_draft
 
 
 def test_thread_response_helper_projects_agent_fields():
@@ -59,6 +60,10 @@ def test_thread_mode_change_refreshes_server_updated_timestamp():
     assert "await db.refresh(thread)" in configure_source
     assert "return await configure_thread_agent" in mode_source
     assert "await db.refresh(thread)" in mode_source
+
+
+def test_agent_draft_refreshes_server_updated_timestamp():
+    assert "await db.refresh(row)" in inspect.getsource(update_agent_draft)
 
 
 def test_thread_listing_does_not_duplicate_multi_agent_threads():

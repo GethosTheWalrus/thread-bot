@@ -70,6 +70,15 @@ def allowed_mentions_payload(user_ids: list[str] | None = None) -> dict:
     }
 
 
+def discord_agent_label(name: str | None, handle: str | None) -> str:
+    """Return a readable, inert Agent identity for the shared Discord bot."""
+    safe_name = re.sub(r"[\\`*_~|>]", "", str(name or "")).strip()
+    safe_handle = re.sub(r"[^A-Za-z0-9_-]", "", str(handle or "")).strip()
+    if safe_handle:
+        return f"{safe_name or safe_handle} (@{safe_handle})"
+    return safe_name or "ThreadBot Agent"
+
+
 def classify_inbound_agent_route(content: str, handles: list[str], *, bot_mentioned: bool) -> str | None:
     """Return an agent handle, ``moderator``, or None for passive chatter."""
     result = parse_agent_mention(content, handles)

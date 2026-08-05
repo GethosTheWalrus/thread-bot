@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0022_agent_heartbeats"]
+    assert scripts.get_heads() == ["0023_backfill_thread_workspaces"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -35,6 +35,7 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0020_multi_agent_threads").down_revision == "0019_thread_modes"
     assert scripts.get_revision("0021_reconcile_multi_agent_schema").down_revision == "0020_multi_agent_threads"
     assert scripts.get_revision("0022_agent_heartbeats").down_revision == "0021_reconcile_multi_agent_schema"
+    assert scripts.get_revision("0023_backfill_thread_workspaces").down_revision == "0022_agent_heartbeats"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -97,6 +98,14 @@ def test_multi_agent_reconciliation_declares_expected_indexes_and_repairs_route(
     assert "UPDATE agent_runs SET route = 'user' WHERE route IS NULL" in revision
     assert "ALTER COLUMN route SET NOT NULL" in revision
     assert "get_unique_constraints(\"agents\")" in revision
+
+
+def test_thread_workspace_revision_backfills_before_not_null():
+    revision = (ROOT / "alembic/versions/0023_backfill_thread_workspaces.py").read_text()
+    assert revision.index("UPDATE threads SET workspace_id") < revision.index("nullable=False")
+    assert "00000000-0000-0000-0000-000000000001" in revision
+    assert 'RuntimeError("Thread workspace ownership migration is forward-only")' in revision
+    assert not Base.metadata.tables["threads"].c.workspace_id.nullable
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():

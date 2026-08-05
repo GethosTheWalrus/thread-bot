@@ -25,8 +25,11 @@ def build_agent_identity_boundary(
     )
     if background:
         boundary += (
-            " This is a background heartbeat. Work only on your own mandate; if "
-            "it has no new work, return no response and propose no action."
+            " This is a background heartbeat. Work only on your own mandate. An "
+            "unfinished task or a recurring mandate that is due counts as work: "
+            "perform it now using only selected tools and fresh evidence. Choose "
+            "no action only when the mandate is complete, not due, or cannot be "
+            "performed safely with the available tools."
         )
     return boundary
 
@@ -55,7 +58,9 @@ def build_heartbeat_temporal_context(
         "instructions to repeat on every heartbeat. Daily means at most once per "
         "local calendar day; hourly means at most once per local clock hour; weekly "
         "means at most once per local calendar week. Compare the current time with "
-        "the prior outcomes below. If the cadence has not elapsed and there is no "
+        "the prior outcomes below. If no cadence is stated but the mandate clearly "
+        "describes a recurring task, one execution per heartbeat is due. If an explicit "
+        "cadence has not elapsed and there is no "
         "material new event requiring an exception, return no response and propose "
         "no action. Never emit substantially the same report merely because you woke up.\n"
         "The shared transcript is intentionally omitted from heartbeat evaluation so "
@@ -256,7 +261,8 @@ async def start_runtime(args: dict) -> dict:
             run = await db.scalar(select(AgentRun).where(AgentRun.id == run_id))
             if not run or run.status != "running":
                 return {"started": False, "reason": "run is not queued or already claimed"}
-        ok = await acquire_thread_lease(db, UUID(str(args["workspace_id"])), thread_id, run_id, args.get("holder", "threadbot-agent"), datetime.now(timezone.utc) + timedelta(minutes=30))
+        lease_seconds = max(60, min(int(args.get("lease_seconds") or 1800), 86400))
+        ok = await acquire_thread_lease(db, UUID(str(args["workspace_id"])), thread_id, run_id, args.get("holder", "threadbot-agent"), datetime.now(timezone.utc) + timedelta(seconds=lease_seconds))
         if not ok:
             await db.rollback(); return {"started": False, "reason": "thread lease is held"}
         await db.commit(); return {"started": True}
@@ -282,6 +288,17 @@ async def renew_thread_lease(args: dict) -> dict:
         return {"renewed": result.rowcount == 1}
 
 @defn
+async def release_runtime(args: dict) -> dict:
+    """Release the shared chat-engine lease without finalizing the run."""
+    from uuid import UUID
+    from app.database import AsyncSessionLocal
+    from app.database.autonomy import release_thread_lease
+    async with AsyncSessionLocal() as db:
+        released = await release_thread_lease(db, UUID(str(args["thread_id"])), UUID(str(args["run_id"])))
+        await db.commit()
+        return {"released": bool(released)}
+
+@defn
 async def transition_run_status(args: dict) -> dict:
     from uuid import UUID
     from app.database import AsyncSessionLocal
@@ -290,6 +307,28 @@ async def transition_run_status(args: dict) -> dict:
         changed = await transition_run(db, UUID(str(args["run_id"])), args["expected"], args["target"])
         if changed: await append_run_event(db, UUID(str(args["run_id"])), args.get("event_type", "run_transition"), {"status": args["target"]})
         await db.commit(); return {"changed": changed}
+
+
+@defn
+async def append_progress_event(args: dict) -> dict:
+    from uuid import UUID
+    from app.database import AsyncSessionLocal
+    from app.database.autonomy import append_run_event
+
+    allowed = {"run_started", "model_step_started", "model_step_completed"}
+    event_type = str(args.get("event_type", ""))
+    if event_type not in allowed:
+        raise ValueError("unsupported progress event")
+    payload = {
+        str(key): value
+        for key, value in (args.get("payload") or {}).items()
+        if key in {"step", "model_calls", "has_tool_calls"}
+        and isinstance(value, (bool, int, float, str, type(None)))
+    }
+    async with AsyncSessionLocal() as db:
+        await append_run_event(db, UUID(str(args["run_id"])), event_type, payload)
+        await db.commit()
+    return {"event_type": event_type}
 
 
 @defn
@@ -307,6 +346,7 @@ async def plan_model_step(args: dict) -> dict:
     message = response.get("message") or response
     model_call_id = str(response.get("id") or args.get("model_call_id") or "model-call")
     proposals = []
+    assistant_tool_calls = []
     from app.tools.catalog import identity_for_descriptor
     descriptors = args.get("tool_descriptors") or []
     for call in message.get("tool_calls") or response.get("tool_calls") or []:
@@ -315,9 +355,21 @@ async def plan_model_step(args: dict) -> dict:
             arguments = json.loads(function.get("arguments") or "{}")
         except (TypeError, ValueError):
             arguments = {}
-        identity = next((identity_for_descriptor(d, function.get("name", "")) for d in descriptors if (d.get("function") or {}).get("name") == function.get("name")), None)
-        proposals.append({"model_call_id": model_call_id, "tool_call_id": str(call.get("id") or "tool-call"), "tool_identity": identity or f"unknown:{function.get('name')}", "arguments": arguments, "target": {}, "rationale": "", "safe_reasoning_summary": "model proposed a tool call"})
-    return {"schema_version": 1, "model_call_id": model_call_id, "text": str(message.get("content") or response.get("content") or ""), "proposals": proposals, "finish_reason": "tool_calls" if proposals else "stop", "usage": response.get("usage") or {}, "safe_reasoning_summary": "model output normalized", "effect_free": False, "execution_mode": args.get("mode", "live")}
+        tool_call_id = str(call.get("id") or "tool-call")
+        function_name = str(function.get("name") or "")
+        assistant_tool_calls.append({
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": function_name,
+                "arguments": json.dumps(arguments, separators=(",", ":"), sort_keys=True),
+            },
+        })
+        identity = next((identity_for_descriptor(d, function_name) for d in descriptors if (d.get("function") or {}).get("name") == function_name), None)
+        proposals.append({"model_call_id": model_call_id, "tool_call_id": tool_call_id, "tool_identity": identity or f"unknown:{function_name}", "arguments": arguments, "target": {}, "rationale": "", "safe_reasoning_summary": "model proposed a tool call"})
+    text = str(message.get("content") or response.get("content") or "")
+    assistant_message = {"role": "assistant", "content": text, "tool_calls": assistant_tool_calls}
+    return {"schema_version": 1, "model_call_id": model_call_id, "assistant_message": assistant_message, "text": text, "proposals": proposals, "finish_reason": "tool_calls" if proposals else "stop", "usage": response.get("usage") or {}, "safe_reasoning_summary": "model output normalized", "effect_free": False, "execution_mode": args.get("mode", "live")}
 
 
 @defn
@@ -343,7 +395,18 @@ async def persist_planned_action(args: dict) -> dict:
         if created:
             await append_run_event(db, UUID(str(args["run_id"])), "action_planned", {"action_id": action_id, "tool_identity": proposal["tool_identity"], "request_hash": request_hash})
         await db.commit()
-        return {"action_id": action_id, "action_db_id": str(row.id), "request_hash": request_hash, "revision": row.revision}
+        result = {"action_id": action_id, "action_db_id": str(row.id), "request_hash": request_hash, "revision": row.revision}
+    if created:
+        from app.discord_integration import sync_agent_run_tool_activity
+        await sync_agent_run_tool_activity(str(args["run_id"]), {
+            "type": "tool_call",
+            "tool_calls": [{
+                "id": action_id,
+                "type": "function",
+                "function": {"name": proposal["tool_identity"], "arguments": "{}"},
+            }],
+        })
+    return result
 
 
 @defn
@@ -399,6 +462,39 @@ async def load_verified_approval(args: dict) -> dict | None:
         if not request or request.request_hash != args["request_hash"] or request.action_id != args["action_id"] or request.action_revision != args["action_revision"] or request.expires_at <= datetime.now(timezone.utc): return None
         decision = await db.scalar(select(ApprovalDecision).where(ApprovalDecision.request_id == request.id, ApprovalDecision.decision == "approved"))
         return {"request_id": str(request.id), "request_hash": request.request_hash} if decision else None
+
+
+@defn
+async def expire_approval_request(args: dict) -> dict:
+    from uuid import UUID
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.approval_models import ApprovalRequest
+    from app.models.run_models import AgentAction
+
+    async with AsyncSessionLocal() as db:
+        request = await db.scalar(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == UUID(str(args["request_id"])))
+            .with_for_update()
+        )
+        if not request:
+            return {"status": "missing"}
+        if request.status == "pending":
+            request.status = "expired"
+        action = await db.scalar(
+            select(AgentAction)
+            .where(
+                AgentAction.run_id == request.run_id,
+                AgentAction.action_id == request.action_id,
+            )
+            .with_for_update()
+        )
+        if action and action.status == "awaiting_approval":
+            action.status = "expired"
+        await db.commit()
+        return {"status": request.status}
+
 
 @defn
 async def create_approval_request(args: dict) -> dict:
@@ -533,6 +629,13 @@ async def persist_action_result(args: dict) -> dict:
         if changed:
             await append_run_event(db, UUID(str(args["run_id"])), "action_result", {"action_id": args["action_id"], "status": result["status"], "display_content": result.get("display_content", "")})
         await db.commit()
+    if changed:
+        from app.discord_integration import sync_agent_run_tool_activity
+        await sync_agent_run_tool_activity(str(args["run_id"]), {
+            "type": "tool_result",
+            "tool_call_id": args["action_id"],
+            "success": result.get("status") == "succeeded",
+        })
     return result
 
 @defn
@@ -563,6 +666,7 @@ async def finalize_turn(args: dict) -> dict:
     from app.models.run_models import AgentAction
     from app.models.budget_models import BudgetReservation, BudgetBucket
     from app.database.autonomy import transition_run, transition_action, append_run_event, release_thread_lease
+    discord_sync = None
     async with AsyncSessionLocal() as db:
         run_id = UUID(str(args["run_id"]))
         run = await db.scalar(select(AgentRun).where(AgentRun.id == run_id).with_for_update())
@@ -591,12 +695,17 @@ async def finalize_turn(args: dict) -> dict:
             existing = await db.scalar(select(Message).where(Message.thread_id == UUID(str(args["thread_id"])), Message.role == "assistant", Message.metadata_["autonomy_run_id"].as_string() == str(args["run_id"])))
             if not existing:
                 agent = await db.scalar(select(Agent).where(Agent.id == run.agent_id))
-                db.add(Message(thread_id=UUID(str(args["thread_id"])), role="assistant", content=output, agent_id=run.agent_id, agent_version_id=run.agent_version_id, agent_run_id=run.id, agent_handle=agent.handle if agent else None, metadata_={"autonomy_run_id": str(args["run_id"]), "agent_handle": agent.handle if agent else None, "agent_name": agent.name if agent else None, "origin_id": run.origin_id, "origin_message_id": run.origin_message_id}))
+                metadata = {"autonomy_run_id": str(args["run_id"]), "agent_run_id": str(run.id), "agent_handle": agent.handle if agent else None, "agent_name": agent.name if agent else None, "origin_id": run.origin_id, "origin_message_id": run.origin_message_id}
+                db.add(Message(thread_id=UUID(str(args["thread_id"])), role="assistant", content=output, agent_id=run.agent_id, agent_version_id=run.agent_version_id, agent_run_id=run.id, agent_handle=agent.handle if agent else None, metadata_=metadata))
+                discord_sync = (UUID(str(args["thread_id"])), output, metadata)
         run.output_summary = output or run.output_summary
         if transitioned:
             await append_run_event(db, run_id, "turn_finalized", {"status": target_status, "output_summary": output})
         await release_thread_lease(db, UUID(str(args["thread_id"])), run_id)
         await db.commit()
+    if discord_sync:
+        from app.discord_integration import sync_message_to_discord
+        await sync_message_to_discord(discord_sync[0], "assistant", discord_sync[1], metadata=discord_sync[2])
     return {"run_id": str(args["run_id"]), "status": target_status, "output_summary": output}
 
 

@@ -36,7 +36,7 @@ async def create_agent(db:AsyncSession, workspace_id:UUID, actor, values:dict):
         existing = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.status != "archived"))
         if existing and existing.workspace_id != workspace_id: raise LookupError("thread not found")
     else:
-        thread=Thread(title=values["name"], mode="agent"); db.add(thread); await db.flush()
+        thread=Thread(title=values["name"], mode="agent", workspace_id=workspace_id); db.add(thread); await db.flush()
     thread.mode = "agent"
     thread.workspace_id = workspace_id
     values["handle"] = values.get("handle") or generated_agent_handle(values["name"])

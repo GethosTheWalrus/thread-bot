@@ -174,7 +174,6 @@ class _AgentDetailScreenState extends State<AgentDetailScreen>
         _buildInfoRow('Name', a.name),
         _buildInfoRow('Handle', '@${a.handle}'),
         _buildInfoRow('Status', a.status),
-        _buildInfoRow('Execution mode', a.executionMode),
         _buildInfoRow('Moderator', a.isModerator ? 'Yes' : 'No'),
         if (a.activeVersionId != null)
           _buildInfoRow('Active version', a.activeVersionId!),

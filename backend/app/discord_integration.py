@@ -12,6 +12,7 @@ from temporalio.client import Client as TemporalClient
 from app.config import get_discord_config, get_llm_config, get_settings
 from app.discord_mentions import (
     allowed_mentions_payload,
+    discord_agent_label,
     mention_display_names,
     normalize_discord_user_mentions,
     replace_readable_mentions,
@@ -685,7 +686,8 @@ def _status_emoji(status: str, success: bool | None = None) -> str:
 def _format_activity_trace(state: dict) -> str:
     order = state.get("order") or []
     steps = state.get("steps") or {}
-    lines = ["**ThreadBot activity**"]
+    identity = discord_agent_label(state.get("agent_name"), state.get("agent_handle"))
+    lines = [f"**Agent activity · {identity}**"]
     if not order:
         lines.append("Preparing tools...")
         return "\n".join(lines)
@@ -751,6 +753,9 @@ async def sync_discord_tool_activity(
     state = await _load_activity_state(key)
     state.setdefault("order", [])
     state.setdefault("steps", {})
+    if config.get("agent_name") or config.get("agent_handle"):
+        state["agent_name"] = config.get("agent_name")
+        state["agent_handle"] = config.get("agent_handle")
 
     if event_type == "tool_call":
         for tool_call in event.get("tool_calls") or []:
@@ -826,6 +831,41 @@ async def complete_discord_tool_activity(discord_config: dict | None = None) -> 
         discord_config=config,
     )
     await _save_activity_state(key, state)
+
+
+async def sync_agent_run_tool_activity(run_id: str, event: dict) -> None:
+    """Sync one AgentRun's action progress with immutable Agent attribution."""
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.agent_models import Agent
+    from app.models.models import DiscordThreadLink
+    from app.models.run_models import AgentRun
+
+    try:
+        async with AsyncSessionLocal() as db:
+            run = await db.get(AgentRun, UUID(str(run_id)))
+            if not run:
+                return
+            link = await db.scalar(
+                select(DiscordThreadLink).where(
+                    DiscordThreadLink.thread_id == run.thread_id,
+                    DiscordThreadLink.is_active.is_(True),
+                )
+            )
+            if not link:
+                return
+            agent = await db.get(Agent, run.agent_id)
+        config = dict(await _load_fresh_discord_config())
+        config.update({
+            "discord_thread_id": link.discord_thread_id,
+            "workflow_id": f"agent-run:{run.id}",
+            "reply_to_message_id": run.origin_message_id,
+            "agent_name": agent.name if agent else None,
+            "agent_handle": agent.handle if agent else None,
+        })
+        await sync_discord_tool_activity(event, discord_config=config)
+    except Exception as exc:
+        print(f"[discord] Agent action sync failed for run {run_id}: {exc}", flush=True)
 
 
 def format_threadbot_message(role: str, content: str) -> str | None:
@@ -1088,7 +1128,12 @@ async def sync_message_to_discord(
     metadata: dict | None = None,
     discord_config: dict | None = None,
 ) -> str | None:
-    config = discord_config or await _load_fresh_discord_config()
+    config = dict(discord_config or await _load_fresh_discord_config())
+    if metadata and metadata.get("agent_run_id"):
+        config.setdefault("workflow_id", f"agent-run:{metadata['agent_run_id']}")
+        config.setdefault("reply_to_message_id", metadata.get("origin_message_id"))
+        config.setdefault("agent_name", metadata.get("agent_name"))
+        config.setdefault("agent_handle", metadata.get("agent_handle"))
     if not _discord_enabled(config) or metadata and metadata.get("source") == "discord":
         return None
     formatted = format_threadbot_message(role, content)
@@ -1099,7 +1144,7 @@ async def sync_message_to_discord(
         agent_handle = (metadata or {}).get("agent_handle")
         agent_name = (metadata or {}).get("agent_name")
         if agent_handle:
-            formatted = f"**{agent_name or agent_handle} (@{agent_handle})**\n{formatted}"
+            formatted = f"**Agent: {discord_agent_label(agent_name, agent_handle)}**\n{formatted}"
 
     discord_thread_id = config.get("discord_thread_id")
     if not discord_thread_id:
@@ -1111,6 +1156,7 @@ async def sync_message_to_discord(
             if not link or not link.is_active:
                 return None
             discord_thread_id = link.discord_thread_id
+            config["discord_thread_id"] = discord_thread_id
     try:
         files = []
         allowed_user_mentions = None
@@ -1519,7 +1565,7 @@ async def start_discord_agent_dispatch(
         return
     await temporal_client.start_workflow(
         TriggerDispatchWorkflow.run, {"event_id": str(event.id)},
-        id=f"trigger-dispatch:{event.id}", task_queue=get_settings().TEMPORAL_TASK_QUEUE,
+        id=f"trigger-dispatch:{event.id}", task_queue=get_settings().AGENT_TASK_QUEUE,
     )
 
 

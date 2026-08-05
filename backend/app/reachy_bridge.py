@@ -778,7 +778,7 @@ async def _read_transcript(args: argparse.Namespace, *, post_wake: bool = False)
     return await asyncio.to_thread(run_command)
 
 
-async def _save_user_message(thread_id: str, content: str) -> None:
+async def _save_user_message(thread_id: str, content: str):
     from app.database import AsyncSessionLocal
     from app.database.crud import add_message, get_thread
 
@@ -786,7 +786,7 @@ async def _save_user_message(thread_id: str, content: str) -> None:
         thread = await get_thread(db, UUID(thread_id))
         if not thread:
             raise RuntimeError(f"Thread {thread_id} not found")
-        await add_message(
+        message = await add_message(
             db,
             UUID(thread_id),
             "user",
@@ -794,6 +794,70 @@ async def _save_user_message(thread_id: str, content: str) -> None:
             metadata={"source": "reachy", "sender_name": "Reachy voice"},
         )
         await db.commit()
+        return message.id
+
+
+_AGENT_TERMINAL_STATUSES = {
+    "succeeded",
+    "exhausted",
+    "timed_out",
+    "cancelled",
+    "failed",
+    "suppressed",
+    "dead_lettered",
+    "outcome_unknown",
+}
+
+
+@dataclass
+class _ReachyAgentTurn:
+    """Adapter that gives the voice loop a workflow-like AgentRun handle."""
+
+    id: str
+    run_id: UUID
+    temporal_client: object
+    dispatch_handle: object
+    # Agent turns now execute through RunThreadWorkflow, which owns the same
+    # Reachy speech child used by ordinary Chat turns.
+    requires_direct_speech: bool = False
+
+    async def result(self) -> dict:
+        from app.database import AsyncSessionLocal
+        from app.models.run_models import AgentRun
+
+        while True:
+            async with AsyncSessionLocal() as db:
+                run = await db.get(AgentRun, self.run_id)
+                if run is None:
+                    raise RuntimeError(f"Reachy AgentRun {self.run_id} was not found")
+                if run.status in _AGENT_TERMINAL_STATUSES:
+                    return {
+                        "status": run.status,
+                        "output_summary": run.output_summary or "",
+                        "failure_summary": run.failure_summary or "",
+                    }
+            await asyncio.sleep(1.0)
+
+    async def cancel(self) -> None:
+        from app.database import AsyncSessionLocal
+        from app.database.autonomy import transition_run
+        from app.models.run_models import AgentRun
+
+        workflow_id = f"agent-run:{self.run_id}"
+        async with AsyncSessionLocal() as db:
+            run = await db.get(AgentRun, self.run_id)
+            if run and run.temporal_workflow_id:
+                workflow_id = run.temporal_workflow_id
+            if run and run.status == "queued":
+                await transition_run(db, run.id, "queued", "cancelled")
+                await db.commit()
+        try:
+            await self.temporal_client.get_workflow_handle(workflow_id).cancel()
+        except Exception:
+            try:
+                await self.dispatch_handle.cancel()
+            except Exception:
+                pass
 
 
 async def _resolve_bound_thread_id(args: argparse.Namespace) -> str | None:
@@ -804,9 +868,96 @@ async def _resolve_bound_thread_id(args: argparse.Namespace) -> str | None:
     return str(reachy_config.get("thread_id") or os.environ.get("REACHY_THREAD_ID") or "").strip() or None
 
 
-async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -> tuple[object, str]:
+async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -> tuple[object, str | None]:
     """Save the user message, start the Temporal workflow, and return
     (workflow_handle, speech_workflow_id). Does NOT wait for the result."""
+    from app.database import AsyncSessionLocal
+    from app.database.crud import add_message, get_thread
+
+    async with AsyncSessionLocal() as db:
+        thread = await get_thread(db, UUID(thread_id))
+    if thread is None:
+        raise RuntimeError(f"Thread {thread_id} not found")
+
+    if (thread.mode or "chat") == "agent":
+        from sqlalchemy import select
+        from app.agent_mentions import parse_agent_mention
+        from app.agents.autonomy_service import create_run
+        from app.models.agent_models import Agent, AgentVersion
+        from app.security import autonomy_flags, local_actor
+        from app.workflows.agent_workflows import TriggerDispatchWorkflow
+
+        await load_settings_from_db()
+        if not autonomy_flags().get("autonomy_enabled", False):
+            raise RuntimeError("Agent autonomy is disabled")
+
+        async with AsyncSessionLocal() as db:
+            roster = list((await db.execute(select(Agent).where(
+                Agent.thread_id == thread.id,
+                Agent.workspace_id == thread.workspace_id,
+                Agent.status != "archived",
+            ).order_by(Agent.is_moderator.desc(), Agent.created_at, Agent.id))).scalars())
+            mention = parse_agent_mention(prompt, [agent.handle for agent in roster])
+            if mention.target_handle:
+                agent = next(
+                    (item for item in roster if item.handle.casefold() == mention.target_handle.casefold()),
+                    None,
+                )
+                if agent and agent.status != "active":
+                    raise RuntimeError(f"Agent @{agent.handle} is {agent.status} and cannot receive Reachy turns")
+            else:
+                agent = next(
+                    (item for item in roster if item.is_moderator and item.status == "active"),
+                    None,
+                )
+            version = await db.get(AgentVersion, agent.active_version_id) if agent and agent.active_version_id else None
+            if not agent or not version:
+                raise RuntimeError("Agent Thread has no active moderator or mentioned Agent version")
+
+            input_message = await add_message(
+                db,
+                thread.id,
+                "user",
+                prompt,
+                metadata={"source": "reachy", "sender_name": "Reachy voice"},
+            )
+            actor = local_actor().model_copy(update={"workspace_id": thread.workspace_id})
+            idempotency_key = f"reachy:{thread.id}:{uuid_mod.uuid4()}"
+            run = await create_run(
+                db,
+                thread.workspace_id,
+                actor,
+                agent,
+                version,
+                prompt,
+                "live",
+                None,
+                idempotency_key,
+                "both",
+                {"source": "reachy", "sender_name": "Reachy voice"},
+                input_message_id=input_message.id,
+                route="reachy",
+            )
+            await db.commit()
+
+        client = await connect_temporal_client()
+        dispatch_id = f"trigger-dispatch:{run.trigger_event_id}"
+        try:
+            dispatch_handle = await client.start_workflow(
+                TriggerDispatchWorkflow.run,
+                {"agent_id": str(agent.id), "event_id": str(run.trigger_event_id)},
+                id=dispatch_id,
+                task_queue=get_settings().AGENT_TASK_QUEUE,
+            )
+        except Exception as exc:
+            from app.agents.autonomy_service import fail_queued_run
+
+            async with AsyncSessionLocal() as db:
+                await fail_queued_run(db, run.id, str(exc))
+                await db.commit()
+            raise
+        return _ReachyAgentTurn(dispatch_id, run.id, client, dispatch_handle), None
+
     await _save_user_message(thread_id, prompt)
 
     llm_config = get_llm_config().copy()
@@ -853,6 +1004,13 @@ async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -
 
 async def _collect_turn_response(handle, *, on_first_token=None) -> str:
     """Stream the workflow response and return the collected text."""
+    if isinstance(handle, _ReachyAgentTurn):
+        result = await handle.result()
+        if result["status"] not in {"succeeded", "exhausted"}:
+            reason = result.get("failure_summary") or result["status"]
+            raise RuntimeError(f"Reachy Agent turn {result['status']}: {reason}")
+        return str(result.get("output_summary") or "").strip()
+
     client = await connect_temporal_client()
     response = []
     saw_token = False
@@ -1206,7 +1364,7 @@ async def run_bridge(args: argparse.Namespace) -> None:
             robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, True, robot_sleeping)
             continue
 
-        if args.direct_speak:
+        if args.direct_speak or getattr(workflow_handle, "requires_direct_speech", False):
             await _speak_response(response, turn_reachy_config)
             await asyncio.sleep(float(args.post_speech_sleep_delay))
             robot_sleeping = await _set_bridge_sleeping(turn_reachy_config, args, True, robot_sleeping)

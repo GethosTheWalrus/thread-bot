@@ -10,3 +10,6 @@
 **/dist
 frontend/build
 *.egg-info
+**/.env
+**/.env.*
+!**/.env.example
