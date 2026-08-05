@@ -16,7 +16,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: agent-worker
-          image: git.home:5050/mike/thread-bot/worker:faac4795
+          image: git.home:5050/mike/thread-bot/worker:1aa6e016
           imagePullPolicy: Always
           command: ["python", "-m", "app.agent_worker"]
           envFrom:
