@@ -476,20 +476,15 @@ def _agent_projection(agent):
     if not agent:
         return None
     return {"id": agent.id, "name": agent.name, "handle": agent.handle,
-            "is_moderator": bool(agent.is_moderator), "status": agent.status,
+            "is_moderator": bool(agent.is_moderator), "is_system": bool(getattr(agent, "is_system", False)), "status": agent.status,
             "execution_mode": agent.execution_mode, "active_version_id": agent.active_version_id}
 
 
 async def _thread_agent_summary(db: AsyncSession, thread_id: UUID, workspace_id=LOCAL_WORKSPACE_ID):
     agent = await db.scalar(select(Agent).where(
         Agent.thread_id == thread_id, Agent.workspace_id == workspace_id,
-        Agent.status != "archived", Agent.is_moderator.is_(True),
-    ))
-    if not agent:
-        agent = await db.scalar(select(Agent).where(
-            Agent.thread_id == thread_id, Agent.workspace_id == workspace_id,
-            Agent.status != "archived",
-        ).order_by(Agent.created_at, Agent.id))
+        Agent.status != "archived", Agent.is_system.is_(False),
+    ).order_by(Agent.created_at, Agent.id))
     if not agent:
         return None, None, 0
     active = await db.scalar(select(AgentRun).where(
@@ -522,7 +517,7 @@ async def _thread_agent_summaries(db: AsyncSession, thread_ids: list[UUID], work
         return {}
     agents = list((await db.execute(select(Agent).where(
         Agent.thread_id.in_(thread_ids), Agent.workspace_id == workspace_id,
-        Agent.status != "archived"))).scalars())
+        Agent.status != "archived").order_by(Agent.created_at, Agent.id))).scalars())
     runs = list((await db.execute(select(AgentRun).where(
         AgentRun.thread_id.in_(thread_ids), AgentRun.workspace_id == workspace_id,
         AgentRun.status.in_({"queued", "running", "waiting_approval", "waiting_handoff"}),
@@ -532,7 +527,10 @@ async def _thread_agent_summaries(db: AsyncSession, thread_ids: list[UUID], work
     ).where(AgentRun.thread_id.in_(thread_ids), AgentRun.workspace_id == workspace_id,
             ApprovalRequest.workspace_id == workspace_id, ApprovalRequest.status == "pending")
         .group_by(AgentRun.thread_id))).all()
-    by_id = {a.thread_id: a for a in agents if a.is_moderator}
+    by_id = {}
+    for row in agents:
+        if not row.is_system:
+            by_id.setdefault(row.thread_id, row)
     for row in agents:
         by_id.setdefault(row.thread_id, row)
     agent_by_id = {a.id: a for a in agents}
@@ -648,15 +646,18 @@ async def create_thread_endpoint(
 
 @router.post("/threads/{thread_id}/agent", response_model=ThreadResponse)
 async def configure_thread_agent(thread_id: UUID, request: ThreadModeRequest, db: AsyncSession = Depends(get_db), fastapi_request: Request = None):
-    """Attach the single agent to an existing thread, without replacing it."""
+    """Enable Agent mode with an automatic moderator and a configurable participant."""
     from app.models.agent_models import Agent
-    from app.agents.autonomy_service import create_agent
+    from app.agents.autonomy_service import create_agent, ensure_system_moderator
     actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
     actor = actor or local_actor()
     thread = await db.scalar(select(Thread).where(Thread.id == thread_id))
     if not thread:
         raise HTTPException(404, "Thread not found")
-    existing = await db.scalar(select(Agent).where(Agent.thread_id == thread_id))
+    await ensure_system_moderator(db, actor.workspace_id, thread, actor)
+    existing = await db.scalar(select(Agent).where(
+        Agent.thread_id == thread_id, Agent.is_system.is_(False), Agent.status != "archived",
+    ).order_by(Agent.created_at, Agent.id))
     if existing:
         if existing.workspace_id != actor.workspace_id:
             raise HTTPException(404, "Thread not found")
@@ -687,7 +688,7 @@ async def set_thread_mode(thread_id: UUID, request: ThreadModeRequest, db: Async
         return await configure_thread_agent(thread_id, request, db, fastapi_request)
     else:
         from app.models.agent_models import Agent
-        agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id))
+        agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.is_system.is_(False)))
         if agent and agent.workspace_id != actor.workspace_id:
             raise HTTPException(404, "Thread not found")
         thread.mode = "chat"
@@ -715,7 +716,7 @@ async def thread_agent_draft(thread_id: UUID, body: dict, db: AsyncSession = Dep
     from app.contracts.autonomy import DraftUpsert
     actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
     actor = actor or local_actor()
-    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id))
+    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id, Agent.is_system.is_(False)).order_by(Agent.created_at, Agent.id))
     if not agent:
         raise HTTPException(404, "Agent not found")
     draft = await upsert_draft(db, agent.id, actor.workspace_id, DraftUpsert.model_validate(body).model_dump(mode="json"))
@@ -728,7 +729,7 @@ async def thread_agent_activate(thread_id: UUID, db: AsyncSession = Depends(get_
     from app.agents.autonomy_service import activate_draft
     actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
     actor = actor or local_actor()
-    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id))
+    agent = await db.scalar(select(Agent).where(Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id, Agent.is_system.is_(False)).order_by(Agent.created_at, Agent.id))
     if not agent:
         raise HTTPException(404, "Agent not found")
     try:
@@ -740,11 +741,15 @@ async def thread_agent_activate(thread_id: UUID, db: AsyncSession = Depends(get_
 @router.post("/threads/{thread_id}/agent/run")
 async def thread_agent_run(thread_id: UUID, body: dict, db: AsyncSession = Depends(get_db), fastapi_request: Request = None, idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
     from app.models.agent_models import Agent, AgentVersion
-    from app.agents.autonomy_service import create_run
+    from app.agents.autonomy_service import create_run, ensure_system_moderator
     from app.agent_mentions import parse_agent_mention
     actor = getattr(fastapi_request.state, "actor", None) if fastapi_request else None
     actor = actor or local_actor()
     message = str(body.get("message") or "")
+    thread = await db.scalar(select(Thread).where(Thread.id == thread_id, Thread.workspace_id == actor.workspace_id))
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    await ensure_system_moderator(db, actor.workspace_id, thread, actor)
     roster = list((await db.execute(select(Agent).where(
         Agent.thread_id == thread_id,
         Agent.workspace_id == actor.workspace_id,
@@ -845,12 +850,13 @@ async def chat_websocket(websocket: WebSocket):
                 return
             thread_id = thread.id
             if (thread.mode or "chat") == "agent":
-                from app.agents.autonomy_service import create_run
+                from app.agents.autonomy_service import create_run, ensure_system_moderator
                 from app.models.agent_models import Agent, AgentVersion
-                if actor.workspace_id != (await setup_db.scalar(select(Agent.workspace_id).where(Agent.thread_id == thread.id))):
+                if actor.workspace_id != thread.workspace_id:
                     await websocket.send_json({"type": "error", "content": "Thread is not available"})
                     await websocket.close(code=1008)
                     return
+                await ensure_system_moderator(setup_db, actor.workspace_id, thread, actor)
                 roster = list((await setup_db.execute(select(Agent).where(Agent.thread_id == thread.id, Agent.workspace_id == actor.workspace_id).order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars().all())
                 from app.agent_mentions import parse_agent_mention
                 mention = parse_agent_mention(request.content, [item.handle for item in roster])

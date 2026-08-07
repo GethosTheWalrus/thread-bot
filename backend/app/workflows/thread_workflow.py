@@ -1279,7 +1279,7 @@ class RunThreadWorkflow:
                 skill for skill in (llm_config.get("skills") or [])
                 if isinstance(skill, dict) and str(skill.get("content") or "").strip()
             ]
-            if active_skills:
+            if active_skills and not routing_only:
                 skill_names = [str(skill.get("name") or "Untitled skill") for skill in active_skills]
                 builtin_tools.append({
                     "type": "function",
@@ -1320,6 +1320,23 @@ class RunThreadWorkflow:
 
             # ── Build initial message list ───────────────────────────────
             current_messages = list(chat_history)
+            heartbeat_input_boundary = workflow.patched(
+                "heartbeat-input-boundary-v1"
+            )
+            if (
+                heartbeat_input_boundary
+                and (agent_context or {}).get("route") == "heartbeat"
+            ):
+                current_messages.append({
+                    "role": "user",
+                    "content": (
+                        "Scheduled heartbeat wake. Execute one due unit of your highest-priority Agent instructions now. "
+                        "This is runtime control input and must not be persisted as a Thread message. If the mandate is "
+                        "unconditional and recurring with no other cadence, it is due on this wake. Use your selected "
+                        "tools when fresh external evidence is required. Produce only the fresh result from this wake; "
+                        "do not continue, quote, concatenate, or repeat earlier assistant responses."
+                    ),
+                })
             custom_system_prompt = str(llm_config.get("system_prompt") or "").strip()
 
             server_tools = {}
@@ -1343,7 +1360,8 @@ class RunThreadWorkflow:
             tool_summary = "\n".join(tool_summary_lines)
 
             reachy_config = dict(llm_config.get("reachy") or {})
-            is_reachy_voice_turn = self._reachy_enabled_for_thread(llm_config, thread_id) and reachy_config.get("speech_enabled", True)
+            routing_only = bool((agent_context or {}).get("routing_only"))
+            is_reachy_voice_turn = not routing_only and self._reachy_enabled_for_thread(llm_config, thread_id) and reachy_config.get("speech_enabled", True)
 
             # The OpenAI Agents SDK drives the loop inside the workflow. The
             # OpenAIAgentsPlugin turns model calls into Temporal activities,
@@ -1366,18 +1384,44 @@ class RunThreadWorkflow:
             # constraints first, general capabilities last, so small local
             # models weight the user's intent and the voice format correctly.
             instructions_parts: list[str] = []
-            if custom_system_prompt:
+            if routing_only:
+                roster_lines = []
+                for participant in agent_context.get("routing_roster") or []:
+                    roster_lines.append(
+                        f"- @{participant.get('handle')}: {participant.get('name')} — "
+                        f"{participant.get('description') or participant.get('instructions') or 'No mandate supplied'}"
+                    )
+                instructions_parts.append(
+                    "ABSOLUTE ROUTING-ONLY ROLE: You are an invisible system moderator. Never answer the user, "
+                    "never explain your choice, and never produce conversational text. Read the latest user request "
+                    "and select exactly one active participant below. Your entire response must be exactly one @handle. "
+                    "If no participant is available, return no text.\nActive participants:\n"
+                    + ("\n".join(roster_lines) if roster_lines else "- None")
+                )
+            elif custom_system_prompt:
                 instructions_parts.append(
                     "Highest priority thread-specific instructions (follow these over any other guidance below):\n"
                     f"{custom_system_prompt}"
                 )
+            heartbeat_recurring_mandate = workflow.patched(
+                "heartbeat-recurring-mandate-v2"
+            )
             if (agent_context or {}).get("route") == "heartbeat":
+                recurring_guidance = (
+                    " An enabled heartbeat is a due execution opportunity. If your instructions describe "
+                    "an unconditional recurring or proactive task and do not specify another cadence, perform "
+                    "that task once during every heartbeat. Prior completion does not make a recurring mandate "
+                    "complete. Only return no text when the instructions are genuinely conditional and the "
+                    "condition is not met, or when an explicit cadence is not yet due."
+                    if heartbeat_recurring_mandate
+                    else ""
+                )
                 instructions_parts.append(
                     "This turn was started automatically by the Agent heartbeat at "
                     f"{agent_context.get('scheduled_at') or 'the scheduled wake time'}. "
                     "There is no new user message. Follow your highest-priority Agent instructions proactively. "
                     "Treat the conversation as context, not as a new request. If your instructions do not require "
-                    "work at this wake, return no text."
+                    f"work at this wake, return no text.{recurring_guidance}"
                 )
             if active_skills:
                 skill_sections = []
@@ -1407,8 +1451,9 @@ class RunThreadWorkflow:
                     "sentence with 'and' or commas. If you would normally use a heading, "
                     "just start the sentence directly."
                 )
-            instructions_parts.append(
-                "You are a helpful assistant. Use tools as many times as needed to thoroughly "
+            if not routing_only:
+                instructions_parts.append(
+                    "You are a helpful assistant. Use tools as many times as needed to thoroughly "
                 "answer the user's question. Gather information, verify it, and refine your "
                 "answer before providing a final response. When user messages include Image attachment URLs, "
                 "call describe_image before answering questions that depend on visual content; use the tool "
@@ -1433,9 +1478,9 @@ class RunThreadWorkflow:
                 "auto-derives frames = ceil(duration*fps)+1 and clamps to the configured max (default 20s at 16fps = 320 frames). "
                 "Explicit per-call frames/fps/width/height/steps/cfg are still honored but clamped to the same caps. "
                 "Include the generated video link in your final response."
-                f"{discord_instruction}"
-            )
-            if tool_summary:
+                    f"{discord_instruction}"
+                )
+            if tool_summary and not routing_only:
                 instructions_parts.append(
                     "Available tools for this thread:\n"
                     f"{tool_summary}"
@@ -1664,20 +1709,21 @@ class RunThreadWorkflow:
             try:
                 stream_timeout = int(llm_config.get("stream_timeout") or 600)
                 summary_timeout = timedelta(seconds=max(30, min(stream_timeout, 300)))
-                await execute_activity(
-                    refresh_conversation_summary,
-                    {
-                        "thread_id": thread_id,
-                        "llm_config": dict(llm_config),
-                        "force": bool(compact_result.get("compacted")),
-                        "cadence_turns": 1,
-                    },
-                    start_to_close_timeout=summary_timeout,
-                    retry_policy=RetryPolicy(maximum_attempts=2),
-                )
+                if not routing_only:
+                    await execute_activity(
+                        refresh_conversation_summary,
+                        {
+                            "thread_id": thread_id,
+                            "llm_config": dict(llm_config),
+                            "force": bool(compact_result.get("compacted")),
+                            "cadence_turns": 1,
+                        },
+                        start_to_close_timeout=summary_timeout,
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
             except Exception:
                 workflow.logger.exception("Conversation summary refresh failed")
-            should_title = (agent_context or {}).get("route") != "heartbeat" and (
+            should_title = not routing_only and (agent_context or {}).get("route") != "heartbeat" and (
                 len(chat_history) <= 5 or len(chat_history) % 5 == 1
             )
 

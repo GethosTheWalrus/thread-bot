@@ -4922,6 +4922,8 @@ async def save_message(args: dict) -> dict:
     content = args["content"]
     metadata = args.get("metadata")
     agent_context = args.get("agent_context") or {}
+    if agent_context.get("routing_only"):
+        return {"completed_turns": None, "suppressed": True}
     if agent_context:
         metadata = {**(metadata or {}), "agent_name": agent_context.get("agent_name"), "agent_handle": agent_context.get("agent_handle"), "agent_run_id": agent_context.get("agent_run_id")}
     idempotency_key = args.get("idempotency_key")

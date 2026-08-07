@@ -56,6 +56,7 @@ def _agent_response(row: Agent, thread_title: str | None = None) -> dict:
     return {
         "id": row.id, "thread_id": row.thread_id, "thread_title": thread_title,
         "name": row.name, "handle": row.handle, "is_moderator": row.is_moderator,
+        "is_system": bool(getattr(row, "is_system", False)),
         "description": row.description, "status": row.status,
         "execution_mode": row.execution_mode, "active_version_id": row.active_version_id,
         "template_id": row.template_id, "concurrency_limit": row.concurrency_limit,
@@ -66,7 +67,7 @@ def _agent_response(row: Agent, thread_title: str | None = None) -> dict:
 
 @router.get("/agents", response_model=AgentPage)
 async def agents(db=Depends(get_db),actor=Depends(actor_dep),limit:int=50,cursor:str|None=None,q:str|None=None,status:str|None=None,moderator:bool|None=None,thread_id:UUID|None=None):
-    stmt=select(Agent,Thread.title).join(Thread,Thread.id==Agent.thread_id).where(Agent.workspace_id==actor.workspace_id)
+    stmt=select(Agent,Thread.title).join(Thread,Thread.id==Agent.thread_id).where(Agent.workspace_id==actor.workspace_id,Agent.is_system.is_(False))
     if q and q.strip():
         term=f"%{q.strip()}%"
         stmt=stmt.where(or_(Agent.name.ilike(term),Agent.handle.ilike(term),Thread.title.ilike(term)))
@@ -101,6 +102,8 @@ async def patch_thread_agent(thread_id: UUID, agent_id: UUID, body: AgentPatch, 
     row = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.thread_id == thread_id, Agent.workspace_id == actor.workspace_id))
     if not row:
         raise HTTPException(404, "agent not found")
+    if row.is_system:
+        raise HTTPException(409, "the Thread moderator is managed automatically")
     for key, value in body.model_dump(exclude_unset=True).items():
         setattr(row, key, value.value if hasattr(value, "value") else value)
     await db.flush()
@@ -119,8 +122,7 @@ async def patch_thread_turn_limit(thread_id: UUID, limit: int, db=Depends(get_db
 
 @router.post("/threads/{thread_id}/agents/{agent_id}/moderator", response_model=AgentResponse)
 async def thread_moderator(thread_id: UUID, agent_id: UUID, db=Depends(get_db), actor=Depends(actor_dep)):
-    try: return await set_thread_moderator(db, actor.workspace_id, thread_id, agent_id)
-    except LookupError as exc: raise HTTPException(404, str(exc))
+    raise HTTPException(409, "the Thread moderator is managed automatically")
 
 @router.delete("/threads/{thread_id}/agents/{agent_id}", response_model=AgentResponse)
 async def thread_archive_agent(thread_id: UUID, agent_id: UUID, db=Depends(get_db), actor=Depends(actor_dep)):
@@ -135,6 +137,7 @@ async def get_agent(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):
 async def patch_agent(agent_id:UUID,body:AgentPatch,db=Depends(get_db),actor=Depends(actor_dep)):
     row=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id));
     if not row: return not_found()
+    if row.is_system: raise HTTPException(409,"the Thread moderator is managed automatically")
     for k,v in body.model_dump(exclude_unset=True).items(): setattr(row,k,v.value if hasattr(v,"value") else v)
     row.updated_at=datetime.now(timezone.utc); await audit_mutation(db,actor.workspace_id,actor,"agent.updated","agent",row.id,body.model_dump(exclude_unset=True))
     return row
@@ -145,18 +148,22 @@ async def resume(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)): ret
 async def lifecycle(db,agent_id,actor,status):
     row=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id));
     if not row: return not_found()
+    if row.is_system: raise HTTPException(409,"the Thread moderator is managed automatically")
     if row.status=="archived": raise HTTPException(409,"archived agent")
     row.status=status; row.updated_at=datetime.now(timezone.utc); await audit_mutation(db,actor.workspace_id,actor,f"agent.{status}","agent",row.id); return row
 @router.delete("/agents/{agent_id}",status_code=204)
 async def archive(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):
     row=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id));
     if not row: return not_found()
+    if row.is_system: raise HTTPException(409,"the Thread moderator is managed automatically")
     try: row = await archive_thread_agent(db, actor.workspace_id, row.thread_id, row.id)
     except ValueError as exc: raise HTTPException(409, str(exc))
     row.updated_at=datetime.now(timezone.utc); await audit_mutation(db,actor.workspace_id,actor,"agent.archived","agent",row.id)
 
 @router.put("/agents/{agent_id}/draft",response_model=DraftResponse)
 async def draft(agent_id:UUID,body:DraftUpsert,db=Depends(get_db),actor=Depends(actor_dep)):
+    agent=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id))
+    if agent and agent.is_system: raise HTTPException(409,"the Thread moderator is managed automatically")
     try:
         row=await upsert_draft(db,agent_id,actor.workspace_id,body.model_dump(mode="json")); await db.refresh(row); await audit_mutation(db,actor.workspace_id,actor,"agent.draft_updated","agent",agent_id); return row
     except ValueError as exc: raise HTTPException(409,str(exc))
@@ -165,6 +172,8 @@ async def get_draft(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):
     row=await db.scalar(select(AgentVersionDraft).join(Agent,Agent.id==AgentVersionDraft.agent_id).where(AgentVersionDraft.agent_id==agent_id,Agent.workspace_id==actor.workspace_id)); return row or not_found()
 @router.post("/agents/{agent_id}/activate",response_model=VersionResponse)
 async def activate(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)):
+    agent=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id))
+    if agent and agent.is_system: raise HTTPException(409,"the Thread moderator is managed automatically")
     try:
         row=await activate_draft(db,agent_id,actor.workspace_id,actor); await audit_mutation(db,actor.workspace_id,actor,"agent.activated","agent",agent_id,{"version_id":str(row.id)}); return row
     except LookupError as exc: raise HTTPException(404,str(exc))
@@ -173,7 +182,9 @@ async def versions(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)): r
 
 @router.post("/agents/{agent_id}/triggers",response_model=TriggerResponse)
 async def trigger(agent_id:UUID,body:TriggerCreate,db=Depends(get_db),actor=Depends(actor_dep)):
-    if not await db.scalar(select(Agent.id).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id)): return not_found()
+    agent=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id))
+    if not agent: return not_found()
+    if agent.is_system: raise HTTPException(409,"the Thread moderator cannot be scheduled")
     row=AgentTrigger(workspace_id=actor.workspace_id,agent_id=agent_id,trigger_type=body.trigger_type.value,config=body.config,is_active=body.is_active); db.add(row); await db.flush(); await audit_mutation(db,actor.workspace_id,actor,"trigger.created","agent_trigger",row.id); return row
 @router.get("/agents/{agent_id}/triggers",response_model=list[TriggerResponse])
 async def triggers(agent_id:UUID,db=Depends(get_db),actor=Depends(actor_dep)): return (await db.execute(select(AgentTrigger).where(AgentTrigger.agent_id==agent_id,AgentTrigger.workspace_id==actor.workspace_id))).scalars().all()
@@ -235,6 +246,7 @@ async def resume_schedule_trigger(trigger_id:UUID,db=Depends(get_db),actor=Depen
 async def run(agent_id:UUID,body:RunRequest,request:Request,db=Depends(get_db),actor=Depends(actor_dep),idempotency_key:str|None=Header(None,alias="Idempotency-Key")):
     agent=await db.scalar(select(Agent).where(Agent.id==agent_id,Agent.workspace_id==actor.workspace_id));
     if not agent: raise HTTPException(404,"agent not found")
+    if agent.is_system: raise HTTPException(409,"the Thread moderator only routes Thread messages")
     if agent.status != "active": raise HTTPException(409,f"agent is {agent.status} and cannot receive runs")
     if not agent.active_version_id: raise HTTPException(409,"agent has no active version")
     version=await db.get(AgentVersion,agent.active_version_id)
@@ -338,6 +350,8 @@ async def get_heartbeat(agent_id: UUID, db: AsyncSession = Depends(get_db), acto
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.workspace_id == actor.workspace_id))
     if not agent:
         raise HTTPException(404, "agent not found")
+    if agent.is_system:
+        raise HTTPException(409, "the Thread moderator does not use heartbeats")
     row = await _ensure_heartbeat_row(db, agent)
     if row.updated_at is None:
         await db.refresh(row)
@@ -357,6 +371,8 @@ async def put_heartbeat(
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.workspace_id == actor.workspace_id))
     if not agent:
         raise HTTPException(404, "agent not found")
+    if agent.is_system:
+        raise HTTPException(409, "the Thread moderator does not use heartbeats")
     if agent.status == "archived":
         raise HTTPException(409, "archived agent cannot receive heartbeat config")
     try:
@@ -406,6 +422,8 @@ async def wake_heartbeat(agent_id: UUID, db: AsyncSession = Depends(get_db), act
     agent = await db.scalar(select(Agent).where(Agent.id == agent_id, Agent.workspace_id == actor.workspace_id))
     if not agent:
         raise HTTPException(404, "agent not found")
+    if agent.is_system:
+        raise HTTPException(409, "the Thread moderator does not use heartbeats")
     if agent.status != "active":
         raise HTTPException(409, f"agent is {agent.status}")
     if not agent.active_version_id:

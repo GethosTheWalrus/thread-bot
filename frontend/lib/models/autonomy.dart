@@ -20,6 +20,7 @@ class Agent {
   final String handle;
   final String? threadTitle;
   final bool isModerator;
+  final bool isSystem;
   final String? description, activeVersionId, templateId;
   final int concurrencyLimit, queueLimit;
   final DateTime? createdAt, updatedAt;
@@ -32,6 +33,7 @@ class Agent {
     this.handle = '',
     this.threadTitle,
     this.isModerator = false,
+    this.isSystem = false,
     this.description,
     this.activeVersionId,
     this.templateId,
@@ -49,6 +51,7 @@ class Agent {
     handle: _string(j['handle'] ?? j['mention_name']) ?? '',
     threadTitle: _string(j['thread_title']),
     isModerator: j['is_moderator'] == true,
+    isSystem: j['is_system'] == true,
     description: _string(j['description']),
     activeVersionId: _string(j['active_version_id']),
     templateId: _string(j['template_id']),

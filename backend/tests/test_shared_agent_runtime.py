@@ -56,6 +56,13 @@ def test_background_agent_continuation_is_bounded_and_noninteractive():
 def test_shared_heartbeat_has_scheduling_boundary_and_no_empty_message():
     source = inspect.getsource(RunThreadWorkflow.run)
     assert "There is no new user message" in source
+    assert '"heartbeat-recurring-mandate-v2"' in source
+    assert '"heartbeat-input-boundary-v1"' in source
+    assert "must not be persisted as a Thread message" in source
+    assert "do not continue, quote, concatenate, or repeat earlier assistant responses" in source
+    assert "recurring_guidance" in source
+    assert "unconditional recurring or proactive task" in source
+    assert "Prior completion does not make a recurring mandate" in source
     assert "if llm_response:" in source
     assert '!= "heartbeat"' in source
 

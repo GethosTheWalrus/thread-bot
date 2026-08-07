@@ -67,6 +67,11 @@ class AutonomyApiService {
     );
   }
 
+  Future<Map<String, dynamic>> mcpToolCatalog() async =>
+      Map<String, dynamic>.from(
+        await _request('GET', '/api/mcp/tool-overrides') as Map,
+      );
+
   Future<dynamic> _request(
     String method,
     String path, {

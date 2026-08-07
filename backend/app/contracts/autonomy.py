@@ -39,7 +39,7 @@ class AgentCreate(StrictModel):
 class AgentPatch(StrictModel):
     name: str|None=Field(None,min_length=1,max_length=255); handle: str|None=Field(None, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,31}$"); description:str|None=None; execution_mode:ExecutionMode|None=None; concurrency_limit:int|None=Field(None,ge=1,le=32); queue_limit:int|None=Field(None,ge=0,le=10000)
 class AgentResponse(StrictModel):
-    id:UUID; thread_id:UUID; thread_title:str|None=None; name:str; handle:str; is_moderator:bool; description:str|None; status:AgentStatus; execution_mode:ExecutionMode; active_version_id:UUID|None; template_id:UUID|None; concurrency_limit:int; queue_limit:int; created_at:datetime; updated_at:datetime
+    id:UUID; thread_id:UUID; thread_title:str|None=None; name:str; handle:str; is_moderator:bool; is_system:bool=False; description:str|None; status:AgentStatus; execution_mode:ExecutionMode; active_version_id:UUID|None; template_id:UUID|None; concurrency_limit:int; queue_limit:int; created_at:datetime; updated_at:datetime
 
 class DraftUpsert(StrictModel):
     optimistic_lock_version:int=Field(ge=1); schema_version:int=Field(1,ge=1); config:dict={}; prompt_template:str=Field("",max_length=100000); tool_selection:list[str]=[]; skill_selection:list[str]=[]; credential_bindings:list[SecretReference]=[]

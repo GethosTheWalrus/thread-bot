@@ -19,6 +19,13 @@ def _workspace(row, workspace_id):
     return row
 
 _RESERVED_HANDLES = {"user", "threadbot", "everyone", "here", "moderator"}
+SYSTEM_MODERATOR_NAME = "Thread moderator"
+SYSTEM_MODERATOR_HANDLE = "moderator"
+SYSTEM_MODERATOR_PROMPT = (
+    "You are ThreadBot's system-managed routing moderator. You never answer the user's question, "
+    "offer commentary, or speak to the Thread. Select exactly one active participant Agent whose "
+    "mandate best matches the latest user request. Return only that Agent's @handle and no other text."
+)
 
 def generated_agent_handle(name: str) -> str:
     handle = re.sub(r"[^a-z0-9_-]+", "_", name.lower()).strip("_-")[:32]
@@ -28,7 +35,57 @@ def generated_agent_handle(name: str) -> str:
         handle = f"agent_{handle}"[:32]
     return handle
 
+async def ensure_system_moderator(db:AsyncSession, workspace_id:UUID, thread:Thread, actor=None):
+    """Ensure an active, immutable routing-only moderator exists for an Agent Thread."""
+    rows = list((await db.execute(select(Agent).where(
+        Agent.thread_id == thread.id, Agent.workspace_id == workspace_id,
+    ).order_by(Agent.created_at, Agent.id))).scalars())
+    moderator = next((row for row in rows if row.is_system), None)
+    if moderator is None:
+        collision = next((row for row in rows if row.handle.casefold() == SYSTEM_MODERATOR_HANDLE), None)
+        if collision:
+            collision.handle = f"agent_{str(collision.id).replace('-', '')[:20]}"
+    for row in rows:
+        if row.id != getattr(moderator, "id", None) and row.is_moderator:
+            row.is_moderator = False
+    await db.flush()
+    actor_type = getattr(getattr(actor, "actor_type", None), "value", None) or "system"
+    actor_id = getattr(actor, "actor_id", None) or "thread-moderator"
+    if moderator is None:
+        moderator = Agent(
+            workspace_id=workspace_id, thread_id=thread.id,
+            name=SYSTEM_MODERATOR_NAME, handle=SYSTEM_MODERATOR_HANDLE,
+            description="Automatically routes requests to the best participant Agent.",
+            status="active", execution_mode="act", is_moderator=True, is_system=True,
+            created_by_type=actor_type, created_by_id=actor_id,
+        )
+        db.add(moderator)
+        await db.flush()
+    else:
+        moderator.is_moderator = True
+        moderator.status = "active"
+    if not moderator.active_version_id:
+        version_payload = {
+            "schema_version": 1, "config": {"routing_only": True},
+            "prompt_template": SYSTEM_MODERATOR_PROMPT,
+            "tool_selection": [], "skill_selection": [], "credential_bindings": [],
+        }
+        version = AgentVersion(
+            agent_id=moderator.id, version=1, schema_version=1,
+            config=version_payload["config"], prompt_template=SYSTEM_MODERATOR_PROMPT,
+            tool_selection=[], skill_selection=[], credential_bindings=[],
+            config_hash=canonical_hash(version_payload),
+            created_by_type=actor_type, created_by_id=actor_id,
+        )
+        db.add(version)
+        await db.flush()
+        moderator.active_version_id = version.id
+    await db.flush()
+    return moderator
+
+
 async def create_agent(db:AsyncSession, workspace_id:UUID, actor, values:dict):
+    values = dict(values)
     thread_id = values.pop("thread_id", None)
     if thread_id:
         thread = await db.scalar(select(Thread).where(Thread.id == thread_id))
@@ -39,8 +96,10 @@ async def create_agent(db:AsyncSession, workspace_id:UUID, actor, values:dict):
         thread=Thread(title=values["name"], mode="agent", workspace_id=workspace_id); db.add(thread); await db.flush()
     thread.mode = "agent"
     thread.workspace_id = workspace_id
+    await ensure_system_moderator(db, workspace_id, thread, actor)
     values["handle"] = values.get("handle") or generated_agent_handle(values["name"])
-    values["is_moderator"] = not bool(await db.scalar(select(Agent.id).where(Agent.thread_id == thread.id)))
+    values["is_moderator"] = False
+    values["is_system"] = False
     row=Agent(workspace_id=workspace_id,thread_id=thread.id,created_by_type=actor.actor_type.value,created_by_id=actor.actor_id,**values); db.add(row); await db.flush()
     return row
 
@@ -48,23 +107,14 @@ async def list_thread_agents(db, workspace_id, thread_id):
     return list((await db.execute(select(Agent).where(Agent.workspace_id == workspace_id, Agent.thread_id == thread_id).order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars().all())
 
 async def set_thread_moderator(db, workspace_id, thread_id, agent_id):
-    rows = await list_thread_agents(db, workspace_id, thread_id)
-    if not any(row.id == agent_id for row in rows): raise LookupError("agent not found in thread")
-    target = next(row for row in rows if row.id == agent_id)
-    if target.status == "archived":
-        raise ValueError("archived agent cannot be moderator")
-    # Clear first and flush: the partial unique moderator index must never see
-    # two moderators during a replacement transaction.
-    for row in rows: row.is_moderator = False
-    await db.flush()
-    target.is_moderator = True
-    await db.flush()
-    return target
+    raise ValueError("the Thread moderator is managed automatically")
 
 async def archive_thread_agent(db, workspace_id, thread_id, agent_id):
     rows = await list_thread_agents(db, workspace_id, thread_id)
     row = next((item for item in rows if item.id == agent_id), None)
     if row is None: raise LookupError("agent not found in thread")
+    if row.is_system:
+        raise ValueError("the system moderator cannot be archived")
     if row.is_moderator:
         replacement = next((item for item in rows if item.id != row.id and item.status != "archived"), None)
         if replacement is None:

@@ -15,6 +15,22 @@ async def load_agent_run(args):
         event=await db.get(TriggerEvent, run.trigger_event_id) if run.trigger_event_id else None
         trigger=await db.get(AgentTrigger, event.trigger_id) if event and event.trigger_id else None
         agent = await db.get(Agent, run.agent_id)
+        routing_roster = []
+        if agent and agent.is_system:
+            participants = list((await db.execute(select(Agent).where(
+                Agent.thread_id == run.thread_id,
+                Agent.status == "active",
+                Agent.is_system.is_(False),
+                Agent.active_version_id.is_not(None),
+            ).order_by(Agent.created_at, Agent.id))).scalars())
+            for participant in participants:
+                participant_version = await db.get(AgentVersion, participant.active_version_id)
+                routing_roster.append({
+                    "name": participant.name,
+                    "handle": participant.handle,
+                    "description": participant.description or "",
+                    "instructions": participant_version.prompt_template if participant_version else "",
+                })
         from app.config import get_llm_config, apply_thread_llm_overrides, get_settings
         from app.models.models import Thread, DiscordThreadLink
         thread = await db.get(Thread, run.thread_id)
@@ -39,7 +55,7 @@ async def load_agent_run(args):
             profile=await db.get(BudgetProfile,version.budget_profile_id); budget=(profile.limits or {}) if profile else {}
         from app.temporal_client import autonomy_search_attributes
         from app.security import security_mode
-        return {"found":True,"run_id":str(run.id),"workspace_id":str(run.workspace_id),"agent_id":str(run.agent_id),"thread_id":str(run.thread_id),"version_id":str(version.id),"version_config":version.config,"llm_config":effective_config,"chat_task_queue":get_settings().TEMPORAL_TASK_QUEUE,"prompt_template":version.prompt_template,"tool_selection":version.tool_selection,"skill_selection":version.skill_selection,"selected_skills":selected_skills or (version.config or {}).get("selected_skills", []),"credential_bindings":version.credential_bindings,"agent_name":agent.name if agent else None,"agent_handle":agent.handle if agent else None,"policy_version":str(version.policy_set_id or "default"),"connector_id":(trigger.config or {}).get("connector_id") if trigger else None,"subject":(event.subject or {}) if event else {},"response_mode":((event.payload or {}).get("response_mode", "both") if event else "both"),"origin":(event.payload or {}) if event else {},"agent_status":agent.status if agent else "archived","status":run.status,"mode":run.mode,"route":run.route or "","input_message_id":str(run.input_message_id) if run.input_message_id else None,"authentication_method":"admin_token" if security_mode() == "admin_token" else "local","search_attributes":autonomy_search_attributes(str(run.workspace_id), str(run.agent_id), run.mode),"deadline_at":run.deadline_at.isoformat() if run.deadline_at else None,"budget_snapshot":run.budget_snapshot or budget,"budget_profile_id":str(version.budget_profile_id) if version and version.budget_profile_id else None}
+        return {"found":True,"run_id":str(run.id),"workspace_id":str(run.workspace_id),"agent_id":str(run.agent_id),"thread_id":str(run.thread_id),"version_id":str(version.id),"version_config":version.config,"llm_config":effective_config,"chat_task_queue":get_settings().TEMPORAL_TASK_QUEUE,"prompt_template":version.prompt_template,"tool_selection":version.tool_selection,"skill_selection":version.skill_selection,"selected_skills":selected_skills or (version.config or {}).get("selected_skills", []),"credential_bindings":version.credential_bindings,"agent_name":agent.name if agent else None,"agent_handle":agent.handle if agent else None,"is_moderator":bool(agent.is_moderator) if agent else False,"is_system":bool(agent.is_system) if agent else False,"routing_roster":routing_roster,"policy_version":str(version.policy_set_id or "default"),"connector_id":(trigger.config or {}).get("connector_id") if trigger else None,"subject":(event.subject or {}) if event else {},"response_mode":((event.payload or {}).get("response_mode", "both") if event else "both"),"origin":(event.payload or {}) if event else {},"agent_status":agent.status if agent else "archived","status":run.status,"mode":run.mode,"route":run.route or "","input_message_id":str(run.input_message_id) if run.input_message_id else None,"authentication_method":"admin_token" if security_mode() == "admin_token" else "local","search_attributes":autonomy_search_attributes(str(run.workspace_id), str(run.agent_id), run.mode),"deadline_at":run.deadline_at.isoformat() if run.deadline_at else None,"budget_snapshot":run.budget_snapshot or budget,"budget_profile_id":str(version.budget_profile_id) if version and version.budget_profile_id else None}
 
 @defn
 async def materialize_trigger_event(args):
@@ -313,7 +329,11 @@ async def route_agent_output(args):
         db.add(run); await db.flush()
         output_message = await db.scalar(select(Message).where(Message.thread_id == source.thread_id,
             Message.agent_run_id == source.id, Message.role == "assistant").order_by(Message.created_at.desc()))
-        if output_message:
+        source_agent = next((a for a in roster if a.id == source.agent_id), None)
+        if source_agent and source_agent.is_system and source.input_message_id:
+            run.input_message_id = source.input_message_id
+            run.route = "moderator_routed"
+        elif output_message:
             run.input_message_id = output_message.id
         await append_run_event(db, source.id, "agent_output_routed", {"target_agent_id": str(target.id), "run_id": str(run.id)})
         await append_run_event(db, run.id, "run_queued", {"route": "agent_mention", "parent_run_id": str(source.id)})

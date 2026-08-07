@@ -6,8 +6,105 @@ import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/thread_participant_manager.dart';
+import 'package:threadbot/widgets/agent_workspace_ui.dart';
+import 'package:threadbot/screens/autonomy_screens.dart';
+import 'package:threadbot/services/autonomy_api.dart';
 
 void main() {
+  testWidgets('agent workspace identity exposes clear navigation hierarchy', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Column(
+            children: [
+              AgentBreadcrumb(current: 'Researcher'),
+              AgentIdentity(name: 'Researcher', handle: 'research'),
+              AgentStatusPill('active'),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(find.text('Agents'), findsOneWidget);
+    expect(find.text('Researcher'), findsWidgets);
+    expect(find.text('@research'), findsOneWidget);
+    expect(find.text('active'), findsOneWidget);
+  });
+
+  testWidgets('agent workspace header stacks actions on narrow screens', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: AgentPageHeader(
+            eyebrow: 'Workspace',
+            title: 'Agents',
+            description: 'Manage the agents attached to your Threads.',
+            action: FilledButton(onPressed: null, child: Text('New agent')),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Agents'), findsOneWidget);
+    expect(find.text('New agent'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('agent editor exposes only actionable configuration sections', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AgentEditorScreen(id: 'agent-1', api: _EditorApi()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final pageScroll = find.byType(Scrollable).first;
+
+    expect(find.text('Status and actions'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Instructions'),
+      260,
+      scrollable: pageScroll,
+    );
+    expect(find.text('Instructions'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Capabilities'),
+      260,
+      scrollable: pageScroll,
+    );
+    expect(find.text('Capabilities'), findsOneWidget);
+    expect(find.text('Manage MCP tools'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Automation'),
+      260,
+      scrollable: pageScroll,
+    );
+    expect(find.text('Automation'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Recent runs'),
+      260,
+      scrollable: pageScroll,
+    );
+    expect(find.text('Recent runs'), findsOneWidget);
+
+    expect(find.text('Forecast'), findsNothing);
+    expect(find.textContaining('canary', findRichText: true), findsNothing);
+    expect(find.textContaining('shadow', findRichText: true), findsNothing);
+    expect(find.text('Run limits'), findsNothing);
+    expect(find.text('Versions'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   test('thread plural contracts fall back to legacy scalar fields', () {
     final thread = Thread.fromJson({
       'id': 't',
@@ -232,7 +329,44 @@ void main() {
     expect(find.text('Details & settings'), findsOneWidget);
     expect(find.text('Heartbeat'), findsOneWidget);
     expect(find.text('Agent tools'), findsOneWidget);
-    expect(find.text('@mod · active'), findsOneWidget);
+    expect(find.text('@mod'), findsOneWidget);
+    expect(find.text('active'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+}
+
+class _EditorApi extends AutonomyApiService {
+  @override
+  Future<Agent> agent(String id) async => const Agent(
+    id: 'agent-1',
+    name: 'Researcher',
+    status: 'active',
+    executionMode: 'act',
+    threadId: 'thread-1',
+    threadTitle: 'Research Thread',
+    handle: 'researcher',
+    isModerator: true,
+    activeVersionId: 'version-1',
+  );
+
+  @override
+  Future<Draft> draft(String id) async => const Draft(
+    id: 'draft-1',
+    agentId: 'agent-1',
+    promptTemplate: 'Research the requested topic.',
+    toolSelection: ['mcp:DuckDuckGo:search', 'builtin:calculator'],
+    skillSelection: ['source-analysis'],
+  );
+
+  @override
+  Future<List<Version>> versions(String id) async => const [
+    Version(id: 'version-1', agentId: 'agent-1', version: 1),
+  ];
+
+  @override
+  Future<List<Trigger>> triggers(String id) async => const [];
+
+  @override
+  Future<CursorPage<Run>> runs(String id, {String? cursor}) async =>
+      const CursorPage([], null);
 }

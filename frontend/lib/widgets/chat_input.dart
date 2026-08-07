@@ -74,6 +74,7 @@ class _ChatInputState extends State<ChatInput> {
     return widget.participants
         .where(
           (agent) =>
+              !agent.isSystem &&
               agent.mentionName.isNotEmpty &&
               agent.status.toLowerCase() != 'archived' &&
               agent.mentionName.toLowerCase().startsWith(query),

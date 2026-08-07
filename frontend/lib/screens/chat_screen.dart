@@ -2872,7 +2872,7 @@ class _GeneralControlsTab extends StatelessWidget {
         ),
         const SizedBox(height: 5),
         const Text(
-          'Choose how new messages are handled. Agent Threads route messages to the moderator or an @mentioned agent.',
+          'Choose how new messages are handled. Agent Threads use an automatic routing moderator or an explicit @mention.',
           style: TextStyle(color: Colors.white54, height: 1.4),
         ),
         const SizedBox(height: 16),
@@ -2934,7 +2934,7 @@ class _GeneralControlsTab extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Use the Agents tab to add agents, choose the moderator, configure heartbeats, or open detailed settings.',
+            'Use the Agents tab to add participant Agents, configure heartbeats, or open detailed settings. The routing moderator is managed automatically.',
             style: TextStyle(fontSize: 12, color: Colors.white54, height: 1.4),
           ),
         ],

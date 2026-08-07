@@ -292,6 +292,7 @@ class ThreadAgentSummary {
   final String? activeVersionId;
   final String mentionName;
   final bool isModerator;
+  final bool isSystem;
   const ThreadAgentSummary({
     required this.id,
     required this.name,
@@ -300,6 +301,7 @@ class ThreadAgentSummary {
     this.activeVersionId,
     this.mentionName = '',
     this.isModerator = false,
+    this.isSystem = false,
   });
 }
 
@@ -331,6 +333,7 @@ ThreadAgentSummary? _threadAgent(dynamic value) {
     activeVersionId: j['active_version_id']?.toString(),
     mentionName: '${j['handle'] ?? j['mention_name'] ?? ''}',
     isModerator: j['is_moderator'] == true,
+    isSystem: j['is_system'] == true,
   );
 }
 

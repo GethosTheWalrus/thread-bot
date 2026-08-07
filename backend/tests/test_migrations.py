@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0023_backfill_thread_workspaces"]
+    assert scripts.get_heads() == ["0024_system_moderators"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -36,6 +36,7 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0021_reconcile_multi_agent_schema").down_revision == "0020_multi_agent_threads"
     assert scripts.get_revision("0022_agent_heartbeats").down_revision == "0021_reconcile_multi_agent_schema"
     assert scripts.get_revision("0023_backfill_thread_workspaces").down_revision == "0022_agent_heartbeats"
+    assert scripts.get_revision("0024_system_moderators").down_revision == "0023_backfill_thread_workspaces"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -106,6 +107,17 @@ def test_thread_workspace_revision_backfills_before_not_null():
     assert "00000000-0000-0000-0000-000000000001" in revision
     assert 'RuntimeError("Thread workspace ownership migration is forward-only")' in revision
     assert not Base.metadata.tables["threads"].c.workspace_id.nullable
+
+
+def test_system_moderator_revision_backfills_and_matches_model():
+    revision = (ROOT / "alembic/versions/0024_system_moderators.py").read_text()
+    assert "UPDATE agents SET is_moderator = false" in revision
+    assert "'Thread moderator', 'moderator'" in revision
+    assert "'active', 'act', true, true" in revision
+    assert "uq_agents_system_thread" in revision
+    assert "ck_agents_system_is_moderator" in revision
+    assert 'RuntimeError("System moderator migration is forward-only")' in revision
+    assert not Base.metadata.tables["agents"].c.is_system.nullable
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():

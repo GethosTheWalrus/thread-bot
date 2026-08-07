@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/widgets/agent_workspace_ui.dart';
 
 /// Adaptive heartbeat configuration sheet for an agent.
 ///
@@ -29,6 +30,7 @@ class HeartbeatConfigSheet extends StatefulWidget {
     return showModalBottomSheet(
       context: context,
       isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (_) => HeartbeatConfigSheet(
         agentId: agentId,
         agentName: agentName,
@@ -151,166 +153,245 @@ class _HeartbeatConfigSheetState extends State<HeartbeatConfigSheet> {
   Widget build(BuildContext context) {
     final viewInsets = MediaQuery.of(context).viewInsets;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24).add(viewInsets),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 38,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  const Icon(Icons.favorite, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Adaptive heartbeat · ${widget.agentName}',
-                      style: const TextStyle(
-                        fontSize: 18,
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 680),
+          child: Material(
+            color: agentSurface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                20,
+                12,
+                20,
+                24,
+              ).add(viewInsets),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 38,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: AgentIdentity(
+                            name: widget.agentName,
+                            radius: 18,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Close heartbeat settings',
+                          onPressed: _busy
+                              ? null
+                              : () => Navigator.pop(context),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'Adaptive heartbeat',
+                      style: TextStyle(
+                        color: Color(0xFFA78BFA),
+                        fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              if (_loading)
-                const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Center(child: CircularProgressIndicator()),
-                )
-              else ...[
-                if (_status != null)
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: .05),
-                      borderRadius: BorderRadius.circular(10),
+                    const Text(
+                      'Let this agent check its mandate on a bounded, self-adjusting cadence.',
+                      style: TextStyle(color: Colors.white54, height: 1.4),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Status: ${_status!.statusLabel}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
+                    const SizedBox(height: 18),
+                    if (_loading)
+                      const Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Center(child: CircularProgressIndicator()),
+                      )
+                    else ...[
+                      if (_status != null) _statusCard(_status!),
+                      const SizedBox(height: 14),
+                      AgentSection(
+                        title: 'Schedule',
+                        description:
+                            'Idle checks back off automatically up to the maximum interval.',
+                        child: Column(
+                          children: [
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text('Enable heartbeat'),
+                              subtitle: const Text(
+                                'Run this agent automatically without a new message.',
+                              ),
+                              value: _enabled,
+                              onChanged: _busy
+                                  ? null
+                                  : (value) => setState(() => _enabled = value),
+                            ),
+                            const SizedBox(height: 8),
+                            LayoutBuilder(
+                              builder: (_, constraints) {
+                                final narrow = constraints.maxWidth < 500;
+                                final fields = [
+                                  _numberField(
+                                    _minController,
+                                    'Minimum interval (seconds)',
+                                  ),
+                                  _numberField(
+                                    _maxController,
+                                    'Maximum interval (seconds)',
+                                  ),
+                                ];
+                                return narrow
+                                    ? Column(
+                                        children: [
+                                          fields[0],
+                                          const SizedBox(height: 10),
+                                          fields[1],
+                                        ],
+                                      )
+                                    : Row(
+                                        children: [
+                                          Expanded(child: fields[0]),
+                                          const SizedBox(width: 10),
+                                          Expanded(child: fields[1]),
+                                        ],
+                                      );
+                              },
+                            ),
+                            const SizedBox(height: 10),
+                            TextField(
+                              controller: _backoffController,
+                              decoration: const InputDecoration(
+                                labelText: 'Idle backoff factor (1.0 – 10.0)',
+                              ),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              enabled: !_busy,
+                            ),
+                          ],
                         ),
-                        if (_status!.nextWakeAt != null)
-                          Text(
-                            'Next wake: ${_formatTime(_status!.nextWakeAt!)}',
-                          ),
-                        if (_status!.lastWakeAt != null)
-                          Text(
-                            'Last wake: ${_formatTime(_status!.lastWakeAt!)}',
-                          ),
-                        if (_status!.lastDecision != null)
-                          Text('Last decision: ${_status!.lastDecision}'),
-                        if (_status!.consecutiveNoops > 0)
-                          Text(
-                            'Idle backoff: ${_status!.consecutiveNoops} no-ops',
-                          ),
-                        if (_status!.lastError != null)
-                          Text(
-                            'Error: ${_status!.lastError}',
-                            style: const TextStyle(color: Colors.redAccent),
-                          ),
+                      ),
+                      if (_error != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          _error!,
+                          style: const TextStyle(color: Colors.redAccent),
+                        ),
                       ],
-                    ),
-                  ),
-                const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Enable adaptive heartbeat'),
-                  subtitle: const Text(
-                    'Wakes the agent on a bounded schedule to act autonomously.',
-                  ),
-                  value: _enabled,
-                  onChanged: _busy
-                      ? null
-                      : (value) => setState(() => _enabled = value),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _minController,
-                  decoration: const InputDecoration(
-                    labelText: 'Min wake (seconds)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                  enabled: !_busy,
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _maxController,
-                  decoration: const InputDecoration(
-                    labelText: 'Max wake (seconds)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: TextInputType.number,
-                  enabled: !_busy,
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _backoffController,
-                  decoration: const InputDecoration(
-                    labelText: 'Idle backoff factor (1.0 - 10.0)',
-                    border: OutlineInputBorder(),
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  enabled: !_busy,
-                ),
-                if (_error != null) ...[
-                  const SizedBox(height: 12),
-                  Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.redAccent),
-                  ),
-                ],
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _busy ? null : _save,
-                        icon: _busy
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.save),
-                        label: const Text('Save'),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        alignment: WrapAlignment.end,
+                        children: [
+                          if (_enabled)
+                            OutlinedButton.icon(
+                              onPressed: _busy ? null : _wakeNow,
+                              icon: const Icon(Icons.bolt_rounded),
+                              label: const Text('Wake now'),
+                            ),
+                          FilledButton.icon(
+                            onPressed: _busy ? null : _save,
+                            icon: _busy
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.save_outlined),
+                            label: const Text('Save heartbeat'),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    if (_enabled)
-                      OutlinedButton.icon(
-                        onPressed: _busy ? null : _wakeNow,
-                        icon: const Icon(Icons.bolt),
-                        label: const Text('Wake now'),
-                      ),
+                    ],
                   ],
                 ),
-              ],
-            ],
+              ),
+            ),
           ),
         ),
       ),
     );
   }
+
+  Widget _numberField(TextEditingController controller, String label) =>
+      TextField(
+        controller: controller,
+        decoration: InputDecoration(labelText: label),
+        keyboardType: TextInputType.number,
+        enabled: !_busy,
+      );
+
+  Widget _statusCard(HeartbeatStatus status) => Container(
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: agentSurfaceRaised,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: agentBorder),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            AgentStatusPill(status.operationalStatus),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                status.statusLabel,
+                style: const TextStyle(color: Colors.white60),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 24,
+          runSpacing: 8,
+          children: [
+            if (status.nextWakeAt != null)
+              _statusFact('Next wake', _formatTime(status.nextWakeAt!)),
+            if (status.lastWakeAt != null)
+              _statusFact('Last wake', _formatTime(status.lastWakeAt!)),
+            if (status.lastDecision != null)
+              _statusFact('Last decision', status.lastDecision!),
+            if (status.consecutiveNoops > 0)
+              _statusFact('Idle checks', '${status.consecutiveNoops}'),
+          ],
+        ),
+        if (status.lastError != null) ...[
+          const SizedBox(height: 10),
+          Text(
+            status.lastError!,
+            style: const TextStyle(color: Colors.redAccent),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  Widget _statusFact(String label, String value) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+    ],
+  );
 
   String _formatTime(DateTime t) {
     final local = t.toLocal();

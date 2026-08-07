@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:threadbot/models/autonomy.dart';
-import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/widgets/agent_workspace_ui.dart';
 
 class AgentToolsSheet extends StatefulWidget {
   final String agentId;
   final String agentName;
-  final ApiService api;
   final AutonomyApiService autonomy;
   final VoidCallback? onSaved;
 
@@ -14,7 +13,6 @@ class AgentToolsSheet extends StatefulWidget {
     super.key,
     required this.agentId,
     required this.agentName,
-    required this.api,
     required this.autonomy,
     this.onSaved,
   });
@@ -23,17 +21,15 @@ class AgentToolsSheet extends StatefulWidget {
     BuildContext context, {
     required String agentId,
     required String agentName,
-    required ApiService api,
     required AutonomyApiService autonomy,
     VoidCallback? onSaved,
   }) => showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF171720),
+    backgroundColor: Colors.transparent,
     builder: (_) => AgentToolsSheet(
       agentId: agentId,
       agentName: agentName,
-      api: api,
       autonomy: autonomy,
       onSaved: onSaved,
     ),
@@ -60,7 +56,7 @@ class _AgentToolsSheetState extends State<AgentToolsSheet> {
     try {
       final results = await Future.wait([
         widget.autonomy.draft(widget.agentId),
-        widget.api.getGlobalToolOverrides(),
+        widget.autonomy.mcpToolCatalog(),
       ]);
       final draft = results[0] as Draft;
       final data = results[1] as Map<String, dynamic>;
@@ -153,138 +149,168 @@ class _AgentToolsSheetState extends State<AgentToolsSheet> {
   Widget build(BuildContext context) {
     final height = MediaQuery.sizeOf(context).height * .82;
     return SafeArea(
-      child: SizedBox(
-        height: height,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
-              child: Row(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Material(
+            color: agentSurface,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(22)),
+            child: SizedBox(
+              height: height,
+              child: Column(
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+                    child: Row(
                       children: [
-                        Text(
-                          '${widget.agentName} tools',
-                          style: const TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
+                        Expanded(
+                          child: AgentIdentity(
+                            name: widget.agentName,
+                            radius: 18,
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Select the MCP tools this Agent may plan and execute. Saving activates a new immutable version.',
-                          style: TextStyle(fontSize: 12, color: Colors.white54),
+                        IconButton(
+                          tooltip: 'Close',
+                          onPressed: _saving
+                              ? null
+                              : () => Navigator.pop(context),
+                          icon: const Icon(Icons.close),
                         ),
                       ],
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'Close',
-                    onPressed: _saving ? null : () => Navigator.pop(context),
-                    icon: const Icon(Icons.close),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'MCP capabilities',
+                        style: TextStyle(
+                          color: Color(0xFFA78BFA),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(20, 0, 20, 14),
+                    child: Text(
+                      'Choose which MCP tools this agent may use. Saving creates and activates a new immutable version.',
+                      style: TextStyle(color: Colors.white54, height: 1.4),
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: _loading
+                        ? const Center(child: CircularProgressIndicator())
+                        : _error != null
+                        ? Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(24),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(_error!, textAlign: TextAlign.center),
+                                  const SizedBox(height: 12),
+                                  OutlinedButton(
+                                    onPressed: _load,
+                                    child: const Text('Retry'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                            itemCount: _servers.length,
+                            itemBuilder: (context, index) {
+                              final server = _servers[index];
+                              final selectedCount = server.tools
+                                  .where((tool) => tool.selected)
+                                  .length;
+                              return Card(
+                                color: agentSurfaceRaised,
+                                margin: const EdgeInsets.only(bottom: 10),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  side: const BorderSide(color: agentBorder),
+                                ),
+                                child: ExpansionTile(
+                                  title: Text(server.name),
+                                  subtitle: Text(
+                                    '$selectedCount of ${server.tools.length} selected',
+                                  ),
+                                  leading: Checkbox(
+                                    tristate: true,
+                                    value: selectedCount == 0
+                                        ? false
+                                        : selectedCount == server.tools.length
+                                        ? true
+                                        : null,
+                                    onChanged: _saving
+                                        ? null
+                                        : (value) => _toggleServer(
+                                            server,
+                                            value ?? true,
+                                          ),
+                                  ),
+                                  children: server.tools
+                                      .map(
+                                        (tool) => CheckboxListTile(
+                                          value: tool.selected,
+                                          onChanged: _saving
+                                              ? null
+                                              : (value) => setState(
+                                                  () => tool.selected =
+                                                      value ?? false,
+                                                ),
+                                          title: Text(tool.name),
+                                          subtitle: tool.description.isEmpty
+                                              ? null
+                                              : Text(
+                                                  tool.description,
+                                                  maxLines: 3,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                          controlAffinity:
+                                              ListTileControlAffinity.leading,
+                                        ),
+                                      )
+                                      .toList(),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _loading || _saving || _error != null
+                            ? null
+                            : _save,
+                        icon: _saving
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.verified_outlined),
+                        label: Text(
+                          _saving ? 'Activating…' : 'Save and activate',
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1),
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _error != null
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(_error!, textAlign: TextAlign.center),
-                            const SizedBox(height: 12),
-                            OutlinedButton(
-                              onPressed: _load,
-                              child: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-                      itemCount: _servers.length,
-                      itemBuilder: (context, index) {
-                        final server = _servers[index];
-                        final selectedCount = server.tools
-                            .where((tool) => tool.selected)
-                            .length;
-                        return Card(
-                          color: const Color(0xFF1D1D28),
-                          margin: const EdgeInsets.only(bottom: 10),
-                          child: ExpansionTile(
-                            title: Text(server.name),
-                            subtitle: Text(
-                              '$selectedCount of ${server.tools.length} selected',
-                            ),
-                            leading: Checkbox(
-                              tristate: true,
-                              value: selectedCount == 0
-                                  ? false
-                                  : selectedCount == server.tools.length
-                                  ? true
-                                  : null,
-                              onChanged: _saving
-                                  ? null
-                                  : (value) =>
-                                        _toggleServer(server, value ?? true),
-                            ),
-                            children: server.tools
-                                .map(
-                                  (tool) => CheckboxListTile(
-                                    value: tool.selected,
-                                    onChanged: _saving
-                                        ? null
-                                        : (value) => setState(
-                                            () =>
-                                                tool.selected = value ?? false,
-                                          ),
-                                    title: Text(tool.name),
-                                    subtitle: tool.description.isEmpty
-                                        ? null
-                                        : Text(
-                                            tool.description,
-                                            maxLines: 3,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                    controlAffinity:
-                                        ListTileControlAffinity.leading,
-                                  ),
-                                )
-                                .toList(),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _loading || _saving || _error != null
-                      ? null
-                      : _save,
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.verified_outlined),
-                  label: Text(_saving ? 'Activating…' : 'Save and activate'),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

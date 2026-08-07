@@ -1,28 +1,23 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/widgets/agent_workspace_ui.dart';
 
 class AgentListScreen extends StatefulWidget {
   final AutonomyApiService api;
   const AgentListScreen({super.key, required this.api});
-
   @override
   State<AgentListScreen> createState() => _AgentListScreenState();
 }
 
 class _AgentListScreenState extends State<AgentListScreen> {
   List<Agent> _agents = [];
-  bool _loading = true;
-  bool _loadingMore = false;
-  String? _error;
-  String? _nextCursor;
-  final _searchController = TextEditingController();
-  Timer? _searchDebounce;
+  bool _loading = true, _loadingMore = false;
+  String? _error, _nextCursor;
+  final _search = TextEditingController();
+  Timer? _debounce;
   String _status = 'all';
-  String _role = 'all';
-
   @override
   void initState() {
     super.initState();
@@ -31,21 +26,16 @@ class _AgentListScreenState extends State<AgentListScreen> {
 
   @override
   void dispose() {
-    _searchDebounce?.cancel();
-    _searchController.dispose();
+    _debounce?.cancel();
+    _search.dispose();
     super.dispose();
   }
 
-  void _searchChanged(String _) {
-    _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 300), _load);
+  void _changed(String _) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 300), _load);
+    setState(() {});
   }
-
-  bool? get _moderatorFilter => switch (_role) {
-    'moderator' => true,
-    'participant' => false,
-    _ => null,
-  };
 
   Future<void> _load() async {
     setState(() {
@@ -55,16 +45,14 @@ class _AgentListScreenState extends State<AgentListScreen> {
     try {
       final page = await widget.api.agents(
         limit: 50,
-        query: _searchController.text,
+        query: _search.text,
         status: _status,
-        moderator: _moderatorFilter,
       );
-      if (mounted) {
+      if (mounted)
         setState(() {
           _agents = page.items;
           _nextCursor = page.nextCursor;
         });
-      }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -72,375 +60,327 @@ class _AgentListScreenState extends State<AgentListScreen> {
     }
   }
 
-  Future<void> _loadMore() async {
-    final cursor = _nextCursor;
-    if (cursor == null || _loadingMore) return;
+  Future<void> _more() async {
+    if (_nextCursor == null || _loadingMore) return;
     setState(() => _loadingMore = true);
     try {
       final page = await widget.api.agents(
-        cursor: cursor,
+        cursor: _nextCursor,
         limit: 50,
-        query: _searchController.text,
+        query: _search.text,
         status: _status,
-        moderator: _moderatorFilter,
       );
-      if (mounted) {
+      if (mounted)
         setState(() {
-          final known = _agents.map((agent) => agent.id).toSet();
-          _agents.addAll(page.items.where((agent) => known.add(agent.id)));
+          final ids = _agents.map((a) => a.id).toSet();
+          _agents.addAll(page.items.where((a) => ids.add(a.id)));
           _nextCursor = page.nextCursor;
         });
-      }
     } catch (e) {
-      if (mounted) {
+      if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Could not load more agents: $e')),
         );
-      }
     } finally {
       if (mounted) setState(() => _loadingMore = false);
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F0A1A),
-      appBar: AppBar(
-        title: const Text('Agents'),
-        backgroundColor: const Color(0xFF15101F),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loading ? null : _load,
-          ),
-        ],
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1180),
+          child: _loading && _agents.isEmpty
+              ? const AgentStateView(
+                  icon: Icons.hourglass_top_rounded,
+                  title: 'Loading agents',
+                  message: 'Fetching your agent workspace…',
+                )
+              : _error != null
+              ? AgentStateView(
+                  icon: Icons.cloud_off_rounded,
+                  title: 'Could not load agents',
+                  message: _error!,
+                  onAction: _load,
+                )
+              : _content(),
+        ),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(_error!, style: const TextStyle(color: Colors.red)),
-                  const SizedBox(height: 12),
-                  TextButton(onPressed: _load, child: const Text('Retry')),
-                ],
+    ),
+  );
+  Widget _content() => LayoutBuilder(
+    builder: (_, constraints) => ListView(
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 48),
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () {
+              if (Navigator.canPop(context)) {
+                Navigator.pop(context);
+              } else {
+                Navigator.pushReplacementNamed(context, '/');
+              }
+            },
+            icon: const Icon(Icons.arrow_back_rounded, size: 18),
+            label: const Text('Back to Threads'),
+          ),
+        ),
+        const SizedBox(height: 8),
+        AgentPageHeader(
+          eyebrow: 'Workspace',
+          title: 'Agents',
+          description:
+              'Build focused operators that belong to a Thread and can work on its behalf.',
+          action: Wrap(
+            spacing: 8,
+            children: [
+              IconButton(
+                tooltip: 'Refresh agents',
+                onPressed: _load,
+                icon: const Icon(Icons.refresh_rounded),
               ),
-            )
-          : Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 900),
-                child: ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 40),
-                  itemCount:
-                      _agents.length +
-                      2 +
-                      ((_agents.isEmpty || _nextCursor != null) ? 1 : 0),
-                  itemBuilder: (_, i) {
-                    if (i == 0) return _buildControls();
-                    if (i == 1) return _buildSummary();
-                    final agentIndex = i - 2;
-                    if (agentIndex < _agents.length) {
-                      return _buildAgentCard(_agents[agentIndex]);
-                    }
-                    if (_agents.isEmpty) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 64),
-                        child: Center(
-                          child: Text(
-                            'No agents match these filters',
-                            style: TextStyle(color: Colors.white54),
-                          ),
-                        ),
-                      );
-                    }
-                    return Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: OutlinedButton.icon(
-                        onPressed: _loadingMore ? null : _loadMore,
-                        icon: _loadingMore
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.expand_more_rounded),
-                        label: Text(_loadingMore ? 'Loading...' : 'Load more'),
-                      ),
-                    );
-                  },
+              FilledButton.icon(
+                onPressed: () => Navigator.pushNamed(context, '/agents/new'),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('New agent'),
+              ),
+            ],
+          ),
+        ),
+        if (_loading) ...[
+          const LinearProgressIndicator(minHeight: 2),
+          const SizedBox(height: 16),
+        ],
+        _filters(constraints.maxWidth),
+        const SizedBox(height: 18),
+        _summary(),
+        const SizedBox(height: 14),
+        if (_agents.isEmpty)
+          AgentStateView(
+            icon: Icons.manage_search_rounded,
+            title: 'No matching agents',
+            message: 'Try another search or clear the filters.',
+            onAction: () {
+              _search.clear();
+              setState(() => _status = 'all');
+              _load();
+            },
+            actionLabel: 'Clear filters',
+          )
+        else ...[
+          LayoutBuilder(
+            builder: (_, grid) => GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 420,
+                mainAxisExtent: 214,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+              ),
+              itemCount: _agents.length,
+              itemBuilder: (_, i) => _card(_agents[i]),
+            ),
+          ),
+          if (_nextCursor != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 20),
+              child: Center(
+                child: OutlinedButton.icon(
+                  onPressed: _loadingMore ? null : _more,
+                  icon: _loadingMore
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.expand_more),
+                  label: Text(_loadingMore ? 'Loading…' : 'Load more'),
                 ),
               ),
             ),
-    );
-  }
-
-  Widget _buildControls() => Padding(
-    padding: const EdgeInsets.only(bottom: 18),
-    child: Column(
-      children: [
-        TextField(
-          controller: _searchController,
-          onChanged: _searchChanged,
+        ],
+      ],
+    ),
+  );
+  Widget _filters(double width) => Wrap(
+    spacing: 10,
+    runSpacing: 10,
+    crossAxisAlignment: WrapCrossAlignment.center,
+    children: [
+      SizedBox(
+        width: width > 600 ? 360 : width,
+        child: TextField(
+          controller: _search,
+          onChanged: _changed,
           decoration: InputDecoration(
-            hintText: 'Search agents, handles, or threads',
+            hintText: 'Search agents or Threads',
             prefixIcon: const Icon(Icons.search_rounded),
-            suffixIcon: _searchController.text.isEmpty
+            suffixIcon: _search.text.isEmpty
                 ? null
                 : IconButton(
                     tooltip: 'Clear search',
                     onPressed: () {
-                      _searchController.clear();
+                      _search.clear();
                       _load();
+                      setState(() {});
                     },
-                    icon: const Icon(Icons.close_rounded),
+                    icon: const Icon(Icons.close),
                   ),
             filled: true,
-            fillColor: const Color(0xFF1A1428),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide.none,
-            ),
           ),
         ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: _status,
-                decoration: const InputDecoration(
-                  labelText: 'Status',
-                  isDense: true,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('All statuses')),
-                  DropdownMenuItem(value: 'active', child: Text('Active')),
-                  DropdownMenuItem(value: 'draft', child: Text('Draft')),
-                  DropdownMenuItem(value: 'paused', child: Text('Paused')),
-                  DropdownMenuItem(value: 'archived', child: Text('Archived')),
-                ],
-                onChanged: (value) {
-                  if (value == null || value == _status) return;
-                  setState(() => _status = value);
-                  _load();
-                },
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                initialValue: _role,
-                decoration: const InputDecoration(
-                  labelText: 'Thread role',
-                  isDense: true,
-                ),
-                items: const [
-                  DropdownMenuItem(value: 'all', child: Text('All roles')),
-                  DropdownMenuItem(
-                    value: 'moderator',
-                    child: Text('Moderators'),
-                  ),
-                  DropdownMenuItem(
-                    value: 'participant',
-                    child: Text('Participants'),
-                  ),
-                ],
-                onChanged: (value) {
-                  if (value == null || value == _role) return;
-                  setState(() => _role = value);
-                  _load();
-                },
-              ),
-            ),
-          ],
-        ),
-      ],
+      ),
+      _chips(
+        'Status',
+        _status,
+        {
+          'all': 'All',
+          'active': 'Active',
+          'draft': 'Draft',
+          'paused': 'Paused',
+          'archived': 'Archived',
+        },
+        (v) {
+          setState(() => _status = v);
+          _load();
+        },
+      ),
+    ],
+  );
+  Widget _chips(
+    String label,
+    String value,
+    Map<String, String> values,
+    ValueChanged<String> changed,
+  ) => PopupMenuButton<String>(
+    tooltip: label,
+    onSelected: changed,
+    itemBuilder: (_) => values.entries
+        .map((e) => PopupMenuItem(value: e.key, child: Text(e.value)))
+        .toList(),
+    child: Chip(
+      avatar: const Icon(Icons.tune_rounded, size: 16),
+      label: Text('$label: ${values[value]}'),
     ),
   );
-
-  Widget _buildSummary() {
-    final active = _agents.where((agent) => agent.status == 'active').length;
-    final paused = _agents.where((agent) => agent.status == 'paused').length;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        children: [
-          Text(
-            '${_agents.length} agent${_agents.length == 1 ? '' : 's'}',
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-          ),
-          const Spacer(),
-          _summaryChip('$active active', Colors.green),
-          if (paused > 0) ...[
-            const SizedBox(width: 8),
-            _summaryChip('$paused paused', Colors.blue),
-          ],
-        ],
-      ),
+  Widget _summary() {
+    final active = _agents.where((a) => a.status == 'active').length;
+    final drafts = _agents.where((a) => a.status == 'draft').length;
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [
+        AgentMetric(
+          label: 'Visible agents',
+          value: '${_agents.length}',
+          icon: Icons.groups_rounded,
+        ),
+        AgentMetric(
+          label: 'Active',
+          value: '$active',
+          icon: Icons.play_circle_outline,
+        ),
+        AgentMetric(
+          label: 'Drafts',
+          value: '$drafts',
+          icon: Icons.edit_note_rounded,
+        ),
+      ],
     );
   }
 
-  Widget _summaryChip(String label, Color color) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.14),
-      borderRadius: BorderRadius.circular(20),
-    ),
-    child: Text(label, style: TextStyle(fontSize: 11, color: color)),
-  );
-
-  Widget _buildAgentCard(Agent agent) {
-    final statusColor = _statusColor(agent.status);
-    return Semantics(
-      button: true,
-      label: 'Open ${agent.name}, ${agent.status}',
-      child: Card(
-        color: const Color(0xFF211B35),
-        margin: const EdgeInsets.only(bottom: 8),
-        child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 8,
-          ),
-          leading: CircleAvatar(
-            backgroundColor: const Color(0xFF8B5CF6).withValues(alpha: 0.2),
-            child: Text(
-              agent.name.isNotEmpty ? agent.name[0].toUpperCase() : '?',
-              style: const TextStyle(color: Color(0xFFC4B5FD)),
-            ),
-          ),
-          title: Row(
-            children: [
-              Flexible(
-                child: Text(
-                  agent.name,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
+  Widget _card(Agent a) => Semantics(
+    button: true,
+    label: 'Open ${a.name}',
+    child: InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => Navigator.pushNamed(context, '/agent-details/${a.id}'),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: agentSurface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: agentBorder),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: AgentIdentity(
+                    name: a.name,
+                    handle: a.handle,
+                    radius: 19,
                   ),
-                  overflow: TextOverflow.ellipsis,
+                ),
+                AgentStatusPill(a.status),
+              ],
+            ),
+            if (a.description?.trim().isNotEmpty == true) ...[
+              const SizedBox(height: 12),
+              Text(
+                a.description!.trim(),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 12,
+                  height: 1.35,
                 ),
               ),
-              if (agent.handle.isNotEmpty) ...[
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
+            ],
+            const Spacer(),
+            Row(
+              children: [
+                const Icon(
+                  Icons.forum_outlined,
+                  size: 15,
+                  color: Colors.white38,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
                   child: Text(
-                    '@${agent.handle}',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      color: Color(0xFFC4B5FD),
-                    ),
+                    a.threadTitle?.isNotEmpty == true
+                        ? a.threadTitle!
+                        : 'Thread ${a.threadId}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white60, fontSize: 12),
                   ),
                 ),
               ],
-            ],
-          ),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 5),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: statusColor.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      agent.status,
-                      style: TextStyle(fontSize: 11, color: statusColor),
-                    ),
-                  ),
-                  if (agent.isModerator) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Text(
-                        'moderator',
-                        style: TextStyle(fontSize: 10, color: Colors.amber),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 7),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.forum_outlined,
-                    size: 14,
-                    color: Colors.white38,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      agent.threadTitle?.isNotEmpty == true
-                          ? agent.threadTitle!
-                          : 'Thread ${agent.threadId}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.white54,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          trailing: IconButton(
-            tooltip: 'Open thread',
-            onPressed: agent.threadId.isEmpty
-                ? null
-                : () =>
-                      Navigator.pushNamed(context, '/thread/${agent.threadId}'),
-            icon: const Icon(Icons.open_in_new_rounded, color: Colors.white38),
-          ),
-          onTap: () =>
-              Navigator.pushNamed(context, '/agent-details/${agent.id}'),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Text(
+                  'Participant Agent',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                const Spacer(),
+                TextButton(
+                  onPressed: a.threadId.isEmpty
+                      ? null
+                      : () => Navigator.pushNamed(
+                          context,
+                          '/thread/${a.threadId}',
+                        ),
+                  child: const Text('Open Thread'),
+                ),
+                const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: Colors.white38,
+                ),
+              ],
+            ),
+          ],
         ),
       ),
-    );
-  }
-
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'active':
-        return Colors.green;
-      case 'draft':
-        return Colors.amber;
-      case 'paused':
-        return Colors.blue;
-      case 'archived':
-        return Colors.grey;
-      default:
-        return Colors.white54;
-    }
-  }
+    ),
+  );
 }

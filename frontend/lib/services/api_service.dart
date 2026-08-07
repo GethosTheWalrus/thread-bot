@@ -284,6 +284,7 @@ class ApiService {
         activeVersionId: j['active_version_id']?.toString(),
         mentionName: '${j['handle'] ?? j['mention_name'] ?? ''}',
         isModerator: j['is_moderator'] == true,
+        isSystem: j['is_system'] == true,
       );
     }).toList();
   }
