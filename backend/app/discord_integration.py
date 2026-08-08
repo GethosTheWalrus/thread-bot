@@ -617,6 +617,246 @@ async def post_discord_message(
     return last_id
 
 
+def _approval_prompt_text(
+    *,
+    approval_id: str,
+    agent_name: str | None,
+    agent_handle: str | None,
+    tool_identity: str | None,
+    risk_level: str,
+    target: dict,
+    arguments: dict,
+    expires_at: datetime,
+    intended_actor_id: str | None,
+) -> str:
+    identity = discord_agent_label(agent_name, agent_handle)
+    attention = f"<@{intended_actor_id}>\n" if intended_actor_id else ""
+    target_text = json.dumps(target or {}, sort_keys=True, ensure_ascii=True)[:500]
+    arguments_text = json.dumps(arguments or {}, sort_keys=True, ensure_ascii=True)[:800]
+    expires = int(expires_at.timestamp())
+    return (
+        f"{attention}**Approval required · {identity}**\n"
+        f"Tool: `{tool_identity or 'unknown action'}`\n"
+        f"Risk: **{risk_level}** · Expires <t:{expires}:R>\n"
+        f"Target: `{target_text}`\n"
+        f"Arguments (redacted): `{arguments_text}`\n\n"
+        "Reply **to this message** with exactly **approve** or **deny**. "
+        f"Request `{approval_id[:8]}`"
+    )
+
+
+def parse_discord_approval_decision(content: str) -> str | None:
+    normalized = content.strip().casefold()
+    if normalized == "approve":
+        return "approved"
+    if normalized == "deny":
+        return "denied"
+    return None
+
+
+async def post_discord_approval_request(
+    approval_id: str,
+    *,
+    reply_to_message_id: str | None = None,
+    force_new: bool = False,
+) -> str | None:
+    """Post and durably correlate one Discord approval request."""
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.agent_models import Agent
+    from app.models.approval_models import ApprovalProviderPrompt, ApprovalRequest
+    from app.models.models import DiscordThreadLink
+    from app.models.run_models import AgentRun
+
+    async with AsyncSessionLocal() as db:
+        if not force_new:
+            existing_prompt = await db.scalar(
+                select(ApprovalProviderPrompt)
+                .where(
+                    ApprovalProviderPrompt.request_id == UUID(str(approval_id)),
+                    ApprovalProviderPrompt.channel == "discord",
+                )
+                .order_by(ApprovalProviderPrompt.created_at.desc())
+            )
+            if existing_prompt:
+                return existing_prompt.provider_message_id
+        row = (
+            await db.execute(
+                select(ApprovalRequest, AgentRun, Agent, DiscordThreadLink)
+                .join(AgentRun, AgentRun.id == ApprovalRequest.run_id)
+                .join(Agent, Agent.id == AgentRun.agent_id)
+                .join(DiscordThreadLink, DiscordThreadLink.thread_id == AgentRun.thread_id)
+                .where(
+                    ApprovalRequest.id == UUID(str(approval_id)),
+                    ApprovalRequest.status == "pending",
+                    ApprovalRequest.expires_at > datetime.now(timezone.utc),
+                    DiscordThreadLink.is_active.is_(True),
+                )
+            )
+        ).first()
+        if not row:
+            return None
+        approval, run, agent, link = row
+        snapshot = {
+            "approval_id": str(approval.id),
+            "agent_name": agent.name,
+            "agent_handle": agent.handle,
+            "tool_identity": approval.tool_identity,
+            "risk_level": approval.risk_level,
+            "target": approval.target or {},
+            "arguments": approval.redacted_arguments or {},
+            "expires_at": approval.expires_at,
+            "intended_actor_id": run.origin_id,
+            "discord_thread_id": link.discord_thread_id,
+            "origin_message_id": run.origin_message_id,
+        }
+
+    prompt = _approval_prompt_text(**{
+        key: snapshot[key]
+        for key in (
+            "approval_id", "agent_name", "agent_handle", "tool_identity",
+            "risk_level", "target", "arguments", "expires_at", "intended_actor_id",
+        )
+    })
+    message_id = await post_discord_message(
+        snapshot["discord_thread_id"],
+        prompt,
+        discord_config=await _load_fresh_discord_config(),
+        reply_to_message_id=reply_to_message_id or snapshot["origin_message_id"],
+        allowed_user_mentions=[snapshot["intended_actor_id"]] if snapshot["intended_actor_id"] else None,
+    )
+    if not message_id:
+        return None
+    async with AsyncSessionLocal() as db:
+        existing = await db.scalar(
+            select(ApprovalProviderPrompt).where(
+                ApprovalProviderPrompt.channel == "discord",
+                ApprovalProviderPrompt.provider_channel_id == snapshot["discord_thread_id"],
+                ApprovalProviderPrompt.provider_message_id == message_id,
+            )
+        )
+        if not existing:
+            db.add(
+                ApprovalProviderPrompt(
+                    request_id=UUID(snapshot["approval_id"]),
+                    channel="discord",
+                    provider_channel_id=snapshot["discord_thread_id"],
+                    provider_message_id=message_id,
+                    intended_actor_id=snapshot["intended_actor_id"],
+                )
+            )
+            await db.commit()
+    return message_id
+
+
+async def handle_discord_approval_reply(
+    temporal_client: TemporalClient,
+    *,
+    guild_id: str,
+    discord_thread_id: str,
+    sender_id: str,
+    content: str,
+    reply_to_message_id: str | None,
+    source_message_id: str | None,
+) -> bool:
+    """Consume an exact reply to one approval prompt, if it is one."""
+    if not reply_to_message_id:
+        return False
+    from sqlalchemy import select
+    from app.approval_service import (
+        ApprovalDecisionError,
+        record_approval_decision,
+        signal_approval_decision,
+    )
+    from app.database import AsyncSessionLocal
+    from app.models.approval_models import ApprovalProviderPrompt, ApprovalRequest
+
+    async with AsyncSessionLocal() as db:
+        match = (
+            await db.execute(
+                select(ApprovalProviderPrompt, ApprovalRequest)
+                .join(ApprovalRequest, ApprovalRequest.id == ApprovalProviderPrompt.request_id)
+                .where(
+                    ApprovalProviderPrompt.channel == "discord",
+                    ApprovalProviderPrompt.provider_channel_id == discord_thread_id,
+                    ApprovalProviderPrompt.provider_message_id == reply_to_message_id,
+                )
+            )
+        ).first()
+        if not match:
+            return False
+        provider_prompt, approval = match
+        approval_snapshot = {
+            "id": approval.id,
+            "workspace_id": approval.workspace_id,
+            "run_id": approval.run_id,
+            "status": approval.status,
+            "expires_at": approval.expires_at,
+            "intended_actor_id": provider_prompt.intended_actor_id,
+        }
+
+    claimed = await _claim_discord_event(
+        temporal_client,
+        guild_id=guild_id,
+        channel_id=discord_thread_id,
+        event_id=source_message_id,
+    )
+    if not claimed:
+        return True
+
+    if approval_snapshot["intended_actor_id"] and sender_id != approval_snapshot["intended_actor_id"]:
+        await post_discord_message(
+            discord_thread_id,
+            "Only the user who initiated this Agent run can approve or deny this request.",
+            reply_to_message_id=source_message_id,
+        )
+        return True
+
+    decision = parse_discord_approval_decision(content)
+    if decision is None:
+        if approval_snapshot["status"] == "pending" and approval_snapshot["expires_at"] > datetime.now(timezone.utc):
+            await post_discord_approval_request(
+                str(approval_snapshot["id"]),
+                reply_to_message_id=source_message_id,
+                force_new=True,
+            )
+        else:
+            await post_discord_message(
+                discord_thread_id,
+                "That approval request is no longer active.",
+                reply_to_message_id=source_message_id,
+            )
+        return True
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await record_approval_decision(
+                db,
+                approval_id=approval_snapshot["id"],
+                workspace_id=approval_snapshot["workspace_id"],
+                decision=decision,
+                actor_id=f"discord:{sender_id}",
+                actor_type="human",
+                channel="discord",
+                provider_interaction_id=source_message_id or f"discord:{uuid_mod.uuid4()}",
+            )
+    except ApprovalDecisionError as exc:
+        await post_discord_message(
+            discord_thread_id,
+            exc.message,
+            reply_to_message_id=source_message_id,
+        )
+        return True
+
+    await signal_approval_decision(result["run_id"], result["approval_id"])
+    await post_discord_message(
+        discord_thread_id,
+        "Approved. The Agent may continue." if decision == "approved" else "Denied. The Agent will not perform this action.",
+        reply_to_message_id=source_message_id,
+    )
+    return True
+
+
 async def edit_discord_message(
     discord_thread_id: str,
     message_id: str,
@@ -1811,6 +2051,17 @@ async def poll_discord_once(temporal_client: TemporalClient, bot_user_id: str | 
                 if str(author.get("id")) == bot_user_id:
                     continue
                 raw_content = message.get("content") or ""
+                reference = message.get("message_reference") or {}
+                if await handle_discord_approval_reply(
+                    temporal_client,
+                    guild_id=link.guild_id,
+                    discord_thread_id=link.discord_thread_id,
+                    sender_id=str(author.get("id") or ""),
+                    content=raw_content,
+                    reply_to_message_id=str(reference.get("message_id")) if reference.get("message_id") else None,
+                    source_message_id=str(message.get("id")) if message.get("id") else None,
+                ):
+                    continue
                 mentions = message.get("mentions") or []
                 should_reply = _discord_mentions_user(raw_content, mentions, bot_user_id)
                 agent_target = None

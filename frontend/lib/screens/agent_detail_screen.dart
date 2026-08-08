@@ -104,6 +104,31 @@ class _AgentDetailState extends State<AgentDetailScreen> {
         .join(', ');
   }
 
+  Future<void> _deleteAgent(Agent agent) async {
+    if (agent.isSystem) return;
+    final confirmed = await confirmDeleteAgent(context, agentName: agent.name);
+    if (!confirmed || !mounted) return;
+    setState(() => loading = true);
+    try {
+      await widget.api.deleteAgent(agent.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${agent.name} was deleted')));
+      if (Navigator.canPop(context)) {
+        Navigator.pop(context, true);
+      } else {
+        Navigator.pushReplacementNamed(context, '/agents-list');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete ${agent.name}: $e')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (loading && agent == null)
@@ -286,6 +311,26 @@ class _AgentDetailState extends State<AgentDetailScreen> {
           child: Text(
             a.description!,
             style: const TextStyle(color: Colors.white70, height: 1.45),
+          ),
+        ),
+      if (!a.isSystem)
+        AgentSection(
+          title: 'Danger zone',
+          description:
+              'Remove this Agent from its Thread. Historical runs and messages remain available for audit.',
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFF07F8A),
+                side: BorderSide(
+                  color: const Color(0xFFF07F8A).withValues(alpha: .45),
+                ),
+              ),
+              onPressed: loading ? null : () => _deleteAgent(a),
+              icon: const Icon(Icons.delete_outline_rounded, size: 18),
+              label: const Text('Delete agent'),
+            ),
           ),
         ),
     ],

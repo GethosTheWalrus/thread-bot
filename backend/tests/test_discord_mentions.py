@@ -16,7 +16,11 @@ from app.discord_mentions import (
     discord_agent_label,
     has_explicit_handle,
 )
-from app.discord_integration import _format_activity_trace
+from app.discord_integration import (
+    _approval_prompt_text,
+    _format_activity_trace,
+    parse_discord_approval_decision,
+)
 
 
 class DiscordMentionTests(unittest.TestCase):
@@ -85,6 +89,32 @@ class DiscordMentionTests(unittest.TestCase):
         assert "Moderator (@mod)" in moderator
         assert "builtin:calculator" in moderator
         assert "OSRS Researcher (@osrs)" not in moderator
+
+    def test_approval_prompt_requires_an_exact_reply_and_is_mention_safe(self):
+        from datetime import datetime, timezone
+
+        prompt = _approval_prompt_text(
+            approval_id="12345678-aaaa-bbbb-cccc-123456789abc",
+            agent_name="OSRS **Researcher**",
+            agent_handle="osrs",
+            tool_identity="mcp:DuckDuckGo:search",
+            risk_level="medium",
+            target={"site": "oldschool.runescape.wiki"},
+            arguments={"query": "dragon claws"},
+            expires_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
+            intended_actor_id="42",
+        )
+        assert prompt.startswith("<@42>\n**Approval required · OSRS Researcher (@osrs)**")
+        assert "Reply **to this message** with exactly **approve** or **deny**" in prompt
+        assert "mcp:DuckDuckGo:search" in prompt
+        assert "12345678" in prompt
+
+    def test_approval_decision_accepts_only_exact_approve_or_deny(self):
+        assert parse_discord_approval_decision(" approve ") == "approved"
+        assert parse_discord_approval_decision("DENY") == "denied"
+        assert parse_discord_approval_decision("approve please") is None
+        assert parse_discord_approval_decision("yes") is None
+        assert parse_discord_approval_decision("") is None
 
 
 if __name__ == "__main__":

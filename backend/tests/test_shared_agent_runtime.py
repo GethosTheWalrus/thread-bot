@@ -24,6 +24,8 @@ def test_shared_agent_route_is_patched_and_legacy_workflow_retained():
     assert 'loaded.get("mode") == "live"' in source
     assert "generate_and_update_title" in source
     assert PolicyAwareThreadTurnWorkflow
+    assert 'workflow.patched("agent-run-approval-policy-v1")' in source
+    assert 'child_input["approval_policy"]' in source
 
 
 def test_chat_path_has_no_agent_context_filter():
@@ -106,3 +108,28 @@ def test_agents_input_merges_consecutive_assistant_history_when_enabled():
 def test_consecutive_assistant_merge_is_behind_replay_patch():
     source = inspect.getsource(RunThreadWorkflow.run)
     assert '"merge-consecutive-assistant-v1"' in source
+
+
+def test_live_agent_tools_use_replay_safe_durable_approval_gate():
+    run_source = inspect.getsource(RunThreadWorkflow.run)
+    gate_source = inspect.getsource(RunThreadWorkflow._execute_gated_agent_tool)
+    assert 'workflow.patched("run-thread-approval-gate-v1")' in run_source
+    for activity in (
+        "persist_planned_action",
+        "evaluate_policy_and_reserve_budget",
+        "create_approval_request",
+        "load_approval_state",
+        "recheck_authorization",
+        "persist_action_result",
+    ):
+        assert activity in gate_source
+    assert "workflow.wait_condition" in gate_source
+    assert "Denied by approver" in gate_source
+
+
+def test_live_agent_tool_gate_serializes_concurrent_tool_callbacks():
+    init_source = inspect.getsource(RunThreadWorkflow.__init__)
+    tools_source = inspect.getsource(RunThreadWorkflow._agent_tools)
+
+    assert "asyncio.Lock()" in init_source
+    assert "async with self._agent_tool_lock" in tools_source

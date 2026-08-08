@@ -53,12 +53,15 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
   void _applyActionLocally(ThreadAgentSummary selected, String action) {
     if (!mounted) return;
     setState(() {
+      if (action == 'archive') {
+        _participants.removeWhere((agent) => agent.id == selected.id);
+        return;
+      }
       _participants = _participants.map((agent) {
         final status = agent.id == selected.id
             ? switch (action) {
                 'active' => 'active',
                 'paused' => 'paused',
-                'archive' => 'archived',
                 _ => agent.status,
               }
             : agent.status;
@@ -185,9 +188,7 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
   Future<void> _lifecycle(ThreadAgentSummary agent, String action) async {
     setState(() => _busy = true);
     try {
-      if (action == 'moderator') {
-        await _api.setThreadModerator(widget.threadId, agent.id);
-      } else if (action == 'archive') {
+      if (action == 'archive') {
         await _api.threadAgentRequest(
           'DELETE',
           widget.threadId,
@@ -206,6 +207,13 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
         );
     }
     if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _deleteAgent(ThreadAgentSummary agent) async {
+    if (agent.isSystem || _busy) return;
+    final confirmed = await confirmDeleteAgent(context, agentName: agent.name);
+    if (!confirmed || !mounted) return;
+    await _lifecycle(agent, 'archive');
   }
 
   List<Widget> _buildContent(BuildContext context) => [
@@ -303,10 +311,6 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
                   itemBuilder: (_) => [
                     const PopupMenuItem(value: 'active', child: Text('Resume')),
                     const PopupMenuItem(value: 'paused', child: Text('Pause')),
-                    const PopupMenuItem(
-                      value: 'archive',
-                      child: Text('Archive'),
-                    ),
                   ],
                 ),
             ],
@@ -362,6 +366,22 @@ class _ThreadParticipantManagerState extends State<ThreadParticipantManager> {
                               ),
                         icon: const Icon(Icons.extension_outlined, size: 16),
                         label: const Text('Agent tools'),
+                      ),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFF07F8A),
+                          side: BorderSide(
+                            color: const Color(
+                              0xFFF07F8A,
+                            ).withValues(alpha: .45),
+                          ),
+                        ),
+                        onPressed: _busy ? null : () => _deleteAgent(agent),
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          size: 16,
+                        ),
+                        label: const Text('Delete agent'),
                       ),
                     ],
             ),

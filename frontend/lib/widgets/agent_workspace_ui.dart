@@ -5,6 +5,41 @@ const agentSurface = Color(0xFF16161E);
 const agentSurfaceRaised = Color(0xFF1C1C26);
 const agentBorder = Color(0xFF2A2A36);
 
+Future<bool> confirmDeleteAgent(
+  BuildContext context, {
+  required String agentName,
+}) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        icon: const Icon(
+          Icons.delete_outline_rounded,
+          color: Color(0xFFF07F8A),
+        ),
+        title: const Text('Delete agent?'),
+        content: Text(
+          'This removes $agentName from its Thread and stops future work. '
+          'Existing messages, runs, and audit history are retained.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB84250),
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+            label: const Text('Delete agent'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
+
 Color agentStatusColor(String status) {
   switch (status.toLowerCase()) {
     case 'active':

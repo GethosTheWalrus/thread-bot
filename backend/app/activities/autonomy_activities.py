@@ -411,12 +411,14 @@ async def persist_planned_action(args: dict) -> dict:
 
 @defn
 async def evaluate_policy_and_reserve_budget(args: dict) -> dict:
-    from app.tools.catalog import classify_tool_for_agent
+    from app.policy.approval_presets import evaluate_approval_preset
     from app.policy.engine import evaluate_policy
-    classification = classify_tool_for_agent(args["tool_identity"])
-    policy = evaluate_policy({"tool_identity": args["tool_identity"], "risk_profile": args.get("risk_profile")}, args.get("rules"), args.get("policy_version", "default"))
-    if not classification["allowed"]:
-        return {"effect": "deny", "risk_level": "unknown", "reason": "tool is not in the server-owned catalog", "requires_approval": False}
+    rules = args.get("rules")
+    policy = (
+        evaluate_policy({"tool_identity": args["tool_identity"], "risk_profile": args.get("risk_profile")}, rules, args.get("policy_version", "default"))
+        if rules
+        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"))
+    )
     if policy["effect"] == "deny":
         return policy
     # Preserve the policy's effect and requires_approval verdict rather than
@@ -465,6 +467,36 @@ async def load_verified_approval(args: dict) -> dict | None:
 
 
 @defn
+async def load_approval_state(args: dict) -> dict:
+    """Return the durable decision state without changing legacy activity semantics."""
+    from uuid import UUID
+    from sqlalchemy import select
+    from app.database import AsyncSessionLocal
+    from app.models.approval_models import ApprovalRequest, ApprovalDecision
+
+    async with AsyncSessionLocal() as db:
+        request = await db.get(ApprovalRequest, UUID(str(args["request_id"])))
+        if not request:
+            return {"status": "invalid"}
+        if (
+            request.action_id != args["action_id"]
+            or request.action_revision != args["action_revision"]
+            or request.request_hash != args["request_hash"]
+        ):
+            return {"status": "invalid"}
+        decision = await db.scalar(select(ApprovalDecision).where(
+            ApprovalDecision.request_id == request.id,
+        ))
+        if decision:
+            return {"status": decision.decision}
+        if request.status in {"denied", "expired", "consumed"}:
+            return {"status": request.status}
+        if request.expires_at <= datetime.now(timezone.utc):
+            return {"status": "expired"}
+        return {"status": "pending"}
+
+
+@defn
 async def expire_approval_request(args: dict) -> dict:
     from uuid import UUID
     from sqlalchemy import select
@@ -506,17 +538,30 @@ async def create_approval_request(args: dict) -> dict:
     from app.models.run_models import AgentAction
     async with AsyncSessionLocal() as db:
         existing = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.run_id == UUID(str(args["run_id"])), ApprovalRequest.action_id == args["action_id"], ApprovalRequest.action_revision == args["action_revision"]))
-        if existing: return {"request_id": str(existing.id), "request_hash": existing.request_hash}
-        action = await db.scalar(select(AgentAction).where(AgentAction.run_id == UUID(str(args["run_id"])), AgentAction.action_id == args["action_id"]))
-        expiry = datetime.fromisoformat(args["expires_at"]) if args.get("expires_at") else datetime.now(timezone.utc) + timedelta(seconds=args.get("ttl_seconds", 300))
-        from app.contracts import redact_secret
-        row = ApprovalRequest(id=uuid4(), workspace_id=UUID(str(args["workspace_id"])), run_id=UUID(str(args["run_id"])), action_id=args["action_id"], action_revision=args["action_revision"], tool_identity=action.tool_identity if action else None, request_hash=args["request_hash"], policy_ref=args.get("policy_ref"), credential_ref=args.get("credential_ref"), risk_level=(args.get("risk_level") or "unknown"), target=(action.target if action else {}), redacted_arguments=redact_secret(action.arguments if action else {}), policy_explanation=args.get("policy_explanation") or {}, expires_at=expiry)
+        if existing:
+            result = {"request_id": str(existing.id), "request_hash": existing.request_hash}
+            approval_id = str(existing.id)
+        else:
+            result = None
+        if result is None:
+            action = await db.scalar(select(AgentAction).where(AgentAction.run_id == UUID(str(args["run_id"])), AgentAction.action_id == args["action_id"]))
+            expiry = datetime.fromisoformat(args["expires_at"]) if args.get("expires_at") else datetime.now(timezone.utc) + timedelta(seconds=args.get("ttl_seconds", 300))
+            from app.contracts import redact_secret
+            row = ApprovalRequest(id=uuid4(), workspace_id=UUID(str(args["workspace_id"])), run_id=UUID(str(args["run_id"])), action_id=args["action_id"], action_revision=args["action_revision"], tool_identity=action.tool_identity if action else None, request_hash=args["request_hash"], policy_ref=args.get("policy_ref"), credential_ref=args.get("credential_ref"), risk_level=(args.get("risk_level") or "unknown"), target=(action.target if action else {}), redacted_arguments=redact_secret(action.arguments if action else {}), policy_explanation=args.get("policy_explanation") or {}, expires_at=expiry)
+            try:
+                async with db.begin_nested():
+                    db.add(row); await db.flush()
+            except IntegrityError:
+                row = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.run_id == UUID(str(args["run_id"])), ApprovalRequest.action_id == args["action_id"], ApprovalRequest.action_revision == args["action_revision"]))
+            await db.commit()
+            result = {"request_id": str(row.id), "request_hash": row.request_hash}
+            approval_id = str(row.id)
         try:
-            async with db.begin_nested():
-                db.add(row); await db.flush()
-        except IntegrityError:
-            row = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.run_id == UUID(str(args["run_id"])), ApprovalRequest.action_id == args["action_id"], ApprovalRequest.action_revision == args["action_revision"]))
-        await db.commit(); return {"request_id": str(row.id), "request_hash": row.request_hash}
+            from app.discord_integration import post_discord_approval_request
+            await post_discord_approval_request(approval_id)
+        except Exception as exc:
+            print(f"[approval] Discord prompt delivery failed for {approval_id}: {exc}", flush=True)
+        return result
 
 @defn
 async def transition_action_status(args: dict) -> dict:
@@ -538,11 +583,14 @@ async def transition_action_status(args: dict) -> dict:
 
 @defn
 async def recheck_authorization(args: dict) -> dict:
-    from app.tools.catalog import classify_tool_for_agent
+    from app.policy.approval_presets import evaluate_approval_preset
     from app.policy.engine import evaluate_policy
-    classification = classify_tool_for_agent(args["tool_identity"])
-    if not classification["allowed"]: return {"effect": "deny", "risk_level": "unknown", "reason": "tool is not approved", "requires_approval": False}
-    policy = evaluate_policy({"tool_identity": args["tool_identity"]}, args.get("rules"), args.get("policy_version", "default"))
+    rules = args.get("rules")
+    policy = (
+        evaluate_policy({"tool_identity": args["tool_identity"]}, rules, args.get("policy_version", "default"))
+        if rules
+        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"))
+    )
     if policy["effect"] == "deny" or (policy["effect"] == "require_approval" and not args.get("request_id")):
         return policy
     if args.get("request_id"):
@@ -551,10 +599,12 @@ async def recheck_authorization(args: dict) -> dict:
         from app.database import AsyncSessionLocal
         from app.models.approval_models import ApprovalRequest, ApprovalDecision
         async with AsyncSessionLocal() as db:
-            req = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.id == UUID(str(args["request_id"])), ApprovalRequest.status.in_(["pending", "approved"])).with_for_update())
+            req = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.id == UUID(str(args["request_id"])), ApprovalRequest.status.in_(["pending", "approved", "consumed"])).with_for_update())
             decision = await db.scalar(select(ApprovalDecision).where(ApprovalDecision.request_id == UUID(str(args["request_id"])), ApprovalDecision.decision == "approved"))
             if not req or not decision or req.request_hash != args.get("request_hash") or req.expires_at <= datetime.now(timezone.utc): return {"effect": "deny", "risk_level": "unknown", "reason": "approval invalid or expired", "requires_approval": False}
-            req.status = "consumed"; req.consumed_at = datetime.now(timezone.utc); await db.commit()
+            if req.status != "consumed":
+                req.status = "consumed"; req.consumed_at = datetime.now(timezone.utc)
+            await db.commit()
     return {"effect": "allow", "risk_level": "low", "reason": "rechecked reviewed pure built-in", "requires_approval": False}
 
 

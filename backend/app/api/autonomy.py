@@ -71,7 +71,8 @@ async def agents(db=Depends(get_db),actor=Depends(actor_dep),limit:int=50,cursor
     if q and q.strip():
         term=f"%{q.strip()}%"
         stmt=stmt.where(or_(Agent.name.ilike(term),Agent.handle.ilike(term),Thread.title.ilike(term)))
-    if status and status != "all": stmt=stmt.where(Agent.status==status)
+    if status and status not in {"all", "current"}: stmt=stmt.where(Agent.status==status)
+    elif status != "all": stmt=stmt.where(Agent.status != "archived")
     if moderator is not None: stmt=stmt.where(Agent.is_moderator.is_(moderator))
     if thread_id is not None: stmt=stmt.where(Agent.thread_id==thread_id)
     stmt=stmt.order_by(desc(Agent.created_at)).limit(min(limit,200))

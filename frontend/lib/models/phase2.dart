@@ -29,6 +29,7 @@ class Phase2Record {
 @immutable
 class Approval {
   final String id, runId, actionId, status, riskLevel, requestHash;
+  final String? threadId, agentId, agentName, agentHandle, toolIdentity;
   final Map<String, dynamic> target, arguments, explanation;
   final DateTime? expiresAt;
   bool get expired =>
@@ -40,6 +41,11 @@ class Approval {
     required this.status,
     required this.riskLevel,
     required this.requestHash,
+    this.threadId,
+    this.agentId,
+    this.agentName,
+    this.agentHandle,
+    this.toolIdentity,
     this.target = const {},
     this.arguments = const {},
     this.explanation = const {},
@@ -52,6 +58,11 @@ class Approval {
     status: _s(j['status']),
     riskLevel: _s(j['risk_level']),
     requestHash: _s(j['request_hash']),
+    threadId: j['thread_id']?.toString(),
+    agentId: j['agent_id']?.toString(),
+    agentName: j['agent_name']?.toString(),
+    agentHandle: j['agent_handle']?.toString(),
+    toolIdentity: j['tool_identity']?.toString(),
     target: _m(j['target']),
     arguments: _m(j['redacted_arguments']),
     explanation: _m(j['policy_explanation']),

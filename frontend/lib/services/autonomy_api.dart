@@ -129,7 +129,7 @@ class AutonomyApiService {
     final params = <String, String>{'limit': '$limit'};
     if (cursor != null) params['cursor'] = cursor;
     if (query?.trim().isNotEmpty == true) params['q'] = query!.trim();
-    if (status != null && status != 'all') params['status'] = status;
+    if (status != null) params['status'] = status;
     if (moderator != null) params['moderator'] = '$moderator';
     if (threadId?.isNotEmpty == true) params['thread_id'] = threadId!;
     final j = await _request(
@@ -158,6 +158,8 @@ class AutonomyApiService {
     '/api/autonomy/agents/$id',
     body: body,
   ).then((j) => Agent.fromJson(Map<String, dynamic>.from(j)));
+  Future<void> deleteAgent(String id) =>
+      _request('DELETE', '/api/autonomy/agents/$id').then((_) {});
   Future<Agent> lifecycle(String id, bool active) => _request(
     'POST',
     '/api/autonomy/agents/$id/${active ? 'resume' : 'pause'}',

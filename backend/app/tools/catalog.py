@@ -1,4 +1,17 @@
-SAFE_BUILTIN_TOOLS = frozenset({"calculator", "json_parse", "text_count", "base64_encode", "base64_decode", "web_fetch", "current_datetime", "continue_thinking", "handoff_to_agent"})
+PURE_BUILTIN_TOOLS = frozenset({
+    "base64_decode", "base64_encode", "calculator", "context_overview",
+    "continue_thinking", "current_datetime", "describe_image",
+    "extract_image_recipe", "json_parse", "text_count", "use_skill", "web_fetch",
+})
+EFFECTFUL_BUILTIN_TOOLS = frozenset({
+    "compact_context_topic", "generate_image", "generate_video",
+    "handoff_to_agent", "iterate_image_generation",
+})
+AGENT_BUILTIN_TOOLS = PURE_BUILTIN_TOOLS | EFFECTFUL_BUILTIN_TOOLS
+SAFE_BUILTIN_TOOLS = frozenset({
+    "calculator", "json_parse", "text_count", "base64_encode", "base64_decode",
+    "web_fetch", "current_datetime", "continue_thinking", "handoff_to_agent",
+})
 
 _SCHEMAS = {
     "calculator": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]},
@@ -29,16 +42,27 @@ def classify_tool(tool_identity: str) -> dict:
 
 def classify_tool_for_agent(tool_identity: str) -> dict:
     """Runtime catalog for agents, including the existing chat built-ins."""
-    if tool_identity.startswith("builtin:") and tool_identity.removeprefix("builtin:") in SAFE_BUILTIN_TOOLS:
-        return {"risk": "medium" if tool_identity == "builtin:handoff_to_agent" else "low", "allowed": True, "retry_safe": True}
+    if tool_identity.startswith("builtin:") and tool_identity.removeprefix("builtin:") in AGENT_BUILTIN_TOOLS:
+        effectful = tool_identity.removeprefix("builtin:") in EFFECTFUL_BUILTIN_TOOLS
+        return {
+            "risk": "medium" if effectful else "low",
+            "category": "write" if effectful else "read",
+            "effectful": effectful,
+            "allowed": True,
+            "retry_safe": not effectful,
+        }
     if tool_identity.startswith("mcp:"):
-        return {"risk": "medium", "allowed": True, "retry_safe": False}
+        return {"risk": "unknown", "category": "unknown", "effectful": True, "allowed": True, "retry_safe": False}
+    if tool_identity.startswith("reachy:"):
+        return {"risk": "critical", "category": "physical", "effectful": True, "allowed": True, "retry_safe": False}
     return classify_tool(tool_identity)
 
 def identity_for_descriptor(descriptor: dict, function_name: str) -> str | None:
     identity = descriptor.get("x-threadbot-identity") or (descriptor.get("function") or {}).get("x-threadbot-identity")
     if identity:
         return identity
-    if function_name in SAFE_BUILTIN_TOOLS and (descriptor.get("function") or {}).get("name") == function_name:
+    if function_name in AGENT_BUILTIN_TOOLS and (descriptor.get("function") or {}).get("name") == function_name:
         return f"builtin:{function_name}"
+    if function_name.startswith("reachy_"):
+        return f"reachy:{function_name.removeprefix('reachy_')}"
     return None

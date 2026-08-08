@@ -1,6 +1,7 @@
 from temporalio.workflow import ParentClosePolicy, defn, execute_activity, init, run, signal
 from temporalio.common import RetryPolicy
-from datetime import timedelta
+import asyncio
+from datetime import datetime, timedelta
 from typing import Any
 
 from temporalio import workflow
@@ -15,6 +16,8 @@ with workflow.unsafe.imports_passed_through():
     from agents.exceptions import MaxTurnsExceeded
     from app.agents_provider import encode_agents_model_config
     from app.text_sanitize import strip_hidden_reasoning
+    from app.contracts.approval import ApprovalWakeSignal
+    from app.tools.catalog import classify_tool_for_agent, identity_for_descriptor
 
 
 _REACHY_TOOL_ANNOUNCEMENTS = {
@@ -113,10 +116,16 @@ class RunThreadWorkflow:
         self._stream = WorkflowStream()
         self._events = self._stream.topic("events", type=dict)
         self._continue_decision: bool | None = None
+        self._approval_signals: set[str] = set()
+        self._agent_tool_lock = asyncio.Lock()
 
     @signal
     async def respond_continue(self, should_continue: bool) -> None:
         self._continue_decision = bool(should_continue)
+
+    @signal
+    async def approval_decision(self, approval: ApprovalWakeSignal) -> None:
+        self._approval_signals.add(str(approval.request_id))
 
     def _agents_input(
         self,
@@ -311,6 +320,192 @@ class RunThreadWorkflow:
             include_usage=True,
         )
 
+    async def _execute_gated_agent_tool(
+        self,
+        *,
+        identity: str,
+        arguments: str,
+        tool_call_id: str,
+        thread_id: str,
+        approval_policy: dict,
+        activities: dict,
+        executor,
+    ) -> str:
+        import json
+
+        try:
+            parsed_arguments = json.loads(arguments or "{}")
+        except Exception:
+            parsed_arguments = {}
+        now = workflow.now()
+        expires_at = now + timedelta(seconds=300)
+        if approval_policy.get("deadline_at"):
+            deadline = datetime.fromisoformat(approval_policy["deadline_at"])
+            expires_at = min(expires_at, deadline)
+        task_queue = approval_policy["approval_task_queue"]
+        run_id = approval_policy["run_id"]
+        proposal = {
+            "tool_call_id": tool_call_id,
+            "tool_identity": identity,
+            "arguments": parsed_arguments,
+            "target": {},
+            "revision": 1,
+            "agent_version": approval_policy["agent_version"],
+            "policy_version": approval_policy.get("policy_version", "default"),
+            "credential_binding_id": approval_policy.get("credential_binding_id"),
+            "approval_expires_at": expires_at.isoformat(),
+        }
+
+        async def call(name: str, args: dict, timeout: int = 30):
+            return await execute_activity(
+                activities[name],
+                args,
+                task_queue=task_queue,
+                start_to_close_timeout=timedelta(seconds=timeout),
+                retry_policy=RetryPolicy(maximum_attempts=3),
+            )
+
+        planned = await call("persist_planned_action", {"run_id": run_id, "proposal": proposal}, 60)
+        policy = await call("evaluate_policy_and_reserve_budget", {
+            "run_id": run_id,
+            "action_id": planned["action_id"],
+            "tool_identity": identity,
+            "request_hash": planned["request_hash"],
+            "budget_profile_id": approval_policy.get("budget_profile_id"),
+            "workspace_id": approval_policy["workspace_id"],
+            "policy_version": approval_policy.get("policy_version", "default"),
+            "approval_preset": approval_policy.get("approval_preset", "effectful"),
+        })
+        reservation_key = f"{run_id}:{planned['action_id']}:tool_calls"
+
+        async def settle(commit: bool) -> None:
+            if policy.get("reservation_id"):
+                await call("settle_budget", {"reservation_key": reservation_key, "commit": commit})
+
+        if policy["effect"] == "deny":
+            await call("transition_action_status", {
+                "action_db_id": planned["action_db_id"], "run_id": run_id,
+                "action_id": planned["action_id"], "expected": "planned",
+                "target": "policy_denied", "event_type": "policy_decision",
+            })
+            await settle(False)
+            return f"Denied by Thread policy: {policy['reason']}"
+
+        needs_approval = policy["effect"] == "require_approval" or bool(policy.get("requires_approval"))
+        request_id = None
+        if needs_approval:
+            request = await call("create_approval_request", {
+                "workspace_id": approval_policy["workspace_id"],
+                "run_id": run_id,
+                "action_id": planned["action_id"],
+                "action_revision": planned["revision"],
+                "request_hash": planned["request_hash"],
+                "credential_ref": approval_policy.get("credential_binding_id"),
+                "expires_at": expires_at.isoformat(),
+                "risk_level": policy.get("risk_level", "unknown"),
+                "policy_ref": approval_policy.get("policy_version", "default"),
+                "policy_explanation": {
+                    "preset": approval_policy.get("approval_preset", "effectful"),
+                    "reason": policy.get("reason", "Approval required"),
+                },
+            })
+            request_id = request["request_id"]
+            await call("transition_action_status", {
+                "action_db_id": planned["action_db_id"], "run_id": run_id,
+                "action_id": planned["action_id"], "expected": "planned",
+                "target": "awaiting_approval", "event_type": "approval_requested",
+            })
+            state = await call("load_approval_state", {
+                "request_id": request_id,
+                "action_id": planned["action_id"],
+                "action_revision": planned["revision"],
+                "request_hash": planned["request_hash"],
+            })
+            waiting = state["status"] == "pending"
+            if waiting:
+                await call("transition_run_status", {
+                    "run_id": run_id, "expected": "running", "target": "waiting_approval",
+                    "event_type": "approval_requested",
+                })
+            while state["status"] == "pending" and workflow.now() < expires_at:
+                remaining = max(0.0, (expires_at - workflow.now()).total_seconds())
+                try:
+                    await workflow.wait_condition(
+                        lambda: request_id in self._approval_signals,
+                        timeout=timedelta(seconds=min(15.0, remaining)),
+                    )
+                except TimeoutError:
+                    pass
+                self._approval_signals.discard(request_id)
+                state = await call("load_approval_state", {
+                    "request_id": request_id,
+                    "action_id": planned["action_id"],
+                    "action_revision": planned["revision"],
+                    "request_hash": planned["request_hash"],
+                })
+            if waiting:
+                await call("transition_run_status", {
+                    "run_id": run_id, "expected": "waiting_approval", "target": "running",
+                    "event_type": "approval_received",
+                })
+            if state["status"] != "approved":
+                if state["status"] in {"pending", "expired"}:
+                    await call("expire_approval_request", {"request_id": request_id})
+                await settle(False)
+                if state["status"] == "denied":
+                    return "Denied by approver. The tool was not executed."
+                return "Approval expired or became invalid. The tool was not executed."
+
+        await call("transition_action_status", {
+            "action_db_id": planned["action_db_id"], "run_id": run_id,
+            "action_id": planned["action_id"],
+            "expected": "awaiting_approval" if needs_approval else "planned",
+            "target": "authorized",
+            "authorization_ref": policy.get("authorization_ref", "unlimited"),
+            "authorization_hash": policy.get("authorization_hash", planned["request_hash"]),
+            "event_type": "authorization",
+        })
+        await call("transition_action_status", {
+            "action_db_id": planned["action_db_id"], "run_id": run_id,
+            "action_id": planned["action_id"], "expected": "authorized",
+            "target": "executing", "event_type": "action_started",
+        })
+        authorization = await call("recheck_authorization", {
+            "tool_identity": identity,
+            "request_id": request_id,
+            "request_hash": planned["request_hash"],
+            "approval_preset": approval_policy.get("approval_preset", "effectful"),
+            "policy_version": approval_policy.get("policy_version", "default"),
+        })
+        if authorization["effect"] != "allow":
+            result = {
+                "status": "failed", "display_content": "Authorization denied before execution",
+                "model_content": "Authorization denied before execution",
+                "error_code": "authorization_denied", "retry_safe": True,
+            }
+        else:
+            try:
+                content = str(await executor())
+                failed = content.startswith(("Error:", "Error executing")) or content == "Tool not found"
+                result = {
+                    "status": "failed" if failed else "succeeded",
+                    "display_content": content, "model_content": content,
+                    "error_code": "tool_failed" if failed else None,
+                    "retry_safe": classify_tool_for_agent(identity).get("retry_safe", False),
+                }
+            except Exception as exc:
+                content = f"Tool execution failed: {exc}"
+                result = {
+                    "status": "outcome_unknown" if classify_tool_for_agent(identity).get("effectful") else "failed",
+                    "display_content": content, "model_content": content,
+                    "error_code": "execution_failed", "retry_safe": False,
+                }
+        await call("persist_action_result", {
+            "run_id": run_id, "action_id": planned["action_id"], "result": result,
+        }, 60)
+        await settle(result["status"] == "succeeded")
+        return result["model_content"]
+
     def _agent_tools(
         self,
         openai_tools: list[dict],
@@ -322,6 +517,8 @@ class RunThreadWorkflow:
         save_message_activity,
         reachy_speech_handle=None,
         agent_context=None,
+        approval_policy=None,
+        approval_activities=None,
     ):
         tools = []
         tool_timeout = int(llm_config.get("tool_timeout") or llm_config.get("stream_timeout") or 600)
@@ -329,8 +526,9 @@ class RunThreadWorkflow:
         for tool_def in openai_tools:
             fn = tool_def.get("function", {})
             tool_name = fn.get("name", "")
+            tool_identity = identity_for_descriptor(tool_def, tool_name) or f"unknown:{tool_name}"
 
-            async def invoke_tool(ctx, args: str, *, name=tool_name) -> str:
+            async def execute_tool(ctx, args: str, *, name=tool_name) -> str:
                 if reachy_speech_handle:
                     announcement = _reachy_tool_announcement(name, args)
                     print(f"[reachy-tool] {name} invoked, announcement={announcement!r}", flush=True)
@@ -407,6 +605,26 @@ class RunThreadWorkflow:
                     summary=f"Execute agent tool {name}",
                 )
 
+            async def invoke_tool(
+                ctx,
+                args: str,
+                *,
+                identity=tool_identity,
+                execute=execute_tool,
+            ) -> str:
+                if not approval_policy:
+                    return await execute(ctx, args)
+                async with self._agent_tool_lock:
+                    return await self._execute_gated_agent_tool(
+                        identity=identity,
+                        arguments=args or "{}",
+                        tool_call_id=getattr(ctx, "tool_call_id", "") or "",
+                        thread_id=thread_id,
+                        approval_policy=approval_policy,
+                        activities=approval_activities,
+                        executor=lambda: execute(ctx, args),
+                    )
+
             tools.append(
                 FunctionTool(
                     name=tool_name,
@@ -428,11 +646,38 @@ class RunThreadWorkflow:
                 send_continue_prompt, refresh_conversation_summary,
             )
             from app.activities.reachy_activities import execute_reachy_tool_activity
+            from app.activities.autonomy_activities import (
+                create_approval_request,
+                evaluate_policy_and_reserve_budget,
+                expire_approval_request,
+                load_approval_state,
+                persist_action_result,
+                persist_planned_action,
+                recheck_authorization,
+                settle_budget,
+                transition_action_status,
+                transition_run_status,
+            )
             from app.workflows.reachy_speech_workflow import ReachySpeechWorkflow
         thread_id = input["thread_id"]
         message = input["message"]
         llm_config = input.get("llm_config", {})
         agent_context = input.get("agent_context")
+        approval_policy = input.get("approval_policy") if workflow.patched("run-thread-approval-gate-v1") else None
+        approval_activities = {
+            "persist_planned_action": persist_planned_action,
+            "evaluate_policy_and_reserve_budget": evaluate_policy_and_reserve_budget,
+            "create_approval_request": create_approval_request,
+            "load_approval_state": load_approval_state,
+            "expire_approval_request": expire_approval_request,
+            "transition_action_status": transition_action_status,
+            "transition_run_status": transition_run_status,
+            "recheck_authorization": recheck_authorization,
+            "persist_action_result": persist_action_result,
+            "settle_budget": settle_budget,
+        } if approval_policy and agent_context is not None else None
+        if approval_activities is None:
+            approval_policy = None
         reachy_speech_handle = None
 
         try:
@@ -1501,6 +1746,8 @@ class RunThreadWorkflow:
                     save_message,
                     reachy_speech_handle,
                     agent_context,
+                    approval_policy,
+                    approval_activities,
                 ),
             )
 

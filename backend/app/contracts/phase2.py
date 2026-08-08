@@ -41,7 +41,11 @@ class ApprovalResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     workspace_id: UUID
+    thread_id: UUID | None = None
     run_id: UUID
+    agent_id: UUID | None = None
+    agent_name: str | None = None
+    agent_handle: str | None = None
     action_id: str
     action_revision: int
     tool_identity: str | None = None

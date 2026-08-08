@@ -140,6 +140,7 @@ class AgentRunWorkflow:
         workflow_id=f"agent-run:{run_id}"
         await workflow.execute_activity(mark_run_workflow,{"run_id":run_id,"workflow_id":workflow_id},start_to_close_timeout=timedelta(seconds=30))
         shared_patch = workflow.patched("agent-shared-thread-turn-v1")
+        approval_policy_patch = workflow.patched("agent-run-approval-policy-v1")
         binding = (loaded.get("credential_bindings") or [None])[0]
         binding_id = binding.get("binding_id") if isinstance(binding, dict) else binding
         snapshot=await workflow.execute_activity(persist_runtime_snapshot,{"workspace_id":loaded["workspace_id"],"version_id":loaded["version_id"],"model_config":loaded["version_config"],"credential_binding_id":binding_id},start_to_close_timeout=timedelta(seconds=30))
@@ -209,6 +210,19 @@ class AgentRunWorkflow:
                     },
                     "agent_context": context,
                 }
+                if approval_policy_patch:
+                    child_input["approval_policy"] = {
+                        "schema_version": 1,
+                        "workspace_id": loaded["workspace_id"],
+                        "run_id": loaded["run_id"],
+                        "agent_version": loaded["version_id"],
+                        "policy_version": loaded.get("policy_version", "default"),
+                        "approval_preset": loaded.get("approval_preset", "effectful"),
+                        "budget_profile_id": loaded.get("budget_profile_id"),
+                        "credential_binding_id": binding_id,
+                        "deadline_at": loaded.get("deadline_at"),
+                        "approval_task_queue": loaded.get("agent_task_queue", "threadbot-agent"),
+                    }
                 result = await workflow.execute_child_workflow(
                     RunThreadWorkflow.run, child_input, id=f"agent-turn:{run_id}",
                     task_queue=loaded.get("chat_task_queue", "threadbot"), search_attributes=loaded.get("search_attributes"),

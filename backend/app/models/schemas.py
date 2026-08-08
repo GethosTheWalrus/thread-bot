@@ -103,6 +103,7 @@ class ThreadResponse(BaseModel):
     moderator: Optional[dict] = None
     latest_active_run: Optional[dict] = None
     pending_approvals: int = 0
+    approval_preset: str = "effectful"
 
     model_config = {"from_attributes": True}
 
@@ -162,6 +163,7 @@ class ThreadListItem(BaseModel):
     moderator: Optional[dict] = None
     latest_active_run: Optional[dict] = None
     pending_approvals: int = 0
+    approval_preset: str = "effectful"
 
     model_config = {"from_attributes": True}
 
@@ -195,6 +197,10 @@ class RenameRequest(BaseModel):
 class ThreadModeRequest(BaseModel):
     mode: str = Field(pattern="^(chat|agent)$")
     agent_name: Optional[str] = None
+
+
+class ThreadApprovalPresetRequest(BaseModel):
+    approval_preset: str = Field(pattern="^(all|effectful|never)$")
 
 
 class ThreadPinRequest(BaseModel):

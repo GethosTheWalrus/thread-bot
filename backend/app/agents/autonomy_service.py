@@ -104,7 +104,7 @@ async def create_agent(db:AsyncSession, workspace_id:UUID, actor, values:dict):
     return row
 
 async def list_thread_agents(db, workspace_id, thread_id):
-    return list((await db.execute(select(Agent).where(Agent.workspace_id == workspace_id, Agent.thread_id == thread_id).order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars().all())
+    return list((await db.execute(select(Agent).where(Agent.workspace_id == workspace_id, Agent.thread_id == thread_id, Agent.status != "archived").order_by(Agent.is_moderator.desc(), Agent.created_at))).scalars().all())
 
 async def set_thread_moderator(db, workspace_id, thread_id, agent_id):
     raise ValueError("the Thread moderator is managed automatically")

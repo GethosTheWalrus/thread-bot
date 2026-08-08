@@ -266,6 +266,21 @@ class ApiService {
     throw Exception('Failed to change thread mode: ${response.statusCode}');
   }
 
+  Future<Thread> setThreadApprovalPreset(
+    String threadId,
+    String approvalPreset,
+  ) async {
+    final response = await _client.patch(
+      Uri.parse('$baseUrl/api/threads/$threadId/approval-preset'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'approval_preset': approvalPreset}),
+    );
+    if (response.statusCode == 200) {
+      return Thread.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw Exception('Failed to change approval preset: ${response.statusCode}');
+  }
+
   Future<List<ThreadAgentSummary>> getThreadAgents(String threadId) async {
     final response = await _client.get(
       Uri.parse('$baseUrl/api/autonomy/threads/$threadId/agents'),

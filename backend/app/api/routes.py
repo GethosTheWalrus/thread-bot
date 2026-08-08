@@ -77,6 +77,7 @@ from app.models.schemas import (
     ThreadLlmOverridesRequest,
     ThreadContextResponse,
     ThreadModeRequest,
+    ThreadApprovalPresetRequest,
     ContextBudgetResponse,
     ContextCompositionItem,
     ContextSummaryResponse,
@@ -494,7 +495,8 @@ async def _thread_agent_summary(db: AsyncSession, thread_id: UUID, workspace_id=
     pending = await db.scalar(select(func.count(ApprovalRequest.id)).join(
         AgentRun, AgentRun.id == ApprovalRequest.run_id
     ).where(ApprovalRequest.workspace_id == workspace_id, AgentRun.thread_id == thread_id,
-            ApprovalRequest.status == "pending")) or 0
+            ApprovalRequest.status == "pending",
+            ApprovalRequest.expires_at > datetime.now(timezone.utc))) or 0
     active_agent = await db.get(Agent, active.agent_id) if active else None
     return _agent_projection(agent), _agent_run_projection(active, active_agent), int(pending)
 
@@ -525,7 +527,8 @@ async def _thread_agent_summaries(db: AsyncSession, thread_ids: list[UUID], work
     approvals = (await db.execute(select(AgentRun.thread_id, func.count(ApprovalRequest.id)).join(
         ApprovalRequest, ApprovalRequest.run_id == AgentRun.id
     ).where(AgentRun.thread_id.in_(thread_ids), AgentRun.workspace_id == workspace_id,
-            ApprovalRequest.workspace_id == workspace_id, ApprovalRequest.status == "pending")
+            ApprovalRequest.workspace_id == workspace_id, ApprovalRequest.status == "pending",
+            ApprovalRequest.expires_at > datetime.now(timezone.utc))
         .group_by(AgentRun.thread_id))).all()
     by_id = {}
     for row in agents:
@@ -575,6 +578,7 @@ def _build_thread_response(thread, messages=None, is_generating=False, discord_l
         active_runs=active_runs or ([latest_active_run] if latest_active_run else []),
         agent_turn_limit=getattr(thread, "agent_turn_limit", 4) or 4,
         moderator=next((item for item in (agents or []) if item.get("is_moderator") and item.get("status") == "active"), agent if agent and agent.get("status") == "active" else None),
+        approval_preset=getattr(thread, "approval_preset", "effectful") or "effectful",
     )
 
 
@@ -697,6 +701,45 @@ async def set_thread_mode(thread_id: UUID, request: ThreadModeRequest, db: Async
     messages = list((await db.execute(select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at))).scalars())
     summary, active, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
     return _build_thread_response(thread, messages, agent=summary, latest_active_run=active, pending_approvals=pending)
+
+
+@router.patch("/threads/{thread_id}/approval-preset", response_model=ThreadResponse)
+async def set_thread_approval_preset(
+    thread_id: UUID,
+    request: ThreadApprovalPresetRequest,
+    db: AsyncSession = Depends(get_db),
+    actor: ActorContext = Depends(require_actor),
+):
+    thread = await db.scalar(select(Thread).where(
+        Thread.id == thread_id,
+        Thread.workspace_id == actor.workspace_id,
+    ))
+    if not thread:
+        raise HTTPException(404, "Thread not found")
+    active_run = await db.scalar(select(AgentRun.id).where(
+        AgentRun.thread_id == thread_id,
+        AgentRun.workspace_id == actor.workspace_id,
+        AgentRun.status.in_({"queued", "running", "waiting_approval", "waiting_handoff"}),
+    ))
+    if active_run:
+        raise HTTPException(409, "Approval policy cannot change while Agent work is active")
+    thread.approval_preset = request.approval_preset
+    await db.flush()
+    await db.refresh(thread)
+    messages = list((await db.execute(select(Message).where(
+        Message.thread_id == thread_id,
+    ).order_by(Message.created_at, Message.id))).scalars())
+    summary, active, pending = await _thread_agent_summary(db, thread_id, actor.workspace_id)
+    roster, active_runs = await _thread_roster_projection(db, thread_id, actor.workspace_id)
+    return _build_thread_response(
+        thread,
+        messages,
+        agent=summary,
+        latest_active_run=active,
+        pending_approvals=pending,
+        agents=roster,
+        active_runs=active_runs,
+    )
 
 
 @router.get("/threads/{thread_id}/agent")
@@ -1186,6 +1229,7 @@ async def list_threads_endpoint(
             is_pinned=bool(t.is_pinned),
             mode=t.mode or "chat", agent=agent_summary, latest_active_run=active_run, pending_approvals=pending,
             agents=roster, active_runs=active_runs, agent_turn_limit=getattr(t, "agent_turn_limit", 4) or 4,
+            approval_preset=getattr(t, "approval_preset", "effectful") or "effectful",
             moderator=next((a for a in roster if a.get("is_moderator") and a.get("status") == "active"), None),
         ))
     return ThreadListResponse(threads=thread_items)
@@ -1394,6 +1438,7 @@ async def get_thread_replies_endpoint(
             is_reachy_thread=reachy_thread_id == str(t.id),
             has_llm_overrides=bool(t.llm_overrides),
             is_pinned=bool(t.is_pinned),
+            approval_preset=getattr(t, "approval_preset", "effectful") or "effectful",
         ))
     return items
 

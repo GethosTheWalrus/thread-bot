@@ -77,11 +77,15 @@ class Phase2ApiService {
     '/api/policies/explain',
     body: body,
   ).then((x) => Map<String, dynamic>.from(x));
-  Future<List<Approval>> approvals() => _get('GET', '/api/approvals').then(
-    (x) => (x as List)
-        .map((v) => Approval.fromJson(Map<String, dynamic>.from(v)))
-        .toList(),
-  );
+  Future<List<Approval>> approvals({String? threadId}) =>
+      _get(
+        'GET',
+        '/api/approvals${threadId == null ? '' : '?thread_id=${Uri.encodeQueryComponent(threadId)}'}',
+      ).then(
+        (x) => ((x is List ? x : (x as Map?)?['items']) as List? ?? const [])
+            .map((v) => Approval.fromJson(Map<String, dynamic>.from(v)))
+            .toList(),
+      );
   Future<void> decide(String id, String decision, {String? reason}) => _get(
     'POST',
     '/api/approvals/$id/decision',

@@ -17,7 +17,7 @@ class _AgentListScreenState extends State<AgentListScreen> {
   String? _error, _nextCursor;
   final _search = TextEditingController();
   Timer? _debounce;
-  String _status = 'all';
+  String _status = 'current';
   @override
   void initState() {
     super.initState();
@@ -83,6 +83,32 @@ class _AgentListScreenState extends State<AgentListScreen> {
         );
     } finally {
       if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  Future<void> _openAgent(Agent agent) async {
+    final deleted = await Navigator.pushNamed(
+      context,
+      '/agent-details/${agent.id}',
+    );
+    if (deleted == true && mounted) await _load();
+  }
+
+  Future<void> _deleteAgent(Agent agent) async {
+    final confirmed = await confirmDeleteAgent(context, agentName: agent.name);
+    if (!confirmed || !mounted) return;
+    try {
+      await widget.api.deleteAgent(agent.id);
+      if (!mounted) return;
+      setState(() => _agents.removeWhere((item) => item.id == agent.id));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('${agent.name} was deleted')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete ${agent.name}: $e')),
+      );
     }
   }
 
@@ -165,7 +191,7 @@ class _AgentListScreenState extends State<AgentListScreen> {
             message: 'Try another search or clear the filters.',
             onAction: () {
               _search.clear();
-              setState(() => _status = 'all');
+              setState(() => _status = 'current');
               _load();
             },
             actionLabel: 'Clear filters',
@@ -238,11 +264,12 @@ class _AgentListScreenState extends State<AgentListScreen> {
         'Status',
         _status,
         {
-          'all': 'All',
+          'current': 'Current',
           'active': 'Active',
           'draft': 'Draft',
           'paused': 'Paused',
           'archived': 'Archived',
+          'all': 'All including deleted',
         },
         (v) {
           setState(() => _status = v);
@@ -298,7 +325,7 @@ class _AgentListScreenState extends State<AgentListScreen> {
     label: 'Open ${a.name}',
     child: InkWell(
       borderRadius: BorderRadius.circular(14),
-      onTap: () => Navigator.pushNamed(context, '/agent-details/${a.id}'),
+      onTap: () => _openAgent(a),
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -319,6 +346,13 @@ class _AgentListScreenState extends State<AgentListScreen> {
                   ),
                 ),
                 AgentStatusPill(a.status),
+                const SizedBox(width: 4),
+                IconButton(
+                  tooltip: 'Delete agent',
+                  onPressed: () => _deleteAgent(a),
+                  color: const Color(0xFFF07F8A),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 19),
+                ),
               ],
             ),
             if (a.description?.trim().isNotEmpty == true) ...[

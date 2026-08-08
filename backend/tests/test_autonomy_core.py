@@ -136,6 +136,7 @@ def test_model_tool_protocol_and_progress_markers_are_source_contracts():
     assert 'workflow.patched("agent-turn-protocol-v2")' in workflow_source
     assert 'approval_transition = needs_approval if protocol_v2' in workflow_source
     assert 'workflow.patched("agent-approval-timeout-v2")' in workflow_source
+    assert 'workflow.patched("approval-request-display-v1")' in workflow_source
     assert "except TimeoutError:" in workflow_source
     assert "expire_approval_request" in workflow_source
 

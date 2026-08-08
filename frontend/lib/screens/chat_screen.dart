@@ -9,12 +9,14 @@ import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/services/autonomy_api.dart';
+import 'package:threadbot/services/phase2_api.dart';
 import 'package:threadbot/models/autonomy.dart';
 import 'package:threadbot/widgets/chat_message_list.dart';
 import 'package:threadbot/widgets/threadbot_avatar.dart';
 import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/widgets/thread_participant_manager.dart';
+import 'package:threadbot/widgets/thread_approvals_panel.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -157,6 +159,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   List<ThreadListItem> _threads = [];
   String? _activeThreadId;
   String _activeThreadMode = 'chat';
+  String _approvalPreset = 'effectful';
   List<Message> _messages = [];
   bool _isLoadingThreads = false;
   bool _isLoadingMessages = false;
@@ -335,6 +338,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     setState(() {
       _isLoadingMessages = true;
       _activeThreadId = threadId;
+      if (switchingThread) {
+        _approvalPreset = knownThread?.approvalPreset ?? 'effectful';
+      }
       // Preserve the displayed mode and agent while the request is in flight.
       // In particular, do not briefly turn a generating agent thread into chat.
       if (switchingThread) _resetRunTracking();
@@ -356,6 +362,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           _activeThreadMode = thread.mode;
           if (thread.mode != 'agent') _agent = null;
           _threadAgentSummary = thread.agent;
+          _approvalPreset = thread.approvalPreset;
           _participants = thread.agents;
           _pendingApprovals = thread.pendingApprovals;
           _activeRunSummaries
@@ -765,6 +772,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       builder: (context) => _ThreadControlsSheet(
         threadId: threadId,
         api: _api,
+        autonomyApi: Phase2ApiService(_autonomyApi),
         estimatedTokens: _contextEstimatedTokens,
         contextWindow: _contextWindow,
         hasLlmOverrides: _hasLlmOverrides,
@@ -802,6 +810,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         turnLimit: thread?.agentTurnLimit ?? 0,
         activeRunCount: _activeRunSummaries.length,
         pendingApprovals: _pendingApprovals,
+        approvalPreset: _approvalPreset,
         onModeChanged: threadId == null ? null : _changeThreadMode,
         onParticipantsChanged: threadId == null
             ? null
@@ -811,10 +820,23 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               },
         onOpenAgent: (agentId) =>
             Navigator.pushNamed(context, '/agent-details/$agentId'),
-        onOpenAllAgents: () => Navigator.pushNamed(context, '/agents-list'),
-        onOpenWorkspaceSettings: _openSettings,
-        onOpenMcp: _openMCP,
-        onOpenSkills: _openSkills,
+        onApprovalsChanged: () {
+          if (threadId != null) {
+            _loadThread(threadId);
+            _loadThreads(silent: true);
+          }
+        },
+        onApprovalPresetChanged: (thread) {
+          if (mounted && _activeThreadId == thread.id) {
+            setState(() => _approvalPreset = thread.approvalPreset);
+            final listItem = _threads
+                .where((item) => item.id == thread.id)
+                .firstOrNull;
+            if (listItem != null)
+              listItem.approvalPreset = thread.approvalPreset;
+          }
+          _loadThreads(silent: true);
+        },
       ),
     );
   }
@@ -2550,6 +2572,7 @@ class _NewThreadChoiceTile extends StatelessWidget {
 class _ThreadControlsSheet extends StatefulWidget {
   final String? threadId;
   final ApiService api;
+  final Phase2ApiService autonomyApi;
   final int estimatedTokens;
   final int contextWindow;
   final bool hasLlmOverrides;
@@ -2564,17 +2587,17 @@ class _ThreadControlsSheet extends StatefulWidget {
   final int turnLimit;
   final int activeRunCount;
   final int pendingApprovals;
+  final String approvalPreset;
   final ValueChanged<String>? onModeChanged;
   final VoidCallback? onParticipantsChanged;
   final ValueChanged<String> onOpenAgent;
-  final VoidCallback onOpenAllAgents;
-  final VoidCallback onOpenWorkspaceSettings;
-  final VoidCallback onOpenMcp;
-  final VoidCallback onOpenSkills;
+  final VoidCallback? onApprovalsChanged;
+  final ValueChanged<Thread>? onApprovalPresetChanged;
 
   const _ThreadControlsSheet({
     required this.threadId,
     required this.api,
+    required this.autonomyApi,
     required this.estimatedTokens,
     required this.contextWindow,
     required this.hasLlmOverrides,
@@ -2589,13 +2612,12 @@ class _ThreadControlsSheet extends StatefulWidget {
     required this.turnLimit,
     required this.activeRunCount,
     required this.pendingApprovals,
+    required this.approvalPreset,
     this.onModeChanged,
     this.onParticipantsChanged,
     required this.onOpenAgent,
-    required this.onOpenAllAgents,
-    required this.onOpenWorkspaceSettings,
-    required this.onOpenMcp,
-    required this.onOpenSkills,
+    this.onApprovalsChanged,
+    this.onApprovalPresetChanged,
   });
 
   @override
@@ -2613,7 +2635,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -2731,8 +2753,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                           labelColor: Colors.white,
                           unselectedLabelColor: Colors.white54,
                           tabs: [
-                            const Tab(text: 'General'),
-                            const Tab(text: 'Agents'),
+                            const Tab(text: 'Overview'),
                             const Tab(text: 'Context'),
                             Tab(
                               child: _TabLabel(
@@ -2757,48 +2778,40 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                       index: _tab,
                       children: [
                         _GeneralControlsTab(
+                          threadId: widget.threadId,
                           hasThread: widget.threadId != null,
                           threadMode: widget.threadMode,
                           modeChangeBusy: widget.modeChangeBusy,
                           participantCount: widget.participants.length,
                           activeRunCount: widget.activeRunCount,
                           pendingApprovals: widget.pendingApprovals,
+                          approvalPreset: widget.approvalPreset,
+                          api: widget.api,
+                          changesDisabled:
+                              widget.threadId == null ||
+                              widget.activeRunCount > 0,
+                          onChanged: widget.onApprovalPresetChanged,
                           onModeChanged: widget.onModeChanged == null
                               ? null
                               : (mode) => _closeAndRun(
                                   () => widget.onModeChanged!(mode),
                                 ),
-                          onOpenAllAgents: () =>
-                              _closeAndRun(widget.onOpenAllAgents),
-                          onOpenWorkspaceSettings: () =>
-                              _closeAndRun(widget.onOpenWorkspaceSettings),
-                          onOpenMcp: () => _closeAndRun(widget.onOpenMcp),
-                          onOpenSkills: () => _closeAndRun(widget.onOpenSkills),
+                          autonomyApi: widget.autonomyApi,
+                          participants: widget.participants,
+                          turnLimit: widget.turnLimit,
+                          onOpenAgent: widget.onOpenAgent,
+                          onParticipantsChanged: widget.onParticipantsChanged,
+                          onApprovalsChanged: widget.onApprovalsChanged,
                         ),
-                        widget.threadId == null
-                            ? const _UnavailableControlTab(
-                                message:
-                                    'Send the first message to save this thread before adding agents.',
-                              )
-                            : ThreadParticipantManager(
-                                threadId: widget.threadId!,
-                                participants: widget.participants,
-                                turnLimit: widget.turnLimit,
-                                embedded: true,
-                                onChanged: widget.onParticipantsChanged,
-                                onOpenConfig: (agentId) => _closeAndRun(
-                                  () => widget.onOpenAgent(agentId),
-                                ),
-                              ),
                         _ContextTab(
                           threadId: widget.threadId,
                           api: widget.api,
                           estimatedTokens: widget.estimatedTokens,
                           contextWindow: widget.contextWindow,
                           canCustomize: widget.threadId != null,
-                          onResponse: () => _selectTab(3),
+                          onResponse: () => _selectTab(2),
                         ),
-                        if (_visitedTabs.contains(3))
+                        if (_visitedTabs.contains(2))
                           widget.threadId == null
                               ? const _DisabledResponseTab()
                               : _LlmOverridesSheet(
@@ -2808,7 +2821,7 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
                                 )
                         else
                           const SizedBox.shrink(),
-                        if (_visitedTabs.contains(4))
+                        if (_visitedTabs.contains(3))
                           _ToolOverridesSheet(
                             threadId: widget.threadId,
                             api: widget.api,
@@ -2832,30 +2845,44 @@ class _ThreadControlsSheetState extends State<_ThreadControlsSheet>
 }
 
 class _GeneralControlsTab extends StatelessWidget {
+  final String? threadId;
   final bool hasThread;
   final String threadMode;
   final bool modeChangeBusy;
   final int participantCount;
   final int activeRunCount;
   final int pendingApprovals;
+  final String approvalPreset;
+  final ApiService api;
+  final bool changesDisabled;
+  final ValueChanged<Thread>? onChanged;
   final ValueChanged<String>? onModeChanged;
-  final VoidCallback onOpenAllAgents;
-  final VoidCallback onOpenWorkspaceSettings;
-  final VoidCallback onOpenMcp;
-  final VoidCallback onOpenSkills;
+  final Phase2ApiService autonomyApi;
+  final List<ThreadAgentSummary> participants;
+  final int turnLimit;
+  final ValueChanged<String> onOpenAgent;
+  final VoidCallback? onParticipantsChanged;
+  final VoidCallback? onApprovalsChanged;
 
   const _GeneralControlsTab({
+    required this.threadId,
     required this.hasThread,
     required this.threadMode,
     required this.modeChangeBusy,
     required this.participantCount,
     required this.activeRunCount,
     required this.pendingApprovals,
+    required this.approvalPreset,
+    required this.api,
+    required this.changesDisabled,
+    this.onChanged,
     required this.onModeChanged,
-    required this.onOpenAllAgents,
-    required this.onOpenWorkspaceSettings,
-    required this.onOpenMcp,
-    required this.onOpenSkills,
+    required this.autonomyApi,
+    required this.participants,
+    required this.turnLimit,
+    required this.onOpenAgent,
+    this.onParticipantsChanged,
+    this.onApprovalsChanged,
   });
 
   @override
@@ -2934,67 +2961,214 @@ class _GeneralControlsTab extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Use the Agents tab to add participant Agents, configure heartbeats, or open detailed settings. The routing moderator is managed automatically.',
+            'Configured participants can be managed below. The routing moderator is managed automatically.',
             style: TextStyle(fontSize: 12, color: Colors.white54, height: 1.4),
           ),
         ],
-        const SizedBox(height: 28),
-        Text(
-          'Workspace settings',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        const SizedBox(height: 18),
+        _ApprovalPresetEditor(
+          threadId: threadId,
+          api: api,
+          initialPreset: approvalPreset,
+          disabled: changesDisabled,
+          onChanged: onChanged,
         ),
-        const SizedBox(height: 5),
-        const Text(
-          'Common configuration is available here without adding more buttons to the thread header.',
-          style: TextStyle(color: Colors.white54),
-        ),
-        const SizedBox(height: 12),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final width = constraints.maxWidth < 520
-                ? constraints.maxWidth
-                : (constraints.maxWidth - 10) / 2;
-            return Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                _ControlShortcut(
-                  width: width,
-                  icon: Icons.smart_toy_outlined,
-                  title: 'All agents',
-                  subtitle: 'Browse agents and activity',
-                  onTap: onOpenAllAgents,
-                ),
-                _ControlShortcut(
-                  width: width,
-                  icon: Icons.settings_outlined,
-                  title: 'App settings',
-                  subtitle: 'Models, media, Discord, security',
-                  onTap: onOpenWorkspaceSettings,
-                ),
-                _ControlShortcut(
-                  width: width,
-                  icon: Icons.terminal_rounded,
-                  title: 'MCP servers',
-                  subtitle: 'External tools and connections',
-                  onTap: onOpenMcp,
-                ),
-                _ControlShortcut(
-                  width: width,
-                  icon: Icons.auto_awesome_outlined,
-                  title: 'Skills',
-                  subtitle: 'Reusable instructions and expertise',
-                  onTap: onOpenSkills,
-                ),
-              ],
-            );
-          },
-        ),
+        if (threadMode == 'agent' || participants.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          if (hasThread)
+            SizedBox(
+              height: 330,
+              child: ThreadParticipantManager(
+                threadId: threadId!,
+                participants: participants,
+                turnLimit: turnLimit,
+                embedded: true,
+                onChanged: onParticipantsChanged,
+                onOpenConfig: onOpenAgent,
+              ),
+            )
+          else
+            const _UnavailableControlTab(
+              message: 'Save the thread before adding agents.',
+            ),
+        ],
+        if (hasThread) ...[
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 390,
+            child: ThreadApprovalsPanel(
+              threadId: threadId,
+              api: autonomyApi,
+              onChanged: onApprovalsChanged,
+            ),
+          ),
+        ],
       ],
     ),
   );
+}
+
+class _ApprovalPresetEditor extends StatefulWidget {
+  final String? threadId;
+  final ApiService api;
+  final String initialPreset;
+  final bool disabled;
+  final ValueChanged<Thread>? onChanged;
+
+  const _ApprovalPresetEditor({
+    required this.threadId,
+    required this.api,
+    required this.initialPreset,
+    required this.disabled,
+    this.onChanged,
+  });
+
+  @override
+  State<_ApprovalPresetEditor> createState() => _ApprovalPresetEditorState();
+}
+
+class _ApprovalPresetEditorState extends State<_ApprovalPresetEditor> {
+  late String _preset = widget.initialPreset;
+  String? _error;
+  bool _busy = false;
+
+  static const _options = [
+    (
+      value: 'all',
+      title: 'All tools',
+      description: 'Pause before every tool executes.',
+    ),
+    (
+      value: 'effectful',
+      title: 'Writes and effects',
+      description:
+          'Reads/local utilities proceed; changes, communications, handoffs, physical, and unknown actions pause.',
+    ),
+    (
+      value: 'never',
+      title: 'Never',
+      description:
+          'No human approval pause, but deny rules and deployment safety gates still apply.',
+    ),
+  ];
+
+  Future<void> _select(String value) async {
+    if (_busy ||
+        widget.disabled ||
+        value == _preset ||
+        widget.threadId == null) {
+      return;
+    }
+    if (value == 'never') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Disable approval pauses?'),
+          content: const Text(
+            'Never pauses for human approval. Deny rules and deployment safety gates still apply.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Set Never'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final thread = await widget.api.setThreadApprovalPreset(
+        widget.threadId!,
+        value,
+      );
+      if (mounted) {
+        setState(() {
+          _preset = thread.approvalPreset;
+          _busy = false;
+        });
+        widget.onChanged?.call(thread);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = 'Could not save approval preset: $e';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = widget.disabled || widget.threadId == null || _busy;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Tool approval',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          'Choose when a human must approve tool actions.',
+          style: TextStyle(fontSize: 12, color: Colors.white54),
+        ),
+        const SizedBox(height: 8),
+        SegmentedButton<String>(
+          segments: [
+            for (final option in _options)
+              ButtonSegment(value: option.value, label: Text(option.title)),
+          ],
+          selected: {_preset},
+          showSelectedIcon: false,
+          onSelectionChanged: disabled
+              ? null
+              : (selection) => _select(selection.first),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          _options.firstWhere((option) => option.value == _preset).description,
+          style: const TextStyle(
+            fontSize: 12,
+            color: Colors.white54,
+            height: 1.35,
+          ),
+        ),
+        if (widget.threadId == null)
+          const Text(
+            'Save the thread before changing its approval preset.',
+            style: TextStyle(fontSize: 12, color: Colors.white38),
+          )
+        else if (widget.disabled)
+          const Text(
+            'Approval preset cannot change while work is running.',
+            style: TextStyle(fontSize: 12, color: Colors.white38),
+          ),
+        if (_busy)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: LinearProgressIndicator(minHeight: 2),
+          ),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(
+              _error!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 class _StatusPill extends StatelessWidget {
@@ -3017,67 +3191,6 @@ class _StatusPill extends StatelessWidget {
         const SizedBox(width: 6),
         Text(label, style: const TextStyle(fontSize: 12)),
       ],
-    ),
-  );
-}
-
-class _ControlShortcut extends StatelessWidget {
-  final double width;
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-  const _ControlShortcut({
-    required this.width,
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    width: width,
-    child: Material(
-      color: const Color(0xFF1D1D28),
-      borderRadius: BorderRadius.circular(12),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(13),
-          child: Row(
-            children: [
-              Icon(icon, size: 20, color: const Color(0xFFC4B5FD)),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Colors.white54,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(
-                Icons.chevron_right_rounded,
-                size: 18,
-                color: Colors.white30,
-              ),
-            ],
-          ),
-        ),
-      ),
     ),
   );
 }

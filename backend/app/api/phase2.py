@@ -9,8 +9,9 @@ from app.contracts.common import ActorContext
 from app.credentials.contracts import CredentialCreate, CredentialResponse
 from app.models.phase2_models import Connector, NotificationProfile, NotificationDelivery, DeadLetter, WebhookNonce, NotificationRoute
 from app.models.foundation_models import Credential, CredentialVersion, CredentialBinding
-from app.models.approval_models import ApprovalRequest, ApprovalDecision
-from app.models.run_models import AgentAction, AgentRun
+from app.models.approval_models import ApprovalRequest
+from app.models.agent_models import Agent
+from app.models.run_models import AgentRun
 from app.models.foundation_models import AuditEvent, DomainEvent
 from app.models.foundation_models import IdempotencyRecord
 from app.policy.engine import evaluate_policy, explain_risk
@@ -203,39 +204,70 @@ async def policy_explain(body: dict, actor=Depends(actor_dep)):
 
 
 @router.get("/approvals", response_model=list[ApprovalResponse])
-async def approvals(db=Depends(get_db), actor=Depends(actor_dep)):
-    return (await db.execute(select(ApprovalRequest).where(
-        ApprovalRequest.workspace_id == actor.workspace_id,
-        ApprovalRequest.status == "pending",
-        ApprovalRequest.expires_at > datetime.now(timezone.utc),
-    ).order_by(ApprovalRequest.expires_at))).scalars().all()
+async def approvals(thread_id: UUID | None = None, db=Depends(get_db), actor=Depends(actor_dep)):
+    query = (
+        select(ApprovalRequest, AgentRun.thread_id, Agent.id, Agent.name, Agent.handle)
+        .join(AgentRun, AgentRun.id == ApprovalRequest.run_id)
+        .join(Agent, Agent.id == AgentRun.agent_id)
+        .where(
+            ApprovalRequest.workspace_id == actor.workspace_id,
+            ApprovalRequest.status == "pending",
+            ApprovalRequest.expires_at > datetime.now(timezone.utc),
+        )
+        .order_by(ApprovalRequest.expires_at, ApprovalRequest.id)
+    )
+    if thread_id is not None:
+        query = query.where(AgentRun.thread_id == thread_id)
+    rows = (await db.execute(query)).all()
+    return [
+        {
+            "id": approval.id,
+            "workspace_id": approval.workspace_id,
+            "thread_id": run_thread_id,
+            "run_id": approval.run_id,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "agent_handle": agent_handle,
+            "action_id": approval.action_id,
+            "action_revision": approval.action_revision,
+            "tool_identity": approval.tool_identity,
+            "request_hash": approval.request_hash,
+            "status": approval.status,
+            "risk_level": approval.risk_level,
+            "policy_ref": approval.policy_ref,
+            "credential_ref": approval.credential_ref,
+            "target": approval.target,
+            "redacted_arguments": approval.redacted_arguments,
+            "policy_explanation": approval.policy_explanation,
+            "expires_at": approval.expires_at,
+        }
+        for approval, run_thread_id, agent_id, agent_name, agent_handle in rows
+    ]
 
 
 @router.post("/approvals/{approval_id}/decision")
 async def approval_decision(approval_id: UUID, body: dict, request: Request, db=Depends(get_db), actor=Depends(actor_dep), idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
     if body.get("decision") not in {"approved", "denied"}: raise HTTPException(422, "decision must be approved or denied")
     if idempotency_key is None: raise HTTPException(422, "Idempotency-Key header is required")
-    row = await db.scalar(select(ApprovalRequest).where(ApprovalRequest.id == approval_id, ApprovalRequest.workspace_id == actor.workspace_id).with_for_update())
-    if not row: raise HTTPException(404, "approval not found")
-    existing = await db.scalar(select(ApprovalDecision).where(ApprovalDecision.request_id == row.id))
-    if existing and existing.provider_interaction_id == idempotency_key:
-        return {"approval_id": row.id, "status": row.status, "request_hash": row.request_hash}
-    if row.status != "pending" or row.expires_at <= datetime.now(timezone.utc): raise HTTPException(409, "approval is no longer active")
-    action = await db.scalar(select(AgentAction).where(AgentAction.run_id == row.run_id, AgentAction.action_id == row.action_id))
-    if not action or action.request_hash != row.request_hash: raise HTTPException(409, "approval hash no longer matches action")
-    db.add(ApprovalDecision(request_id=row.id, decision=body["decision"], actor_id=actor.actor_id, actor_type=actor.actor_type.value, channel="web", reason=body.get("reason"), provider_interaction_id=idempotency_key))
-    row.status = "approved" if body["decision"] == "approved" else "denied"
-    await audit_phase2(db, actor, "approval.decided", "approval_request", row.id, {"decision": body["decision"], "request_hash": row.request_hash})
-    if body["decision"] == "denied": action.status = "denied"
-    from app.api.routes import get_temporal_client
-    client = get_temporal_client()
-    if client:
-        handle = client.get_workflow_handle(f"agent-turn:{row.run_id}")
-        try:
-            from app.contracts.approval import ApprovalWakeSignal
-            await handle.signal("approval_decision", ApprovalWakeSignal(request_id=str(row.id)))
-        except Exception: pass
-    return {"approval_id": row.id, "status": row.status, "request_hash": row.request_hash}
+    from app.approval_service import ApprovalDecisionError, record_approval_decision, signal_approval_decision
+
+    try:
+        result = await record_approval_decision(
+            db,
+            approval_id=approval_id,
+            workspace_id=actor.workspace_id,
+            decision=body["decision"],
+            actor_id=actor.actor_id,
+            actor_type=actor.actor_type.value,
+            channel="web",
+            provider_interaction_id=idempotency_key,
+            reason=body.get("reason"),
+            correlation_id=actor.correlation_id,
+        )
+    except ApprovalDecisionError as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+    await signal_approval_decision(result["run_id"], result["approval_id"])
+    return {key: value for key, value in result.items() if key != "run_id"}
 
 
 @router.get("/notifications/profiles")

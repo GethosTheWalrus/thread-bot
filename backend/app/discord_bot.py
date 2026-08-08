@@ -139,7 +139,28 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
 
     @bot.event
     async def on_message(message: discord.Message):
-        if message.author.bot or not bot.user or not bot.user.mentioned_in(message):
+        if message.author.bot or not bot.user:
+            await bot.process_commands(message)
+            return
+
+        reply_to_message_id = str(message.reference.message_id) if message.reference and message.reference.message_id else None
+        if reply_to_message_id and isinstance(message.channel, discord.Thread):
+            from app.discord_integration import handle_discord_approval_reply
+
+            handled = await handle_discord_approval_reply(
+                temporal_client,
+                guild_id=str(message.guild.id) if message.guild else str(config.get("guild_id") or "discord"),
+                discord_thread_id=str(message.channel.id),
+                sender_id=str(message.author.id),
+                content=message.content or "",
+                reply_to_message_id=reply_to_message_id,
+                source_message_id=str(message.id),
+            )
+            if handled:
+                await bot.process_commands(message)
+                return
+
+        if not bot.user.mentioned_in(message):
             await bot.process_commands(message)
             return
 

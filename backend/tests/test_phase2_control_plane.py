@@ -3,6 +3,7 @@ from app.connectors.webhook import verify_signed_webhook
 from app.policy.engine import evaluate_policy
 from app.security import origin_chain_allows
 from app.policy.engine import explain_risk
+from app.policy.approval_presets import evaluate_approval_preset
 from app.state_service import state_diff
 from app.notifications.dispatcher import dispatch
 from app.contracts.phase2 import ApprovalResponse
@@ -36,6 +37,18 @@ def test_external_risk_defaults_fail_closed():
     assert explain_risk("reachy:speak")["risk_level"] == "critical"
     assert explain_risk("discord:post")["requires_approval"] is True
     assert explain_risk("temporal:terminate")["requires_approval"] is True
+
+
+def test_understandable_approval_presets_apply_server_classification():
+    assert evaluate_approval_preset("builtin:calculator", "effectful")["effect"] == "allow"
+    assert evaluate_approval_preset("builtin:generate_image", "effectful")["effect"] == "require_approval"
+    assert evaluate_approval_preset("builtin:handoff_to_agent", "effectful")["effect"] == "require_approval"
+    assert evaluate_approval_preset("mcp:server:lookup", "effectful")["effect"] == "require_approval"
+    assert evaluate_approval_preset("reachy:move", "effectful")["effect"] == "require_approval"
+    assert evaluate_approval_preset("builtin:calculator", "all")["effect"] == "require_approval"
+    assert evaluate_approval_preset("mcp:server:write", "never")["effect"] == "allow"
+    assert evaluate_approval_preset("reachy:move", "never")["effect"] == "allow"
+    assert evaluate_approval_preset("unknown:tool", "never")["effect"] == "deny"
 
 
 def test_state_diff_is_canonical_and_only_contains_changes():

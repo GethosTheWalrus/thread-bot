@@ -1,5 +1,12 @@
 import 'package:threadbot/models/message.dart';
 
+const threadApprovalPresets = ['all', 'effectful', 'never'];
+
+String _approvalPreset(dynamic value) {
+  final preset = value as String?;
+  return threadApprovalPresets.contains(preset) ? preset! : 'effectful';
+}
+
 int _contextInt(dynamic value, [int fallback = 0]) {
   if (value is int) return value;
   if (value is num) return value.round();
@@ -144,6 +151,7 @@ class Thread {
   final List<ThreadRunSummary> activeRuns;
   final int pendingApprovals;
   final int agentTurnLimit;
+  final String approvalPreset;
 
   Thread({
     required this.id,
@@ -166,6 +174,7 @@ class Thread {
     this.activeRuns = const [],
     this.pendingApprovals = 0,
     this.agentTurnLimit = 0,
+    this.approvalPreset = 'effectful',
   });
 
   factory Thread.fromJson(Map<String, dynamic> json) {
@@ -204,6 +213,7 @@ class Thread {
       activeRuns: activeRuns,
       pendingApprovals: _contextInt(json['pending_approvals']),
       agentTurnLimit: _contextInt(json['agent_turn_limit']),
+      approvalPreset: _approvalPreset(json['approval_preset']),
     );
   }
 
@@ -234,6 +244,7 @@ class ThreadListItem {
   final List<ThreadRunSummary> activeRuns;
   final int pendingApprovals;
   final int agentTurnLimit;
+  String approvalPreset;
 
   ThreadListItem({
     required this.id,
@@ -255,6 +266,7 @@ class ThreadListItem {
     this.activeRuns = const [],
     this.pendingApprovals = 0,
     this.agentTurnLimit = 0,
+    this.approvalPreset = 'effectful',
   });
 
   factory ThreadListItem.fromJson(Map<String, dynamic> json) {
@@ -283,6 +295,7 @@ class ThreadListItem {
       activeRuns: activeRuns,
       pendingApprovals: _contextInt(json['pending_approvals']),
       agentTurnLimit: _contextInt(json['agent_turn_limit']),
+      approvalPreset: _approvalPreset(json['approval_preset']),
     );
   }
 }

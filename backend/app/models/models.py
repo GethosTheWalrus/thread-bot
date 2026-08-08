@@ -15,6 +15,10 @@ class Thread(Base):
         Index("idx_threads_created_at", text("created_at DESC")),
         Index("idx_threads_workspace_updated", "workspace_id", text("updated_at DESC")),
         CheckConstraint("mode IN ('chat', 'agent')", name="ck_threads_mode"),
+        CheckConstraint(
+            "approval_preset IN ('all', 'effectful', 'never')",
+            name="ck_threads_approval_preset",
+        ),
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -32,6 +36,7 @@ class Thread(Base):
     archived_at = Column(DateTime(timezone=True), nullable=True)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     agent_turn_limit = Column(Integer, nullable=False, default=4, server_default="4")
+    approval_preset = Column(String(16), nullable=False, default="effectful", server_default="effectful")
 
     messages = relationship("Message", back_populates="thread", cascade="all, delete-orphan", order_by="Message.created_at")
     parent = relationship("Thread", remote_side=[id], foreign_keys=[parent_id])

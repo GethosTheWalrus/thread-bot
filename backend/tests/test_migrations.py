@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0024_system_moderators"]
+    assert scripts.get_heads() == ["0026_thread_approval_presets"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -37,6 +37,8 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0022_agent_heartbeats").down_revision == "0021_reconcile_multi_agent_schema"
     assert scripts.get_revision("0023_backfill_thread_workspaces").down_revision == "0022_agent_heartbeats"
     assert scripts.get_revision("0024_system_moderators").down_revision == "0023_backfill_thread_workspaces"
+    assert scripts.get_revision("0025_discord_approval_prompts").down_revision == "0024_system_moderators"
+    assert scripts.get_revision("0026_thread_approval_presets").down_revision == "0025_discord_approval_prompts"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -118,6 +120,26 @@ def test_system_moderator_revision_backfills_and_matches_model():
     assert "ck_agents_system_is_moderator" in revision
     assert 'RuntimeError("System moderator migration is forward-only")' in revision
     assert not Base.metadata.tables["agents"].c.is_system.nullable
+
+
+def test_discord_approval_prompt_revision_and_model_match():
+    revision = (ROOT / "alembic/versions/0025_discord_approval_prompts.py").read_text()
+    assert "approval_provider_prompts" in revision
+    assert "uq_approval_provider_prompt_message" in revision
+    assert "idx_approval_provider_prompts_request" in revision
+    assert 'RuntimeError("Discord approval prompt migration is forward-only")' in revision
+    table = Base.metadata.tables["approval_provider_prompts"]
+    assert {"request_id", "provider_channel_id", "provider_message_id", "intended_actor_id"} <= set(table.columns.keys())
+
+
+def test_thread_approval_preset_revision_and_model_match():
+    revision = (ROOT / "alembic/versions/0026_thread_approval_presets.py").read_text()
+    assert "approval_preset" in revision
+    assert "ck_threads_approval_preset" in revision
+    assert 'RuntimeError("Thread approval preset migration is forward-only")' in revision
+    column = Base.metadata.tables["threads"].c.approval_preset
+    assert not column.nullable
+    assert str(column.server_default.arg) == "effectful"
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():

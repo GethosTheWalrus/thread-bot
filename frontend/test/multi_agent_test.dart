@@ -310,12 +310,20 @@ void main() {
               embedded: true,
               participants: [
                 ThreadAgentSummary(
-                  id: 'agent-1',
-                  name: 'Moderator',
+                  id: 'system-agent',
+                  name: 'Thread moderator',
                   status: 'active',
                   executionMode: 'act',
-                  mentionName: 'mod',
+                  mentionName: 'moderator',
                   isModerator: true,
+                  isSystem: true,
+                ),
+                ThreadAgentSummary(
+                  id: 'agent-1',
+                  name: 'Researcher',
+                  status: 'active',
+                  executionMode: 'act',
+                  mentionName: 'researcher',
                 ),
               ],
             ),
@@ -325,12 +333,19 @@ void main() {
     );
 
     expect(find.text('Agents in this thread'), findsOneWidget);
-    expect(find.text('Moderator'), findsWidgets);
+    expect(find.text('Thread moderator'), findsOneWidget);
+    expect(find.text('Researcher'), findsOneWidget);
     expect(find.text('Details & settings'), findsOneWidget);
     expect(find.text('Heartbeat'), findsOneWidget);
     expect(find.text('Agent tools'), findsOneWidget);
-    expect(find.text('@mod'), findsOneWidget);
-    expect(find.text('active'), findsOneWidget);
+    expect(find.text('@researcher'), findsOneWidget);
+    expect(find.text('Delete agent'), findsOneWidget);
+    expect(
+      find.text(
+        'Managed automatically · Routes requests only · Never posts replies',
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 }
