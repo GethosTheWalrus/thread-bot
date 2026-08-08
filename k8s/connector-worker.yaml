@@ -14,7 +14,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: connector-worker
-          image: git.home:5050/mike/thread-bot/worker:1aa6e016
+          image: git.home:5050/mike/thread-bot/worker:d363f0f0
           imagePullPolicy: Always
           command: ["python", "-m", "app.connector_worker"]
           envFrom:
