@@ -2,7 +2,10 @@
 
 import sys
 import unittest
+import asyncio
 from pathlib import Path
+
+import pytest
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
@@ -21,6 +24,7 @@ from app.discord_integration import (
     _format_activity_trace,
     parse_discord_approval_decision,
 )
+from app.activities import llm_activities
 
 
 class DiscordMentionTests(unittest.TestCase):
@@ -115,6 +119,34 @@ class DiscordMentionTests(unittest.TestCase):
         assert parse_discord_approval_decision("approve please") is None
         assert parse_discord_approval_decision("yes") is None
         assert parse_discord_approval_decision("") is None
+
+
+@pytest.mark.asyncio
+async def test_agent_typing_activity_pulses_and_heartbeats(monkeypatch):
+    pulses = []
+    heartbeats = []
+
+    async def pulse(thread_id, channel_id, token):
+        pulses.append((thread_id, channel_id, token))
+
+    async def stop_after_first_pulse(_seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("app.discord_integration._send_discord_typing_quick", pulse)
+    monkeypatch.setattr(llm_activities, "heartbeat", heartbeats.append)
+    monkeypatch.setattr(llm_activities.asyncio, "sleep", stop_after_first_pulse)
+
+    with pytest.raises(asyncio.CancelledError):
+        await llm_activities.maintain_discord_typing({
+            "discord": {
+                "discord_thread_id": "thread-1",
+                "channel_id": "channel-1",
+                "bot_token": "secret",
+            },
+        })
+
+    assert pulses == [("thread-1", "channel-1", "secret")]
+    assert heartbeats == [{"discord_thread_id": "thread-1"}]
 
 
 if __name__ == "__main__":

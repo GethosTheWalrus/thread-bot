@@ -688,6 +688,20 @@ async def persist_action_result(args: dict) -> dict:
         })
     return result
 
+
+@defn
+async def sync_agent_action_result(args: dict) -> dict:
+    """Close Discord progress for actions that stop before execution."""
+    from app.discord_integration import sync_agent_run_tool_activity
+
+    await sync_agent_run_tool_activity(str(args["run_id"]), {
+        "type": "tool_result",
+        "tool_call_id": str(args["action_id"]),
+        "success": bool(args.get("success", False)),
+    })
+    return {"synced": True}
+
+
 @defn
 async def settle_budget(args: dict) -> dict:
     from uuid import UUID

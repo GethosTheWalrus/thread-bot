@@ -1,6 +1,11 @@
 import inspect
 
-from app.workflows.thread_workflow import RunThreadWorkflow, _filter_agent_tools
+from app.workflows.thread_workflow import (
+    RunThreadWorkflow,
+    _filter_agent_tools,
+    _gate_shared_heartbeat_output,
+    _tool_result_succeeded,
+)
 from app.workflows.agent_workflows import AgentRunWorkflow
 from app.workflows.policy_aware_thread_workflow import PolicyAwareThreadTurnWorkflow
 
@@ -133,3 +138,38 @@ def test_live_agent_tool_gate_serializes_concurrent_tool_callbacks():
 
     assert "asyncio.Lock()" in init_source
     assert "async with self._agent_tool_lock" in tools_source
+
+
+def test_shared_heartbeat_requires_fresh_successful_tool_evidence_by_default():
+    assert _gate_shared_heartbeat_output(
+        "unsupported fact",
+        has_successful_tool_evidence=False,
+        allow_without_tools=False,
+    ) == ""
+    assert _gate_shared_heartbeat_output(
+        "verified fact",
+        has_successful_tool_evidence=True,
+        allow_without_tools=False,
+    ) == "verified fact"
+    assert _gate_shared_heartbeat_output(
+        "configured local-only reminder",
+        has_successful_tool_evidence=False,
+        allow_without_tools=True,
+    ) == "configured local-only reminder"
+    assert _tool_result_succeeded("wiki page content")
+    assert not _tool_result_succeeded("Error executing tool: unavailable")
+    assert not _tool_result_succeeded("Tool not found")
+
+
+def test_shared_heartbeat_and_discord_progress_changes_are_replay_patched():
+    run_source = inspect.getsource(RunThreadWorkflow.run)
+    gate_source = inspect.getsource(RunThreadWorkflow._execute_gated_agent_tool)
+
+    assert 'workflow.patched("shared-heartbeat-evidence-v1")' in run_source
+    assert "current_messages = [] if isolated_heartbeat" in run_source
+    assert "not routing_only and not isolated_heartbeat" in run_source
+    assert 'workflow.patched("agent-discord-typing-v1")' in run_source
+    assert "maintain_discord_typing" in run_source
+    assert 'workflow.patched("run-thread-discord-progress-v1")' in gate_source
+    assert 'planned["action_id"] if discord_progress_v1 else tool_call_id' in gate_source
+    assert 'call("sync_agent_action_result"' in gate_source

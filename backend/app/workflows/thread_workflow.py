@@ -1,4 +1,13 @@
-from temporalio.workflow import ParentClosePolicy, defn, execute_activity, init, run, signal
+from temporalio.workflow import (
+    ActivityCancellationType,
+    ParentClosePolicy,
+    defn,
+    execute_activity,
+    init,
+    run,
+    signal,
+    start_activity,
+)
 from temporalio.common import RetryPolicy
 import asyncio
 from datetime import datetime, timedelta
@@ -99,6 +108,21 @@ def _reachy_tool_announcement(tool_name: str, args: str) -> str:
     return ""
 
 
+def _gate_shared_heartbeat_output(
+    text: str,
+    *,
+    has_successful_tool_evidence: bool,
+    allow_without_tools: bool,
+) -> str:
+    if text.strip() and not has_successful_tool_evidence and not allow_without_tools:
+        return ""
+    return text
+
+
+def _tool_result_succeeded(content: str) -> bool:
+    return not content.startswith(("Error:", "Error executing")) and content != "Tool not found"
+
+
 @defn
 class RunThreadWorkflow:
     """Main workflow for handling a chat interaction.
@@ -118,6 +142,7 @@ class RunThreadWorkflow:
         self._continue_decision: bool | None = None
         self._approval_signals: set[str] = set()
         self._agent_tool_lock = asyncio.Lock()
+        self._successful_agent_tool = False
 
     @signal
     async def respond_continue(self, should_continue: bool) -> None:
@@ -333,6 +358,8 @@ class RunThreadWorkflow:
     ) -> str:
         import json
 
+        discord_progress_v1 = workflow.patched("run-thread-discord-progress-v1")
+
         try:
             parsed_arguments = json.loads(arguments or "{}")
         except Exception:
@@ -382,12 +409,21 @@ class RunThreadWorkflow:
             if policy.get("reservation_id"):
                 await call("settle_budget", {"reservation_key": reservation_key, "commit": commit})
 
+        async def close_progress() -> None:
+            if discord_progress_v1:
+                await call("sync_agent_action_result", {
+                    "run_id": run_id,
+                    "action_id": planned["action_id"],
+                    "success": False,
+                })
+
         if policy["effect"] == "deny":
             await call("transition_action_status", {
                 "action_db_id": planned["action_db_id"], "run_id": run_id,
                 "action_id": planned["action_id"], "expected": "planned",
                 "target": "policy_denied", "event_type": "policy_decision",
             })
+            await close_progress()
             await settle(False)
             return f"Denied by Thread policy: {policy['reason']}"
 
@@ -451,9 +487,12 @@ class RunThreadWorkflow:
             if state["status"] != "approved":
                 if state["status"] in {"pending", "expired"}:
                     await call("expire_approval_request", {"request_id": request_id})
-                await settle(False)
                 if state["status"] == "denied":
+                    await close_progress()
+                    await settle(False)
                     return "Denied by approver. The tool was not executed."
+                await close_progress()
+                await settle(False)
                 return "Approval expired or became invalid. The tool was not executed."
 
         await call("transition_action_status", {
@@ -485,8 +524,9 @@ class RunThreadWorkflow:
             }
         else:
             try:
-                content = str(await executor())
-                failed = content.startswith(("Error:", "Error executing")) or content == "Tool not found"
+                execution_id = planned["action_id"] if discord_progress_v1 else tool_call_id
+                content = str(await executor(execution_id))
+                failed = not _tool_result_succeeded(content)
                 result = {
                     "status": "failed" if failed else "succeeded",
                     "display_content": content, "model_content": content,
@@ -503,6 +543,8 @@ class RunThreadWorkflow:
         await call("persist_action_result", {
             "run_id": run_id, "action_id": planned["action_id"], "result": result,
         }, 60)
+        if result["status"] == "succeeded":
+            self._successful_agent_tool = True
         await settle(result["status"] == "succeeded")
         return result["model_content"]
 
@@ -528,7 +570,8 @@ class RunThreadWorkflow:
             tool_name = fn.get("name", "")
             tool_identity = identity_for_descriptor(tool_def, tool_name) or f"unknown:{tool_name}"
 
-            async def execute_tool(ctx, args: str, *, name=tool_name) -> str:
+            async def execute_tool(ctx, args: str, tool_call_id: str | None = None, *, name=tool_name) -> str:
+                effective_tool_call_id = tool_call_id or getattr(ctx, "tool_call_id", "") or ""
                 if reachy_speech_handle:
                     announcement = _reachy_tool_announcement(name, args)
                     print(f"[reachy-tool] {name} invoked, announcement={announcement!r}", flush=True)
@@ -543,7 +586,7 @@ class RunThreadWorkflow:
                         save_message_activity=save_message_activity,
                         name=name,
                         arguments=args or "{}",
-                        tool_call_id=getattr(ctx, "tool_call_id", "") or "",
+                        tool_call_id=effective_tool_call_id,
                         thread_id=thread_id,
                         llm_config=llm_config,
                         agent_context=agent_context,
@@ -589,7 +632,7 @@ class RunThreadWorkflow:
                     {
                         "tool_name": name,
                         "arguments": args or "{}",
-                        "tool_call_id": getattr(ctx, "tool_call_id", "") or "",
+                        "tool_call_id": effective_tool_call_id,
                         "mcp_tools_map": mcp_tools_map,
                         "thread_id": thread_id,
                         "llm_config": llm_config,
@@ -613,7 +656,10 @@ class RunThreadWorkflow:
                 execute=execute_tool,
             ) -> str:
                 if not approval_policy:
-                    return await execute(ctx, args)
+                    content = await execute(ctx, args)
+                    if _tool_result_succeeded(content):
+                        self._successful_agent_tool = True
+                    return content
                 async with self._agent_tool_lock:
                     return await self._execute_gated_agent_tool(
                         identity=identity,
@@ -622,7 +668,7 @@ class RunThreadWorkflow:
                         thread_id=thread_id,
                         approval_policy=approval_policy,
                         activities=approval_activities,
-                        executor=lambda: execute(ctx, args),
+                        executor=lambda stable_id: execute(ctx, args, stable_id),
                     )
 
             tools.append(
@@ -643,7 +689,7 @@ class RunThreadWorkflow:
                 save_message, get_messages,
                 compact_history, delete_messages_before, discover_tools,
                 execute_agent_tool_activity, generated_images_for_latest_turn,
-                send_continue_prompt, refresh_conversation_summary,
+                maintain_discord_typing, send_continue_prompt, refresh_conversation_summary,
             )
             from app.activities.reachy_activities import execute_reachy_tool_activity
             from app.activities.autonomy_activities import (
@@ -655,6 +701,7 @@ class RunThreadWorkflow:
                 persist_planned_action,
                 recheck_authorization,
                 settle_budget,
+                sync_agent_action_result,
                 transition_action_status,
                 transition_run_status,
             )
@@ -676,12 +723,32 @@ class RunThreadWorkflow:
             "recheck_authorization": recheck_authorization,
             "persist_action_result": persist_action_result,
             "settle_budget": settle_budget,
+            "sync_agent_action_result": sync_agent_action_result,
         } if approval_policy and agent_context is not None else None
         if approval_activities is None:
             approval_policy = None
         reachy_speech_handle = None
+        discord_typing_handle = None
 
         try:
+            discord_config = llm_config.get("discord") or {}
+            if (
+                workflow.patched("agent-discord-typing-v1")
+                and agent_context is not None
+                and discord_config.get("enabled")
+                and discord_config.get("discord_thread_id")
+                and discord_config.get("bot_token")
+            ):
+                discord_typing_handle = start_activity(
+                    maintain_discord_typing,
+                    {"discord": discord_config},
+                    start_to_close_timeout=timedelta(hours=6),
+                    heartbeat_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                    cancellation_type=ActivityCancellationType.TRY_CANCEL,
+                    summary="Maintain Discord Agent typing indicator",
+                )
+
             initial_reachy_config = dict(llm_config.get("reachy") or {})
             if self._reachy_enabled_for_thread(llm_config, thread_id) and initial_reachy_config.get("speech_enabled", True):
                 reachy_task_queue = initial_reachy_config.get("task_queue") or "reachy-local"
@@ -707,19 +774,27 @@ class RunThreadWorkflow:
             )
 
             # ── Compaction Check ─────────────────────────────────────────
-            compact_result = await execute_activity(
-                compact_history,
-                {
-                    "thread_id": thread_id,
-                    "llm_config": llm_config,
-                    "messages": chat_history,
-                    "context_window": llm_config.get("context_window", 8192),
-                    "compaction_threshold": llm_config.get("compaction_threshold", 0.75),
-                    "preserve_recent": llm_config.get("preserve_recent", 10),
-                },
-                start_to_close_timeout=timedelta(seconds=120),
-                retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_evidence_v1 = workflow.patched("shared-heartbeat-evidence-v1")
+            isolated_heartbeat = (
+                heartbeat_evidence_v1
+                and (agent_context or {}).get("route") == "heartbeat"
             )
+            if isolated_heartbeat:
+                compact_result = {"compacted": False, "messages": chat_history}
+            else:
+                compact_result = await execute_activity(
+                    compact_history,
+                    {
+                        "thread_id": thread_id,
+                        "llm_config": llm_config,
+                        "messages": chat_history,
+                        "context_window": llm_config.get("context_window", 8192),
+                        "compaction_threshold": llm_config.get("compaction_threshold", 0.75),
+                        "preserve_recent": llm_config.get("preserve_recent", 10),
+                    },
+                    start_to_close_timeout=timedelta(seconds=120),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
 
             if compact_result["compacted"]:
                 import datetime
@@ -1565,7 +1640,7 @@ class RunThreadWorkflow:
                 )
 
             # ── Build initial message list ───────────────────────────────
-            current_messages = list(chat_history)
+            current_messages = [] if isolated_heartbeat else list(chat_history)
             heartbeat_input_boundary = workflow.patched(
                 "heartbeat-input-boundary-v1"
             )
@@ -1668,6 +1743,12 @@ class RunThreadWorkflow:
                     "Treat the conversation as context, not as a new request. If your instructions do not require "
                     f"work at this wake, return no text.{recurring_guidance}"
                 )
+                if heartbeat_evidence_v1 and not llm_config.get("allow_heartbeat_response_without_tools", False):
+                    instructions_parts.append(
+                        "A heartbeat response requires fresh evidence from a successful structured tool call made during "
+                        "this run. Describing, simulating, or claiming a search is not tool use. If no selected tool succeeds, "
+                        "return no text rather than relying on memory or prior conversation summaries."
+                    )
             if active_skills:
                 skill_sections = []
                 for skill in active_skills:
@@ -1838,11 +1919,14 @@ class RunThreadWorkflow:
                         "type": "thinking",
                         "content": "Continuing automatically to finish the Agent turn.",
                     })
-                    current_messages = await execute_activity(
-                        get_messages,
-                        thread_id,
-                        start_to_close_timeout=timedelta(seconds=10),
-                    )
+                    if isolated_heartbeat:
+                        current_messages = current_messages[-1:]
+                    else:
+                        current_messages = await execute_activity(
+                            get_messages,
+                            thread_id,
+                            start_to_close_timeout=timedelta(seconds=10),
+                        )
                     continue
 
                 if agent_context is not None:
@@ -1902,6 +1986,15 @@ class RunThreadWorkflow:
             elif result.final_output and not full_response_content:
                 await self._publish_event(agent_llm_config, {"type": "text", "content": str(result.final_output)})
 
+            gated_heartbeat_response = _gate_shared_heartbeat_output(
+                llm_response,
+                has_successful_tool_evidence=self._successful_agent_tool,
+                allow_without_tools=bool(llm_config.get("allow_heartbeat_response_without_tools", False)),
+            ) if isolated_heartbeat else llm_response
+            if llm_response and not gated_heartbeat_response:
+                workflow.logger.warning("Suppressing heartbeat response without fresh tool evidence")
+            llm_response = gated_heartbeat_response
+
             missing_image_markdown = await execute_activity(
                 generated_images_for_latest_turn,
                 {"thread_id": thread_id, "assistant_content": llm_response},
@@ -1918,7 +2011,11 @@ class RunThreadWorkflow:
                 # NOT signal per-token deltas (see comment above) because
                 # that pattern produces hundreds of events that force the
                 # speech workflow to replay through them on every task.
-                final_text = (llm_response or "").strip() or (full_response_content or "").strip()
+                final_text = (
+                    (llm_response or "").strip()
+                    if isolated_heartbeat
+                    else (llm_response or "").strip() or (full_response_content or "").strip()
+                )
                 await reachy_speech_handle.signal("finish", final_text)
                 try:
                     await reachy_speech_handle.result()
@@ -1956,7 +2053,7 @@ class RunThreadWorkflow:
             try:
                 stream_timeout = int(llm_config.get("stream_timeout") or 600)
                 summary_timeout = timedelta(seconds=max(30, min(stream_timeout, 300)))
-                if not routing_only:
+                if not routing_only and not isolated_heartbeat:
                     await execute_activity(
                         refresh_conversation_summary,
                         {
@@ -1992,3 +2089,10 @@ class RunThreadWorkflow:
                     pass
             await self._publish_event(llm_config, {"type": "error", "content": str(e)})
             raise
+        finally:
+            if discord_typing_handle and not discord_typing_handle.done():
+                discord_typing_handle.cancel()
+                try:
+                    await discord_typing_handle
+                except (asyncio.CancelledError, Exception):
+                    pass

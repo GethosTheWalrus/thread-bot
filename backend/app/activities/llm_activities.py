@@ -14,6 +14,27 @@ async def claim_discord_event(args: dict) -> dict:
     return {"claimed": True, "event_id": args.get("event_id")}
 
 
+@defn
+async def maintain_discord_typing(args: dict) -> None:
+    """Keep Discord's short-lived typing indicator active for an Agent turn."""
+    discord = args.get("discord") or {}
+    thread_id = str(discord.get("discord_thread_id") or "")
+    bot_token = str(discord.get("bot_token") or "")
+    if not thread_id or not bot_token:
+        return
+
+    from app.discord_integration import _send_discord_typing_quick
+
+    while True:
+        await _send_discord_typing_quick(
+            thread_id,
+            discord.get("channel_id"),
+            bot_token,
+        )
+        heartbeat({"discord_thread_id": thread_id})
+        await asyncio.sleep(8)
+
+
 def _parse_discord_timestamp(value: str | None):
     if not value:
         return None
