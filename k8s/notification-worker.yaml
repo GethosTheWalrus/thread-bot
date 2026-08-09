@@ -14,7 +14,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: notification-worker
-          image: git.home:5050/mike/thread-bot/worker:153e2013
+          image: git.home:5050/mike/thread-bot/worker:41f9ade8
           imagePullPolicy: Always
           command: ["python", "-m", "app.notification_worker"]
           envFrom:
