@@ -663,6 +663,7 @@ class RunThreadWorkflow:
         message = input["message"]
         llm_config = input.get("llm_config", {})
         agent_context = input.get("agent_context")
+        routing_only = bool((agent_context or {}).get("routing_only"))
         approval_policy = input.get("approval_policy") if workflow.patched("run-thread-approval-gate-v1") else None
         approval_activities = {
             "persist_planned_action": persist_planned_action,
@@ -1605,7 +1606,6 @@ class RunThreadWorkflow:
             tool_summary = "\n".join(tool_summary_lines)
 
             reachy_config = dict(llm_config.get("reachy") or {})
-            routing_only = bool((agent_context or {}).get("routing_only"))
             is_reachy_voice_turn = not routing_only and self._reachy_enabled_for_thread(llm_config, thread_id) and reachy_config.get("speech_enabled", True)
 
             # The OpenAI Agents SDK drives the loop inside the workflow. The
