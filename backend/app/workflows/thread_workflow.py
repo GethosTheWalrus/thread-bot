@@ -26,7 +26,7 @@ with workflow.unsafe.imports_passed_through():
     from app.agents_provider import encode_agents_model_config
     from app.text_sanitize import strip_hidden_reasoning
     from app.contracts.approval import ApprovalWakeSignal
-    from app.tools.catalog import classify_tool_for_agent, identity_for_descriptor
+    from app.tools.catalog import classify_tool_for_agent, identity_for_descriptor, risk_profile_for_descriptor
 
 
 _REACHY_TOOL_ANNOUNCEMENTS = {
@@ -355,6 +355,7 @@ class RunThreadWorkflow:
         approval_policy: dict,
         activities: dict,
         executor,
+        risk_profile: dict | None = None,
     ) -> str:
         import json
 
@@ -402,6 +403,7 @@ class RunThreadWorkflow:
             "workspace_id": approval_policy["workspace_id"],
             "policy_version": approval_policy.get("policy_version", "default"),
             "approval_preset": approval_policy.get("approval_preset", "effectful"),
+            "risk_profile": risk_profile,
         })
         reservation_key = f"{run_id}:{planned['action_id']}:tool_calls"
 
@@ -515,6 +517,7 @@ class RunThreadWorkflow:
             "request_hash": planned["request_hash"],
             "approval_preset": approval_policy.get("approval_preset", "effectful"),
             "policy_version": approval_policy.get("policy_version", "default"),
+            "risk_profile": risk_profile,
         })
         if authorization["effect"] != "allow":
             result = {
@@ -531,12 +534,12 @@ class RunThreadWorkflow:
                     "status": "failed" if failed else "succeeded",
                     "display_content": content, "model_content": content,
                     "error_code": "tool_failed" if failed else None,
-                    "retry_safe": classify_tool_for_agent(identity).get("retry_safe", False),
+                    "retry_safe": classify_tool_for_agent(identity, risk_profile).get("retry_safe", False),
                 }
             except Exception as exc:
                 content = f"Tool execution failed: {exc}"
                 result = {
-                    "status": "outcome_unknown" if classify_tool_for_agent(identity).get("effectful") else "failed",
+                    "status": "outcome_unknown" if classify_tool_for_agent(identity, risk_profile).get("effectful") else "failed",
                     "display_content": content, "model_content": content,
                     "error_code": "execution_failed", "retry_safe": False,
                 }
@@ -561,6 +564,7 @@ class RunThreadWorkflow:
         agent_context=None,
         approval_policy=None,
         approval_activities=None,
+        mcp_tool_safety_v1=False,
     ):
         tools = []
         tool_timeout = int(llm_config.get("tool_timeout") or llm_config.get("stream_timeout") or 600)
@@ -569,6 +573,7 @@ class RunThreadWorkflow:
             fn = tool_def.get("function", {})
             tool_name = fn.get("name", "")
             tool_identity = identity_for_descriptor(tool_def, tool_name) or f"unknown:{tool_name}"
+            risk_profile = risk_profile_for_descriptor(tool_def) if mcp_tool_safety_v1 else None
 
             async def execute_tool(ctx, args: str, tool_call_id: str | None = None, *, name=tool_name) -> str:
                 effective_tool_call_id = tool_call_id or getattr(ctx, "tool_call_id", "") or ""
@@ -653,6 +658,7 @@ class RunThreadWorkflow:
                 args: str,
                 *,
                 identity=tool_identity,
+                profile=risk_profile,
                 execute=execute_tool,
             ) -> str:
                 if not approval_policy:
@@ -669,6 +675,7 @@ class RunThreadWorkflow:
                         approval_policy=approval_policy,
                         activities=approval_activities,
                         executor=lambda stable_id: execute(ctx, args, stable_id),
+                        risk_profile=profile,
                     )
 
             tools.append(
@@ -1812,6 +1819,7 @@ class RunThreadWorkflow:
                     f"{tool_summary}"
                 )
 
+            mcp_tool_safety_v1 = workflow.patched("mcp-tool-safety-v1")
             agent = Agent(
                 name=(agent_context or {}).get("agent_name") or "ThreadBot",
                 instructions="\n\n".join(instructions_parts),
@@ -1829,6 +1837,7 @@ class RunThreadWorkflow:
                     agent_context,
                     approval_policy,
                     approval_activities,
+                    mcp_tool_safety_v1,
                 ),
             )
 

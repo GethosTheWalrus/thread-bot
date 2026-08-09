@@ -4,9 +4,9 @@ from app.tools.catalog import classify_tool_for_agent
 APPROVAL_PRESETS = frozenset({"all", "effectful", "never"})
 
 
-def evaluate_approval_preset(tool_identity: str, preset: str) -> dict:
+def evaluate_approval_preset(tool_identity: str, preset: str, risk_profile: dict | None = None) -> dict:
     """Apply the understandable approval preset to server-owned classification."""
-    classification = classify_tool_for_agent(tool_identity)
+    classification = classify_tool_for_agent(tool_identity, risk_profile)
     if not classification.get("allowed"):
         return {
             "effect": "deny",

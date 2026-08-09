@@ -378,6 +378,7 @@ async def create_mcp_server(
     env_vars: dict | None = None,
     args: dict | None = None,
     registry_credentials: dict | None = None,
+    tool_safety_overrides: dict | None = None,
 ) -> MCPServer:
     from app.encryption import encrypt_dict
     encrypted_env = await encrypt_dict(env_vars or {})
@@ -389,6 +390,7 @@ async def create_mcp_server(
         env_vars=encrypted_env,
         args=encrypted_args,
         registry_credentials=encrypted_registry_credentials,
+        tool_safety_overrides=tool_safety_overrides or {},
     )
     db.add(server)
     await db.flush()
@@ -435,6 +437,7 @@ async def update_mcp_server(
     env_vars: dict | None = None,
     args: dict | None = None,
     registry_credentials: dict | None = None,
+    tool_safety_overrides: dict | None = None,
 ) -> MCPServer | None:
     from app.encryption import encrypt_dict
     result = await db.execute(
@@ -452,6 +455,8 @@ async def update_mcp_server(
             server.args = await encrypt_dict(args)
         if registry_credentials is not None:
             server.registry_credentials = await encrypt_dict(registry_credentials)
+        if tool_safety_overrides is not None:
+            server.tool_safety_overrides = tool_safety_overrides
         await db.flush()
         await db.refresh(server)
     return server

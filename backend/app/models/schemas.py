@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from uuid import UUID
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 
 class ToolOverrideItem(BaseModel):
@@ -207,12 +207,18 @@ class ThreadPinRequest(BaseModel):
     is_pinned: bool
 
 
+class MCPToolResponse(BaseModel):
+    name: str
+    description: str = ""
+
+
 class MCPServerCreate(BaseModel):
     name: str
     image: str
     env_vars: Optional[dict] = {}
     args: Optional[dict] = {}
     registry_credentials: Optional[dict] = {}
+    tool_safety_overrides: dict[str, Literal["read_only", "effectful"]] = Field(default_factory=dict)
 
 
 class MCPServerResponse(BaseModel):
@@ -222,6 +228,8 @@ class MCPServerResponse(BaseModel):
     env_vars: dict
     args: dict
     registry_credentials: dict = {}
+    tools: list[MCPToolResponse] = Field(default_factory=list)
+    tool_safety_overrides: dict[str, Literal["read_only", "effectful"]] = Field(default_factory=dict)
     is_active: bool
     created_at: datetime
 

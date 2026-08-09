@@ -199,10 +199,11 @@ async def prepare_runtime(args: dict) -> dict:
                 if not identity or identity not in selected and f"{server.name}:{name}" not in selected:
                     continue
                 full_name = f"{server.name}_{name}"
+                safety = (server.tool_safety_overrides or {}).get(name)
                 mcp_descriptors.append({"type": "function", "function": {
                     "name": full_name, "description": tool.get("description") or "",
                     "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
-                }, "x-threadbot-identity": identity})
+                }, "x-threadbot-identity": identity, "x-threadbot-mcp-safety": safety})
                 authorized_mcp.append(identity)
         snapshotted_skills = config.get("selected_skills") or []
         if snapshotted_skills:
@@ -347,7 +348,7 @@ async def plan_model_step(args: dict) -> dict:
     model_call_id = str(response.get("id") or args.get("model_call_id") or "model-call")
     proposals = []
     assistant_tool_calls = []
-    from app.tools.catalog import identity_for_descriptor
+    from app.tools.catalog import identity_for_descriptor, risk_profile_for_descriptor
     descriptors = args.get("tool_descriptors") or []
     for call in message.get("tool_calls") or response.get("tool_calls") or []:
         function = call.get("function") or {}
@@ -365,8 +366,9 @@ async def plan_model_step(args: dict) -> dict:
                 "arguments": json.dumps(arguments, separators=(",", ":"), sort_keys=True),
             },
         })
-        identity = next((identity_for_descriptor(d, function_name) for d in descriptors if (d.get("function") or {}).get("name") == function_name), None)
-        proposals.append({"model_call_id": model_call_id, "tool_call_id": tool_call_id, "tool_identity": identity or f"unknown:{function_name}", "arguments": arguments, "target": {}, "rationale": "", "safe_reasoning_summary": "model proposed a tool call"})
+        descriptor = next((d for d in descriptors if (d.get("function") or {}).get("name") == function_name), {})
+        identity = identity_for_descriptor(descriptor, function_name)
+        proposals.append({"model_call_id": model_call_id, "tool_call_id": tool_call_id, "tool_identity": identity or f"unknown:{function_name}", "risk_profile": risk_profile_for_descriptor(descriptor), "arguments": arguments, "target": {}, "rationale": "", "safe_reasoning_summary": "model proposed a tool call"})
     text = str(message.get("content") or response.get("content") or "")
     assistant_message = {"role": "assistant", "content": text, "tool_calls": assistant_tool_calls}
     return {"schema_version": 1, "model_call_id": model_call_id, "assistant_message": assistant_message, "text": text, "proposals": proposals, "finish_reason": "tool_calls" if proposals else "stop", "usage": response.get("usage") or {}, "safe_reasoning_summary": "model output normalized", "effect_free": False, "execution_mode": args.get("mode", "live")}
@@ -417,7 +419,7 @@ async def evaluate_policy_and_reserve_budget(args: dict) -> dict:
     policy = (
         evaluate_policy({"tool_identity": args["tool_identity"], "risk_profile": args.get("risk_profile")}, rules, args.get("policy_version", "default"))
         if rules
-        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"))
+        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"), args.get("risk_profile"))
     )
     if policy["effect"] == "deny":
         return policy
@@ -587,9 +589,9 @@ async def recheck_authorization(args: dict) -> dict:
     from app.policy.engine import evaluate_policy
     rules = args.get("rules")
     policy = (
-        evaluate_policy({"tool_identity": args["tool_identity"]}, rules, args.get("policy_version", "default"))
+        evaluate_policy({"tool_identity": args["tool_identity"], "risk_profile": args.get("risk_profile")}, rules, args.get("policy_version", "default"))
         if rules
-        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"))
+        else evaluate_approval_preset(args["tool_identity"], args.get("approval_preset", "effectful"), args.get("risk_profile"))
     )
     if policy["effect"] == "deny" or (policy["effect"] == "require_approval" and not args.get("request_id")):
         return policy

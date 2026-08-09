@@ -49,6 +49,11 @@ def test_understandable_approval_presets_apply_server_classification():
     assert evaluate_approval_preset("mcp:server:write", "never")["effect"] == "allow"
     assert evaluate_approval_preset("reachy:move", "never")["effect"] == "allow"
     assert evaluate_approval_preset("unknown:tool", "never")["effect"] == "deny"
+    read_only = {"risk_level": "low", "category": "read", "effectful": False}
+    effectful = {"risk_level": "unknown", "category": "write", "effectful": True}
+    assert evaluate_approval_preset("mcp:DuckDuckGo:search", "effectful", read_only)["effect"] == "allow"
+    assert evaluate_approval_preset("mcp:DuckDuckGo:search", "all", read_only)["effect"] == "require_approval"
+    assert evaluate_approval_preset("mcp:DuckDuckGo:search", "effectful", effectful)["effect"] == "require_approval"
 
 
 def test_state_diff_is_canonical_and_only_contains_changes():

@@ -92,8 +92,10 @@ class _MCPScreenState extends State<MCPScreen> {
         registryPasswordController: registryPasswordController,
         envEntries: envEntries,
         argEntries: argEntries,
+        tools: server?.tools ?? const [],
+        initialToolSafetyOverrides: server?.toolSafetyOverrides ?? const {},
         isEdit: server != null,
-        onSave: (env, args, registryCredentials) async {
+        onSave: (env, args, registryCredentials, toolSafetyOverrides) async {
           try {
             if (server == null) {
               await _api.createMCPServer(
@@ -102,6 +104,7 @@ class _MCPScreenState extends State<MCPScreen> {
                 envVars: env,
                 args: args,
                 registryCredentials: registryCredentials,
+                toolSafetyOverrides: toolSafetyOverrides,
               );
             } else {
               await _api.updateMCPServer(
@@ -113,6 +116,7 @@ class _MCPScreenState extends State<MCPScreen> {
                 registryCredentials: registryCredentials.map(
                   (k, v) => MapEntry(k, v.toString()),
                 ),
+                toolSafetyOverrides: toolSafetyOverrides,
               );
             }
             Navigator.pop(ctx);
@@ -159,7 +163,14 @@ class _MCPScreenState extends State<MCPScreen> {
       final result = await _api.testMCPServer(server.id);
       if (mounted) {
         if (result['success'] == true) {
-          final tools = List<String>.from(result['tools']);
+          await _loadServers();
+          final tools = (result['tools'] as List<dynamic>? ?? [])
+              .map(
+                (tool) =>
+                    tool is Map ? tool['name']?.toString() : tool?.toString(),
+              )
+              .whereType<String>()
+              .toList();
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
@@ -690,11 +701,14 @@ class _ServerDialogContent extends StatefulWidget {
   final TextEditingController registryPasswordController;
   final List<_KVEntry> envEntries;
   final List<_KVEntry> argEntries;
+  final List<MCPTool> tools;
+  final Map<String, String> initialToolSafetyOverrides;
   final bool isEdit;
   final Future<void> Function(
     Map<String, dynamic> env,
     Map<String, dynamic> args,
     Map<String, dynamic> registryCredentials,
+    Map<String, String> toolSafetyOverrides,
   )
   onSave;
   final VoidCallback onCancel;
@@ -707,6 +721,8 @@ class _ServerDialogContent extends StatefulWidget {
     required this.registryPasswordController,
     required this.envEntries,
     required this.argEntries,
+    required this.tools,
+    required this.initialToolSafetyOverrides,
     required this.isEdit,
     required this.onSave,
     required this.onCancel,
@@ -718,6 +734,9 @@ class _ServerDialogContent extends StatefulWidget {
 
 class _ServerDialogContentState extends State<_ServerDialogContent> {
   bool _isSaving = false;
+  late final Map<String, String> _toolSafetyOverrides = {
+    ...widget.initialToolSafetyOverrides,
+  };
 
   Map<String, dynamic> _entriesToMap(List<_KVEntry> entries) {
     final map = <String, dynamic>{};
@@ -742,6 +761,101 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
       if (username.isNotEmpty) 'username': username,
       if (password.isNotEmpty) 'password': password,
     };
+  }
+
+  Widget _buildToolSafetyEditor() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Tool Safety',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Colors.white.withOpacity(0.4),
+            letterSpacing: 0.5,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Read-only tools may inspect data. Effectful tools may change data or trigger actions.',
+          style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.45)),
+        ),
+        const SizedBox(height: 10),
+        if (widget.tools.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              'No tools discovered yet. Test the connection to discover this server\'s tools.',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.white.withOpacity(0.45),
+              ),
+            ),
+          )
+        else
+          ...widget.tools.map((tool) {
+            final safety = _toolSafetyOverrides[tool.name] ?? 'effectful';
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white.withOpacity(0.05)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tool.name,
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 13,
+                      ),
+                    ),
+                    if (tool.description.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        tool.description,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.white.withOpacity(0.5),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                          value: 'read_only',
+                          label: Text('Read-only'),
+                          icon: Icon(Icons.visibility_outlined, size: 16),
+                        ),
+                        ButtonSegment(
+                          value: 'effectful',
+                          label: Text('Effectful'),
+                          icon: Icon(Icons.warning_amber_outlined, size: 16),
+                        ),
+                      ],
+                      selected: {safety},
+                      onSelectionChanged: (selection) => setState(() {
+                        _toolSafetyOverrides[tool.name] = selection.first;
+                      }),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+      ],
+    );
   }
 
   Widget _buildKVEditor({
@@ -1120,6 +1234,8 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                   keyHint: 'flag',
                   valueHint: 'value (optional)',
                 ),
+                const SizedBox(height: 20),
+                _buildToolSafetyEditor(),
                 const SizedBox(height: 32),
                 Row(
                   children: [
@@ -1160,6 +1276,7 @@ class _ServerDialogContentState extends State<_ServerDialogContent> {
                                     env,
                                     args,
                                     _registryCredentials(),
+                                    _toolSafetyOverrides,
                                   );
                                   if (mounted)
                                     setState(() => _isSaving = false);

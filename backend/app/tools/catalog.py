@@ -40,7 +40,13 @@ def classify_tool(tool_identity: str) -> dict:
     return {"risk": "unknown", "allowed": False, "retry_safe": False}
 
 
-def classify_tool_for_agent(tool_identity: str) -> dict:
+def mcp_tool_risk_profile(safety: str | None) -> dict:
+    if safety == "read_only":
+        return {"risk_level": "low", "category": "read", "effectful": False}
+    return {"risk_level": "unknown", "category": "write", "effectful": True}
+
+
+def classify_tool_for_agent(tool_identity: str, risk_profile: dict | None = None) -> dict:
     """Runtime catalog for agents, including the existing chat built-ins."""
     if tool_identity.startswith("builtin:") and tool_identity.removeprefix("builtin:") in AGENT_BUILTIN_TOOLS:
         effectful = tool_identity.removeprefix("builtin:") in EFFECTFUL_BUILTIN_TOOLS
@@ -52,7 +58,14 @@ def classify_tool_for_agent(tool_identity: str) -> dict:
             "retry_safe": not effectful,
         }
     if tool_identity.startswith("mcp:"):
-        return {"risk": "unknown", "category": "unknown", "effectful": True, "allowed": True, "retry_safe": False}
+        profile = risk_profile or mcp_tool_risk_profile(None)
+        return {
+            "risk": profile.get("risk_level", "unknown"),
+            "category": profile.get("category", "write"),
+            "effectful": bool(profile.get("effectful", True)),
+            "allowed": True,
+            "retry_safe": False,
+        }
     if tool_identity.startswith("reachy:"):
         return {"risk": "critical", "category": "physical", "effectful": True, "allowed": True, "retry_safe": False}
     return classify_tool(tool_identity)
@@ -66,3 +79,8 @@ def identity_for_descriptor(descriptor: dict, function_name: str) -> str | None:
     if function_name.startswith("reachy_"):
         return f"reachy:{function_name.removeprefix('reachy_')}"
     return None
+
+
+def risk_profile_for_descriptor(descriptor: dict) -> dict | None:
+    safety = descriptor.get("x-threadbot-mcp-safety")
+    return mcp_tool_risk_profile(safety) if safety in {"read_only", "effectful"} else None

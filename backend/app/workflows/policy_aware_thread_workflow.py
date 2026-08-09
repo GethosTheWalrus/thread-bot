@@ -60,6 +60,7 @@ class PolicyAwareThreadTurnWorkflow:
         if not started["started"]:
             return await self._finalize(request, "suppressed", started.get("reason", "not started"))
         protocol_v2 = workflow.patched("agent-turn-protocol-v2")
+        mcp_tool_safety_v1 = workflow.patched("policy-aware-mcp-tool-safety-v1")
         if protocol_v2:
             await workflow.execute_activity(append_progress_event, {"run_id": str(request.run_id), "event_type": "run_started"}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
         prepared = await workflow.execute_activity(prepare_runtime, {"runtime_snapshot_id": str(request.runtime_snapshot_id), "thread_id": str(request.thread_id), "agent_id": str(request.actor.actor_id), "route": context.stream_context.get("route", ""), "input_message_id": context.stream_context.get("input_message_id")}, start_to_close_timeout=timedelta(seconds=60), retry_policy=RetryPolicy(maximum_attempts=3))
@@ -101,18 +102,22 @@ class PolicyAwareThreadTurnWorkflow:
                 return await self._finalize(request, "succeeded", output)
             for proposal in proposals:
                 proposal = dict(proposal)
+                risk_profile = proposal.get("risk_profile") if mcp_tool_safety_v1 else None
                 if tool_calls >= context.max_tool_calls:
                     if protocol_v2:
                         messages.append({"role": "tool", "tool_call_id": proposal["tool_call_id"], "content": "Tool call limit reached"})
                         continue
                     return await self._finalize(request, "exhausted", last_text)
-                proposal["retry_safe"] = classify_tool_for_agent(proposal["tool_identity"]).get("retry_safe", False)
+                proposal["retry_safe"] = classify_tool_for_agent(proposal["tool_identity"], risk_profile).get("retry_safe", False)
                 proposal["agent_version"] = context.stream_context.get("agent_version", "unknown")
                 proposal["policy_version"] = context.stream_context.get("policy_version", str(context.policy_set_id or "default"))
                 proposal["credential_binding_id"] = context.credential_binding_ids[0] if context.credential_binding_ids else None
                 proposal["approval_expires_at"] = (deadline or workflow.now() + timedelta(seconds=300)).isoformat()
                 planned = await workflow.execute_activity(persist_planned_action, {"run_id": str(request.run_id), "proposal": proposal}, start_to_close_timeout=timedelta(seconds=60), retry_policy=RetryPolicy(maximum_attempts=3))
-                policy = await workflow.execute_activity(evaluate_policy_and_reserve_budget, {"run_id": str(request.run_id), "action_id": planned["action_id"], "tool_identity": proposal["tool_identity"], "request_hash": planned["request_hash"], "budget_profile_id": context.budget_profile_id, "workspace_id": str(request.workspace_id), "policy_version": proposal.get("policy_version", "default")}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
+                policy_args = {"run_id": str(request.run_id), "action_id": planned["action_id"], "tool_identity": proposal["tool_identity"], "request_hash": planned["request_hash"], "budget_profile_id": context.budget_profile_id, "workspace_id": str(request.workspace_id), "policy_version": proposal.get("policy_version", "default")}
+                if mcp_tool_safety_v1:
+                    policy_args["risk_profile"] = risk_profile
+                policy = await workflow.execute_activity(evaluate_policy_and_reserve_budget, policy_args, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
                 needs_approval = policy["effect"] == "require_approval" or bool(policy.get("requires_approval", False))
                 if policy["effect"] == "deny":
                     await workflow.execute_activity(transition_action_status, {"action_db_id": planned["action_db_id"], "run_id": str(request.run_id), "action_id": planned["action_id"], "expected": "planned", "target": "policy_denied", "event_type": "policy_decision"}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
@@ -179,7 +184,10 @@ class PolicyAwareThreadTurnWorkflow:
                 approval_transition = needs_approval if protocol_v2 else bool(policy.get("requires_approval"))
                 await workflow.execute_activity(transition_action_status, {"action_db_id": planned["action_db_id"], "run_id": str(request.run_id), "action_id": planned["action_id"], "expected": "awaiting_approval" if approval_transition else "planned", "target": "authorized", "authorization_ref": policy.get("authorization_ref", "unlimited"), "authorization_hash": policy.get("authorization_hash", planned["request_hash"]), "event_type": "authorization"}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
                 await workflow.execute_activity(transition_action_status, {"action_db_id": planned["action_db_id"], "run_id": str(request.run_id), "action_id": planned["action_id"], "expected": "authorized", "target": "executing", "event_type": "action_started"}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
-                authorization = await workflow.execute_activity(recheck_authorization, {"tool_identity": proposal["tool_identity"], "request_id": self._approval_request_id if approval_transition else None, "request_hash": planned["request_hash"]}, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
+                recheck_args = {"tool_identity": proposal["tool_identity"], "request_id": self._approval_request_id if approval_transition else None, "request_hash": planned["request_hash"]}
+                if mcp_tool_safety_v1:
+                    recheck_args["risk_profile"] = risk_profile
+                authorization = await workflow.execute_activity(recheck_authorization, recheck_args, start_to_close_timeout=timedelta(seconds=30), retry_policy=RetryPolicy(maximum_attempts=3))
                 if authorization["effect"] != "allow":
                     denied = {"schema_version": 1, "action_id": planned["action_id"], "action_revision": planned["revision"], "status": "failed", "display_content": "authorization recheck denied", "model_content": "authorization recheck denied", "error_code": "authorization_denied", "retry_safe": True}
                     await workflow.execute_activity(persist_action_result, {"run_id": str(request.run_id), "action_id": planned["action_id"], "result": denied}, start_to_close_timeout=timedelta(seconds=60), retry_policy=RetryPolicy(maximum_attempts=3))

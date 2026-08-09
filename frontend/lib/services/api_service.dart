@@ -513,6 +513,7 @@ class ApiService {
     Map<String, dynamic>? envVars,
     Map<String, dynamic>? args,
     Map<String, dynamic>? registryCredentials,
+    Map<String, String>? toolSafetyOverrides,
   }) async {
     final response = await _client.post(
       Uri.parse('$baseUrl/api/mcp'),
@@ -523,6 +524,7 @@ class ApiService {
         'env_vars': envVars ?? {},
         'args': args ?? {},
         'registry_credentials': registryCredentials ?? {},
+        'tool_safety_overrides': toolSafetyOverrides ?? {},
       }),
     );
 
@@ -575,6 +577,7 @@ class ApiService {
     Map<String, String> envVars, {
     Map<String, String>? args,
     Map<String, String>? registryCredentials,
+    Map<String, String>? toolSafetyOverrides,
   }) async {
     final response = await _client.patch(
       Uri.parse('$baseUrl/api/mcp/$serverId'),
@@ -585,6 +588,7 @@ class ApiService {
         'env_vars': envVars,
         'args': args ?? {},
         'registry_credentials': registryCredentials ?? {},
+        'tool_safety_overrides': toolSafetyOverrides ?? {},
       }),
     );
 

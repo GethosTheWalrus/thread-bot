@@ -1105,7 +1105,8 @@ async def discover_tools(args: dict) -> dict:
             return False
         # If the runtime config changed, force a refresh.
         current_hash = _config_hash(server.image, server.env_vars, server.args, server.registry_credentials)
-        if (server.cached_tools or {}).get("__config_hash__") != current_hash:
+        cached = server.cached_tools or {}
+        if not isinstance(cached, dict) or cached.get("__config_hash__") != current_hash:
             return False
         return True
 
@@ -1128,7 +1129,8 @@ async def discover_tools(args: dict) -> dict:
         cache_used = False
 
         if _cache_fresh(server):
-            cached_list = (server.cached_tools or {}).get("tools") or []
+            cached = server.cached_tools or {}
+            cached_list = (cached.get("tools") or []) if isinstance(cached, dict) else cached
             print(f"[cache] hit for {server.name} ({len(cached_list)} tools)", flush=True)
             cache_hits += 1
             cache_used = True
@@ -1140,6 +1142,7 @@ async def discover_tools(args: dict) -> dict:
                 if not tname:
                     continue
                 full_name = f"{server.name}_{tname}"
+                safety = (server.tool_safety_overrides or {}).get(tname)
                 mcp_tools_map[full_name] = {
                     "image": server.image,
                     "env_vars": None,  # not used on cache path
@@ -1147,6 +1150,7 @@ async def discover_tools(args: dict) -> dict:
                     "registry_credentials": None,
                     "original_name": tname,
                     "server_name": server.name,
+                    "safety": safety,
                 }
                 openai_tools.append({
                     "type": "function",
@@ -1156,6 +1160,7 @@ async def discover_tools(args: dict) -> dict:
                         "parameters": tschema,
                     },
                     "x-threadbot-identity": f"mcp:{server.name}:{tname}",
+                    "x-threadbot-mcp-safety": safety,
                 })
             # We don't have decrypted env/args here; if a tool ends up being
             # called on the cache path, re-decrypt in the execute path. For
@@ -1211,6 +1216,7 @@ async def discover_tools(args: dict) -> dict:
 
                         for tool in tools_result.tools:
                             full_name = f"{server.name}_{tool.name}"
+                            safety = (server.tool_safety_overrides or {}).get(tool.name)
                             mcp_tools_map[full_name] = {
                                 "image": server.image,
                                 "env_vars": decrypted_env,
@@ -1218,6 +1224,7 @@ async def discover_tools(args: dict) -> dict:
                                 "registry_credentials": decrypted_registry_credentials,
                                 "original_name": tool.name,
                                 "server_name": server.name,
+                                "safety": safety,
                             }
                             openai_tools.append({
                                 "type": "function",
@@ -1227,6 +1234,7 @@ async def discover_tools(args: dict) -> dict:
                                     "parameters": tool.inputSchema,
                                 },
                                 "x-threadbot-identity": f"mcp:{server.name}:{tool.name}",
+                                "x-threadbot-mcp-safety": safety,
                             })
             except Exception as e:
                 print(f"ERROR: Failed to load MCP server {server.name}: {e}", flush=True)

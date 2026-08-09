@@ -51,6 +51,7 @@ from app.models.schemas import (
     ThreadPinRequest,
     MCPServerCreate,
     MCPServerResponse,
+    MCPToolResponse,
     MCPTestResponse,
     ToolOverrideRequest,
     ToolOverridesResponse,
@@ -392,6 +393,26 @@ def _available_tools_from_cache(cached_tools) -> list[AvailableTool]:
         for t in cached_tools
         if isinstance(t, dict) and t.get("name")
     ]
+
+
+async def _build_mcp_server_response(server) -> MCPServerResponse:
+    from app.encryption import decrypt_dict
+
+    return MCPServerResponse(
+        id=server.id,
+        name=server.name,
+        image=server.image,
+        env_vars=await decrypt_dict(server.env_vars) or {},
+        args=await decrypt_dict(server.args) or {},
+        registry_credentials=await decrypt_dict(server.registry_credentials) or {},
+        tools=[
+            MCPToolResponse(name=tool.name, description=tool.description)
+            for tool in _available_tools_from_cache(server.cached_tools)
+        ],
+        tool_safety_overrides=server.tool_safety_overrides or {},
+        is_active=server.is_active,
+        created_at=server.created_at,
+    )
 
 
 async def _get_discord_link_for_thread(db: AsyncSession, thread_id: UUID):
@@ -2352,15 +2373,8 @@ async def delete_thread_llm_overrides_endpoint(
 
 @router.get("/mcp", response_model=list[MCPServerResponse])
 async def list_mcp_servers_endpoint(db: AsyncSession = Depends(get_db)):
-    from app.encryption import decrypt_dict
     servers = await get_mcp_servers(db)
-    result = []
-    for s in servers:
-        s.env_vars = await decrypt_dict(s.env_vars) or {}
-        s.args = await decrypt_dict(s.args) or {}
-        s.registry_credentials = await decrypt_dict(s.registry_credentials) or {}
-        result.append(s)
-    return result
+    return [await _build_mcp_server_response(server) for server in servers]
 
 
 @router.get("/skills", response_model=list[SkillResponse])
@@ -2418,7 +2432,6 @@ async def get_global_skill_overrides(db: AsyncSession = Depends(get_db)):
 
 @router.post("/mcp", response_model=MCPServerResponse)
 async def create_mcp_server_endpoint(request: MCPServerCreate, db: AsyncSession = Depends(get_db)):
-    from app.encryption import decrypt_dict
     server = await create_mcp_server(
         db,
         request.name,
@@ -2426,12 +2439,9 @@ async def create_mcp_server_endpoint(request: MCPServerCreate, db: AsyncSession 
         request.env_vars,
         request.args,
         request.registry_credentials,
+        request.tool_safety_overrides,
     )
-    # Return decrypted values so the frontend can display them
-    server.env_vars = await decrypt_dict(server.env_vars) or {}
-    server.args = await decrypt_dict(server.args) or {}
-    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
-    return server
+    return await _build_mcp_server_response(server)
 
 
 @router.delete("/mcp/{server_id}")
@@ -2444,14 +2454,10 @@ async def delete_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends
 
 @router.patch("/mcp/{server_id}/toggle", response_model=MCPServerResponse)
 async def toggle_mcp_server_endpoint(server_id: UUID, db: AsyncSession = Depends(get_db)):
-    from app.encryption import decrypt_dict
     server = await toggle_mcp_server(db, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
-    server.env_vars = await decrypt_dict(server.env_vars) or {}
-    server.args = await decrypt_dict(server.args) or {}
-    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
-    return server
+    return await _build_mcp_server_response(server)
 
 
 @router.patch("/mcp/{server_id}", response_model=MCPServerResponse)
@@ -2460,7 +2466,6 @@ async def update_mcp_server_endpoint(
     server_data: MCPServerCreate,
     db: AsyncSession = Depends(get_db)
 ):
-    from app.encryption import decrypt_dict
     server = await update_mcp_server(
         db, 
         server_id, 
@@ -2469,15 +2474,12 @@ async def update_mcp_server_endpoint(
         env_vars=server_data.env_vars,
         args=server_data.args,
         registry_credentials=server_data.registry_credentials,
+        tool_safety_overrides=server_data.tool_safety_overrides,
     )
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     await db.commit()
-    # Return decrypted values so the frontend can display them
-    server.env_vars = await decrypt_dict(server.env_vars) or {}
-    server.args = await decrypt_dict(server.args) or {}
-    server.registry_credentials = await decrypt_dict(server.registry_credentials) or {}
-    return server
+    return await _build_mcp_server_response(server)
 
 
 @router.post("/mcp/{server_id}/test", response_model=MCPTestResponse)
