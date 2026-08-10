@@ -497,43 +497,22 @@ async def apply_discord_server_tool_defaults(db, thread_id, guild_id: str) -> No
     )
 
     discord_overrides = await get_discord_server_tool_overrides(db, guild_id)
-    server_enabled = {
-        str(o.server_id): bool(o.enabled)
-        for o in discord_overrides
-        if o.tool_name is None
-    }
-    tool_enabled = {
-        (str(o.server_id), o.tool_name): bool(o.enabled)
-        for o in discord_overrides
-        if o.tool_name is not None
-    }
-    servers_with_tool_overrides = {server_id for server_id, _ in tool_enabled}
     servers = await get_mcp_servers(db)
     thread_overrides = []
     for server in servers:
         server_id = str(server.id)
-        if not server_enabled.get(server_id, False):
+        server_overrides = [o for o in discord_overrides if str(o.server_id) == server_id]
+        if not any(o.tool_name is None for o in server_overrides):
             thread_overrides.append({
                 "server_id": server.id,
                 "tool_name": None,
                 "enabled": False,
             })
-            continue
-
-        if server_id not in servers_with_tool_overrides:
-            continue
-
-        cached_tools = server.cached_tools or []
-        if isinstance(cached_tools, dict):
-            cached_tools = cached_tools.get("tools") or []
-        for tool in cached_tools:
-            tool_name = tool.get("name") if isinstance(tool, dict) else None
-            if tool_name and not tool_enabled.get((server_id, tool_name), False):
-                thread_overrides.append({
-                    "server_id": server.id,
-                    "tool_name": tool_name,
-                    "enabled": False,
-                })
+        thread_overrides.extend({
+            "server_id": server.id,
+            "tool_name": override.tool_name,
+            "enabled": bool(override.enabled),
+        } for override in server_overrides)
 
     await set_thread_tool_overrides(db, thread_id, thread_overrides)
 

@@ -2158,7 +2158,7 @@ async def set_discord_server_mcp_overrides_endpoint(
     request: DiscordServerMcpOverridesRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    from app.discord_integration import get_discord_guild
+    from app.discord_integration import apply_discord_server_tool_defaults, get_discord_guild
     from app.database.crud import get_mcp_servers
 
     server = await get_discord_server(db, guild_id)
@@ -2178,6 +2178,14 @@ async def set_discord_server_mcp_overrides_endpoint(
             for item in request.overrides
         ],
     )
+    linked_threads = list((await db.execute(
+        select(DiscordThreadLink).where(
+            DiscordThreadLink.guild_id == guild_id,
+            DiscordThreadLink.is_active == True,
+        )
+    )).scalars().all())
+    for link in linked_threads:
+        await apply_discord_server_tool_defaults(db, link.thread_id, guild_id)
     await db.commit()
 
     mcp_servers = await get_mcp_servers(db)
