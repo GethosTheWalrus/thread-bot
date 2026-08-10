@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0028_osrs_dps_skill"]
+    assert scripts.get_heads() == ["0029_osrs_dps_high_level_tool"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -41,6 +41,7 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0026_thread_approval_presets").down_revision == "0025_discord_approval_prompts"
     assert scripts.get_revision("0027_mcp_tool_safety_overrides").down_revision == "0026_thread_approval_presets"
     assert scripts.get_revision("0028_osrs_dps_skill").down_revision == "0027_mcp_tool_safety_overrides"
+    assert scripts.get_revision("0029_osrs_dps_high_level_tool").down_revision == "0028_osrs_dps_skill"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -166,6 +167,13 @@ def test_osrs_dps_skill_revision_is_idempotent_and_tool_driven():
     ):
         assert expected in revision
     assert 'RuntimeError("OSRS DPS skill migration is forward-only")' in revision
+
+
+def test_osrs_dps_high_level_tool_revision_preserves_custom_skill_content():
+    revision = (ROOT / "alembic/versions/0029_osrs_dps_high_level_tool.py").read_text()
+    for expected in ("calculate_dps", "replace(content, :old, :new)", "position(:old IN content) > 0"):
+        assert expected in revision
+    assert 'RuntimeError("OSRS DPS high-level tool migration is forward-only")' in revision
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():
