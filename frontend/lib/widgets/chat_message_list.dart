@@ -13,6 +13,7 @@ class ChatMessageList extends StatelessWidget {
   final bool isSending;
   final List<Widget> footerWidgets;
   final List<ActiveRunPresentation> activeRuns;
+  final Set<String> animatedMessageIds;
   final ValueChanged<String>? onRunTap;
 
   const ChatMessageList({
@@ -22,6 +23,7 @@ class ChatMessageList extends StatelessWidget {
     this.isSending = false,
     this.footerWidgets = const [],
     this.activeRuns = const [],
+    this.animatedMessageIds = const {},
     this.onRunTap,
   });
 
@@ -294,45 +296,108 @@ class ChatMessageList extends StatelessWidget {
         }
         final msg = entry as Message;
         final messageIndex = messages.indexOf(msg);
-        if (msg.isCompactionSummary) return _CompactionDivider(message: msg);
-        // Hide thinking messages claimed by an assistant message
-        if (msg.isThinking && claimedThinkingIndices.contains(messageIndex)) {
-          return const SizedBox.shrink();
-        }
-        // Unclaimed thinking (still streaming, no assistant response yet)
-        if (msg.isThinking) {
-          return _ThinkingBubble(message: msg);
-        }
-        // Hide tool_calls claimed by an assistant message
-        if (msg.isToolCall && claimedToolCallIndices.contains(messageIndex)) {
-          return const SizedBox.shrink();
-        }
-        // Unclaimed tool_call (no assistant message follows at all — rare edge case)
-        if (msg.isToolCall) {
+        late final Widget messageWidget;
+        if (msg.isCompactionSummary) {
+          messageWidget = _CompactionDivider(message: msg);
+        } else if (msg.isThinking &&
+            claimedThinkingIndices.contains(messageIndex)) {
+          messageWidget = const SizedBox.shrink();
+        } else if (msg.isThinking) {
+          messageWidget = _ThinkingBubble(message: msg);
+        } else if (msg.isToolCall &&
+            claimedToolCallIndices.contains(messageIndex)) {
+          messageWidget = const SizedBox.shrink();
+        } else if (msg.isToolCall) {
           final hasAssistantAfter = messages
               .skip(messageIndex + 1)
-              .any((m) => m.isAssistant);
-          return _ToolCallBubble(
+              .any((m) => m.isAssistant && m.content.isNotEmpty);
+          messageWidget = _ToolCallBubble(
             message: msg,
             isLoading: isSending && !hasAssistantAfter,
             results: toolCallResults[messageIndex] ?? [],
           );
+        } else if (msg.isToolResult &&
+            claimedResultIndices.contains(messageIndex)) {
+          messageWidget = const SizedBox.shrink();
+        } else if (msg.isToolResult) {
+          messageWidget = _ToolResultBubble(message: msg);
+        } else if (msg.isSystem) {
+          messageWidget = const SizedBox.shrink();
+        } else {
+          messageWidget = _ChatBubble(
+            message: msg,
+            preItems: assistantPreItems[messageIndex] ?? [],
+            timelineSteps: assistantTimelines[messageIndex] ?? [],
+            isLoading: isSending && msg.content.isEmpty,
+          );
         }
-        // Hide tool_results that are claimed by a tool_call group
-        if (msg.isToolResult && claimedResultIndices.contains(messageIndex)) {
-          return const SizedBox.shrink();
-        }
-        // Unclaimed tool_result (shouldn't happen, but render standalone just in case)
-        if (msg.isToolResult) return _ToolResultBubble(message: msg);
-        if (msg.isSystem) return const SizedBox.shrink();
-        return _ChatBubble(
-          message: msg,
-          preItems: assistantPreItems[messageIndex] ?? [],
-          timelineSteps: assistantTimelines[messageIndex] ?? [],
-          isLoading: isSending && msg.content.isEmpty,
+        return _MessageEntrance(
+          key: ValueKey('message-${msg.id}'),
+          animate: animatedMessageIds.contains(msg.id),
+          child: messageWidget,
         );
       },
     );
+  }
+}
+
+class _MessageEntrance extends StatefulWidget {
+  final Widget child;
+  final bool animate;
+
+  const _MessageEntrance({
+    super.key,
+    required this.child,
+    required this.animate,
+  });
+
+  @override
+  State<_MessageEntrance> createState() => _MessageEntranceState();
+}
+
+class _MessageEntranceState extends State<_MessageEntrance>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 350),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.animate) _controller.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessageEntrance oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.animate && !oldWidget.animate) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.animate && !_controller.isAnimating && _controller.value == 0) {
+      return widget.child;
+    }
+    final curved = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+    return FadeTransition(
+      opacity: curved,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, .025),
+          end: Offset.zero,
+        ).animate(curved),
+        child: widget.child,
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 }
 

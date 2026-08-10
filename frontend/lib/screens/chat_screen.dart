@@ -17,6 +17,7 @@ import 'package:threadbot/widgets/chat_input.dart';
 import 'package:threadbot/widgets/sidebar.dart';
 import 'package:threadbot/widgets/thread_participant_manager.dart';
 import 'package:threadbot/widgets/thread_approvals_panel.dart';
+import 'package:threadbot/utils/chat_reconciliation.dart';
 
 class ChatScreen extends StatefulWidget {
   final String? initialThreadId;
@@ -150,7 +151,8 @@ class _AgentSetupSheetState extends State<_AgentSetupSheet> {
   }
 }
 
-class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
+class _ChatScreenState extends State<ChatScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final ApiService _api;
   final ScrollController _scrollController = ScrollController();
   // No GlobalKey needed — use Builder + Scaffold.of() for drawer access
@@ -179,6 +181,16 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   int _contextEstimatedTokens = 0;
   int _contextWindow = 8192;
   Timer? _threadRefreshTimer;
+  Timer? _entranceClearTimer;
+  bool _isAppResumed = true;
+  bool _reconcileInFlight = false;
+  bool _reconcileQueued = false;
+  bool _reconcileForceQueued = false;
+  bool _reconcileAnimateQueued = true;
+  bool _reconcileDeferred = false;
+  int _threadGeneration = 0;
+  String? _reconnectThreadId;
+  Set<String> _animatedMessageIds = const {};
   WebSocketChannel? _broadcastChannel;
   Timer? _broadcastRetry;
   int _broadcastAttempt = 0;
@@ -204,6 +216,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
 
     _api = ApiService(onUnauthorized: widget.onUnauthorized);
     _autonomyApi = AutonomyApiService(onUnauthorized: widget.onUnauthorized);
@@ -215,10 +228,11 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     });
     _loadReachyBinding();
-    _threadRefreshTimer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) => _loadThreads(silent: true),
-    );
+    _threadRefreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_isAppResumed) return;
+      _loadThreads(silent: true);
+      _requestActiveThreadReconciliation();
+    });
     if (kIsWeb) _subscribeToBroadcast();
   }
 
@@ -250,6 +264,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
               }
             });
             _loadThreads(silent: true);
+            if (event['thread_id'] == _activeThreadId) {
+              _requestActiveThreadReconciliation();
+            }
           }
         }
       },
@@ -277,9 +294,21 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     _broadcastRetry?.cancel();
     _runPollTimer?.cancel();
     _threadRefreshTimer?.cancel();
+    _entranceClearTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final resumed = state == AppLifecycleState.resumed;
+    _isAppResumed = resumed;
+    if (resumed && mounted) {
+      _loadThreads(silent: true);
+      _requestActiveThreadReconciliation();
+    }
   }
 
   void _onScroll() {
@@ -331,7 +360,141 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
+  void _requestActiveThreadReconciliation({
+    bool force = false,
+    bool animateNewMessages = true,
+  }) {
+    if (_activeThreadId == null) return;
+    if (_reconcileQueued) {
+      force = force || _reconcileForceQueued;
+      animateNewMessages = animateNewMessages && _reconcileAnimateQueued;
+      _reconcileQueued = false;
+      _reconcileForceQueued = false;
+      _reconcileAnimateQueued = true;
+    }
+    if (!_isAppResumed) {
+      _reconcileQueued = true;
+      _reconcileForceQueued = _reconcileForceQueued || force;
+      _reconcileAnimateQueued = _reconcileAnimateQueued && animateNewMessages;
+      _reconcileDeferred = true;
+      return;
+    }
+    if (!force && _assistantPlaceholderIndex() >= 0) {
+      _reconcileDeferred = true;
+      _reconcileQueued = true;
+      _reconcileAnimateQueued = _reconcileAnimateQueued && animateNewMessages;
+      return;
+    }
+    if (_reconcileInFlight) {
+      _reconcileQueued = true;
+      _reconcileForceQueued = _reconcileForceQueued || force;
+      _reconcileAnimateQueued = _reconcileAnimateQueued && animateNewMessages;
+      return;
+    }
+    _reconcileActiveThread(
+      force: force,
+      animateNewMessages: animateNewMessages,
+    );
+  }
+
+  Future<void> _reconcileActiveThread({
+    bool force = false,
+    bool animateNewMessages = true,
+  }) async {
+    final threadId = _activeThreadId;
+    if (!_isAppResumed || threadId == null || _reconcileInFlight) return;
+    _reconcileInFlight = true;
+    final generation = _threadGeneration;
+    final wasAtBottom = _isAtBottom;
+    try {
+      final thread = await _api.getThread(threadId);
+      if (!mounted ||
+          !_isAppResumed ||
+          generation != _threadGeneration ||
+          threadId != _activeThreadId ||
+          (!force && _assistantPlaceholderIndex() >= 0)) {
+        if (!force && _assistantPlaceholderIndex() >= 0) {
+          _reconcileDeferred = true;
+        }
+        return;
+      }
+      final newIds = animateNewMessages
+          ? newlyPersistedMessageIds(_messages, thread.messages)
+          : const <String>{};
+      _reconcileDeferred = false;
+      setState(() {
+        _messages = thread.messages;
+        _activeThreadMode = thread.mode;
+        if (thread.mode != 'agent') _agent = null;
+        _threadAgentSummary = thread.agent;
+        _approvalPreset = thread.approvalPreset;
+        _participants = thread.agents;
+        _pendingApprovals = thread.pendingApprovals;
+        _discordLink = thread.discordLink;
+        _reachyBinding = ReachyBinding(
+          enabled: _reachyBinding?.enabled ?? false,
+          threadId: thread.reachyConnected
+              ? thread.id
+              : _reachyBinding?.threadId,
+          threadTitle: thread.reachyConnected
+              ? thread.title
+              : _reachyBinding?.threadTitle,
+          wakeWord: _reachyBinding?.wakeWord ?? 'Reachy',
+          taskQueue: _reachyBinding?.taskQueue ?? 'reachy-local',
+        );
+        _contextEstimatedTokens = thread.estimatedTokens;
+        _contextWindow = thread.contextWindow;
+        _isSending = thread.isGenerating && thread.mode != 'agent';
+        _animatedMessageIds = newIds;
+      });
+      _entranceClearTimer?.cancel();
+      if (newIds.isNotEmpty) {
+        _entranceClearTimer = Timer(const Duration(milliseconds: 450), () {
+          if (mounted) setState(() => _animatedMessageIds = const {});
+        });
+      }
+      _reconcileRunSummaries(thread.activeRuns, thread.id, loadDetails: false);
+      if (shouldFollowIncomingMessages(
+        wasAtBottomBeforeFetch: wasAtBottom,
+        isAtBottomWhenApplying: _isAtBottom,
+      )) {
+        _scrollToBottom();
+      }
+      final agentChanged = thread.agent?.id != _agent?.id;
+      if (thread.mode == 'agent' && agentChanged) {
+        _loadAgentForThread(thread, generation: generation);
+      }
+    } catch (_) {
+    } finally {
+      _reconcileInFlight = false;
+      if (mounted &&
+          _isAppResumed &&
+          (_reconcileQueued || _reconcileDeferred)) {
+        final forceQueued = _reconcileForceQueued;
+        final animateQueued = _reconcileAnimateQueued;
+        _reconcileQueued = false;
+        _reconcileForceQueued = false;
+        _reconcileAnimateQueued = true;
+        if (shouldDispatchQueuedReconciliation(
+          forceQueued: forceQueued,
+          hasAssistantPlaceholder: _assistantPlaceholderIndex() >= 0,
+        )) {
+          _reconcileDeferred = false;
+          _requestActiveThreadReconciliation(
+            force: forceQueued,
+            animateNewMessages: animateQueued,
+          );
+        } else {
+          _reconcileQueued = true;
+          _reconcileAnimateQueued = animateQueued;
+        }
+      }
+    }
+  }
+
   Future<void> _loadThread(String threadId) async {
+    _threadGeneration++;
+    final generation = _threadGeneration;
     final switchingThread = _activeThreadId != threadId;
     _runPollTimer?.cancel();
     final knownThread = _threads.where((t) => t.id == threadId).firstOrNull;
@@ -343,7 +506,14 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
       // Preserve the displayed mode and agent while the request is in flight.
       // In particular, do not briefly turn a generating agent thread into chat.
-      if (switchingThread) _resetRunTracking();
+      if (switchingThread) {
+        _resetRunTracking();
+        _animatedMessageIds = const {};
+        _reconcileQueued = false;
+        _reconcileForceQueued = false;
+        _reconcileAnimateQueued = true;
+        _reconcileDeferred = false;
+      }
       _isSending =
           knownThread?.isGenerating == true && knownThread?.mode != 'agent';
       _error = null;
@@ -356,7 +526,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         uri: Uri.parse('/thread/$threadId'),
       );
       final thread = await _api.getThread(threadId);
-      if (mounted && _activeThreadId == threadId) {
+      if (mounted &&
+          _activeThreadId == threadId &&
+          generation == _threadGeneration) {
         setState(() {
           _messages = thread.messages;
           _activeThreadMode = thread.mode;
@@ -390,13 +562,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         if (thread.agents.isEmpty) {
           try {
             final roster = await _api.getThreadAgents(threadId);
-            if (mounted && _activeThreadId == threadId) {
+            if (mounted &&
+                _activeThreadId == threadId &&
+                generation == _threadGeneration) {
               setState(() => _participants = roster);
             }
           } catch (_) {}
         }
-        await _loadAgentForThread(thread);
-        if (!mounted || _activeThreadId != threadId) return;
+        await _loadAgentForThread(thread, generation: generation);
+        if (!mounted ||
+            _activeThreadId != threadId ||
+            generation != _threadGeneration)
+          return;
 
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
@@ -410,7 +587,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      if (mounted && _activeThreadId == threadId)
+      if (mounted &&
+          _activeThreadId == threadId &&
+          generation == _threadGeneration)
         setState(() {
           _error = 'Failed to load thread';
           _isLoadingMessages = false;
@@ -432,7 +611,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _loadAgentForThread(Thread thread) async {
+  Future<void> _loadAgentForThread(Thread thread, {int? generation}) async {
     if (thread.mode != 'agent' || thread.agent == null) {
       if (mounted && _activeThreadId == thread.id) {
         setState(() => _agent = null);
@@ -442,13 +621,18 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
     try {
       final summary = thread.agent!;
       final agent = await _autonomyApi.agent(summary.id);
-      if (!mounted || _activeThreadId != thread.id) return;
+      if (!mounted ||
+          _activeThreadId != thread.id ||
+          (generation != null && generation != _threadGeneration))
+        return;
       setState(() => _agent = agent);
       final runs = await _autonomyApi.runs(agent.id);
       final active = runs.items.where(
         (run) => run.threadId == thread.id && !_isTerminalRun(run.status),
       );
-      if (mounted && _activeThreadId == thread.id) {
+      if (mounted &&
+          _activeThreadId == thread.id &&
+          (generation == null || generation == _threadGeneration)) {
         for (final run in active) _upsertRun(run);
         _startRunStatus();
       }
@@ -478,8 +662,9 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   void _reconcileRunSummaries(
     List<ThreadRunSummary> summaries,
-    String threadId,
-  ) {
+    String threadId, {
+    bool loadDetails = true,
+  }) {
     final ids = summaries.map((r) => r.id).where((id) => id.isNotEmpty).toSet();
     setState(() {
       for (final summary in summaries) {
@@ -507,7 +692,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       }
     });
     for (final summary in summaries) {
-      if (!_isTerminalRun(summary.status)) {
+      if (loadDetails && !_isTerminalRun(summary.status)) {
         _loadRunDetail(summary.id, _runGeneration);
       }
     }
@@ -561,20 +746,13 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
   /// Silently reload messages from DB without showing a loading spinner.
   /// Called after [DONE] when all messages are guaranteed persisted.
-  Future<void> _reloadThreadSilently() async {
-    if (_activeThreadId == null) return;
-    try {
-      final thread = await _api.getThread(_activeThreadId!);
-      if (mounted) {
-        setState(() {
-          _messages = thread.messages;
-          _contextEstimatedTokens = thread.estimatedTokens;
-          _contextWindow = thread.contextWindow;
-        });
-        _scrollToBottom();
-      }
-    } catch (_) {
-      // Silent — keep temp messages visible if reload fails
+  Future<void> _reloadThreadSilently({bool animateNewMessages = true}) async {
+    _requestActiveThreadReconciliation(
+      force: true,
+      animateNewMessages: animateNewMessages,
+    );
+    while (_reconcileInFlight && mounted) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
     }
   }
 
@@ -584,7 +762,10 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
   /// generation's partial results), adds a placeholder, and replays buffered
   /// events.  Older conversation history is preserved.
   Future<void> _reconnectToStream(String threadId) async {
-    if (_isSending) return;
+    if (_assistantPlaceholderIndex() >= 0 || _reconnectThreadId == threadId) {
+      return;
+    }
+    _reconnectThreadId = threadId;
 
     final tempIds = <String>[];
 
@@ -622,7 +803,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
 
       if (mounted) {
         if (_activeThreadId != null) {
-          await _reloadThreadSilently();
+          await _reloadThreadSilently(animateNewMessages: false);
         }
         setState(() {
           _isSending = false;
@@ -637,6 +818,8 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
         });
         // Silently fail — at least the DB messages are shown
       }
+    } finally {
+      if (_reconnectThreadId == threadId) _reconnectThreadId = null;
     }
   }
 
@@ -997,7 +1180,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
       // the final assistant response). Do one clean reload.
       if (mounted) {
         if (_activeThreadId != null) {
-          await _reloadThreadSilently();
+          await _reloadThreadSilently(animateNewMessages: false);
         }
         setState(() {
           _isSending = false;
@@ -2293,6 +2476,7 @@ class _ChatScreenState extends State<ChatScreen> with TickerProviderStateMixin {
           child: ChatMessageList(
             messages: _messages,
             scrollController: _scrollController,
+            animatedMessageIds: _animatedMessageIds,
             isSending: _isSending,
             activeRuns:
                 (_activeRuns.values.toList()..sort((a, b) {
