@@ -21,7 +21,7 @@ spec:
         - name: gitlab-registry-secret
       containers:
         - name: migrate
-          image: git.home:5050/mike/thread-bot/backend:80f4eba6
+          image: git.home:5050/mike/thread-bot/backend:c15ae528
           imagePullPolicy: Always
           command: ["python", "-m", "alembic", "upgrade", "head"]
           envFrom:
