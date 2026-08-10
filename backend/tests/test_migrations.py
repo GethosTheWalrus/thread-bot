@@ -12,7 +12,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0027_mcp_tool_safety_overrides"]
+    assert scripts.get_heads() == ["0028_osrs_dps_skill"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -40,6 +40,7 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0025_discord_approval_prompts").down_revision == "0024_system_moderators"
     assert scripts.get_revision("0026_thread_approval_presets").down_revision == "0025_discord_approval_prompts"
     assert scripts.get_revision("0027_mcp_tool_safety_overrides").down_revision == "0026_thread_approval_presets"
+    assert scripts.get_revision("0028_osrs_dps_skill").down_revision == "0027_mcp_tool_safety_overrides"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -150,6 +151,21 @@ def test_mcp_tool_safety_override_revision_and_model_match():
     column = Base.metadata.tables["mcp_servers"].c.tool_safety_overrides
     assert not column.nullable
     assert str(column.server_default.arg) == "'{}'::jsonb"
+
+
+def test_osrs_dps_skill_revision_is_idempotent_and_tool_driven():
+    revision = (ROOT / "alembic/versions/0028_osrs_dps_skill.py").read_text()
+    for expected in (
+        "OSRS_DPS_SKILL",
+        "OSRS DPS calculation",
+        "use_skill",
+        "hydrate_player",
+        "compute_basic",
+        "engine_info",
+        "WHERE NOT EXISTS",
+    ):
+        assert expected in revision
+    assert 'RuntimeError("OSRS DPS skill migration is forward-only")' in revision
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():
