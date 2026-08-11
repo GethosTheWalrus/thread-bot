@@ -10,6 +10,7 @@ from temporalio.workflow import (
 )
 from temporalio.common import RetryPolicy
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -59,6 +60,20 @@ def _filter_agent_tools(openai_tools: list[dict], mcp_tools_map: dict, selected_
             if name in mcp_tools_map:
                 filtered_map[name] = mcp_tools_map[name]
     return filtered, filtered_map
+
+
+def canonical_tool_call_key(tool_name: str, arguments: str | dict | None) -> tuple[str, str]:
+    """Return a stable key for semantically identical tool calls."""
+    import json
+    try:
+        parsed = json.loads(arguments or "{}") if isinstance(arguments, str) else (arguments or {})
+        normalized = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        normalized = str(arguments or "{}").strip()
+    return str(tool_name).strip().casefold(), normalized
+
+
+_canonical_tool_call_key = canonical_tool_call_key
 
 
 def _reachy_tool_announcement(tool_name: str, args: str) -> str:
@@ -123,6 +138,59 @@ def _tool_result_succeeded(content: str) -> bool:
     return not content.startswith(("Error:", "Error executing")) and content != "Tool not found"
 
 
+class _InFlightToolCallCoordinator:
+    """Coordinate duplicate tool calls without serializing unrelated calls."""
+
+    _DUPLICATE_PREFIX = (
+        "[DUPLICATE TOOL CALL SUPPRESSED] This identical call was already executed. "
+        "Use the cached result below; if it was unsuccessful, change the arguments before retrying.\n"
+    )
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, str], str] = {}
+        self._in_flight: dict[tuple[str, str], asyncio.Future[str]] = {}
+        self._lock = asyncio.Lock()
+
+    async def run(self, key: tuple[str, str], operation) -> str:
+        async with self._lock:
+            if key in self._cache:
+                return self._DUPLICATE_PREFIX + self._cache[key]
+            future = self._in_flight.get(key)
+            if future is None:
+                future = asyncio.get_running_loop().create_future()
+                self._in_flight[key] = future
+                owner = True
+            else:
+                owner = False
+
+        if not owner:
+            return self._DUPLICATE_PREFIX + await asyncio.shield(future)
+
+        try:
+            try:
+                content = str(await operation())
+            except Exception as exc:
+                content = f"Error executing tool: {exc}"
+            async with self._lock:
+                self._cache[key] = content
+                self._in_flight.pop(key, None)
+                future.set_result(content)
+            return content
+        except asyncio.CancelledError:
+            async with self._lock:
+                self._in_flight.pop(key, None)
+                if not future.done():
+                    future.cancel()
+            raise
+        except BaseException as exc:
+            async with self._lock:
+                self._in_flight.pop(key, None)
+                if not future.done():
+                    future.set_exception(exc)
+                    future.exception()
+            raise
+
+
 @defn
 class RunThreadWorkflow:
     """Main workflow for handling a chat interaction.
@@ -141,7 +209,7 @@ class RunThreadWorkflow:
         self._events = self._stream.topic("events", type=dict)
         self._continue_decision: bool | None = None
         self._approval_signals: set[str] = set()
-        self._agent_tool_lock = asyncio.Lock()
+        self._agent_tool_coordinator = _InFlightToolCallCoordinator()
         self._successful_agent_tool = False
 
     @signal
@@ -661,12 +729,10 @@ class RunThreadWorkflow:
                 profile=risk_profile,
                 execute=execute_tool,
             ) -> str:
-                if not approval_policy:
-                    content = await execute(ctx, args)
-                    if _tool_result_succeeded(content):
-                        self._successful_agent_tool = True
-                    return content
-                async with self._agent_tool_lock:
+                key = canonical_tool_call_key(identity, args)
+                async def operation() -> str:
+                    if not approval_policy:
+                        return await execute(ctx, args)
                     return await self._execute_gated_agent_tool(
                         identity=identity,
                         arguments=args or "{}",
@@ -677,6 +743,11 @@ class RunThreadWorkflow:
                         executor=lambda stable_id: execute(ctx, args, stable_id),
                         risk_profile=profile,
                     )
+
+                content = await self._agent_tool_coordinator.run(key, operation)
+                if _tool_result_succeeded(content):
+                    self._successful_agent_tool = True
+                return content
 
             tools.append(
                 FunctionTool(
@@ -1730,6 +1801,13 @@ class RunThreadWorkflow:
                     "Highest priority thread-specific instructions (follow these over any other guidance below):\n"
                     f"{custom_system_prompt}"
                 )
+            selected_loadout = llm_config.get("osrs_loadout")
+            if selected_loadout and not routing_only:
+                instructions_parts.append(
+                    "AUTHORITATIVE OSRS LOADOUT (runtime snapshot; use exactly as supplied):\n"
+                    + json.dumps(selected_loadout, sort_keys=True, separators=(",", ":"))
+                    + "\nNever reconstruct, hydrate, omit, or silently alter this loadout. For gear comparisons, make exactly one calculate_dps call with this base loadout and all requested variants. Verify the tool's echoed resolved equipment/loadout matches the requested setup; if it does not, report the mismatch and do not guess. Never repeat an identical tool call; change arguments or explain the failure."
+                )
             heartbeat_recurring_mandate = workflow.patched(
                 "heartbeat-recurring-mandate-v2"
             )
@@ -1849,6 +1927,7 @@ class RunThreadWorkflow:
                 full_response_content = ""
                 reasoning_buffer = ""
                 max_turns_exceeded = False
+                self._agent_tool_coordinator = _InFlightToolCallCoordinator()
                 result = Runner.run_streamed(
                     agent,
                     input=self._agents_input(

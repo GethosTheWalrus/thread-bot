@@ -7,6 +7,7 @@ import 'package:threadbot/screens/agent_detail_screen.dart';
 import 'package:threadbot/screens/mcp_screen.dart';
 import 'package:threadbot/screens/settings_screen.dart';
 import 'package:threadbot/screens/skills_screen.dart';
+import 'package:threadbot/screens/osrs_loadouts_screen.dart';
 import 'package:threadbot/services/autonomy_api.dart';
 
 Route<dynamic> appRoute(RouteSettings settings, AutonomyApiService api) {
@@ -43,6 +44,11 @@ Route<dynamic> appRoute(RouteSettings settings, AutonomyApiService api) {
   if (path == '/settings')
     return MaterialPageRoute(
       builder: (_) => SettingsScreen(onUnauthorized: api.onUnauthorized),
+      settings: settings,
+    );
+  if (path == '/osrs-loadouts')
+    return MaterialPageRoute(
+      builder: (_) => const OsrsLoadoutsScreen(),
       settings: settings,
     );
   if (parts.length == 2 && parts[0] == 'thread')

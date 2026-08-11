@@ -1685,6 +1685,7 @@ async def start_discord_reply_workflow(
     config = await _load_fresh_discord_config()
     llm_config = get_llm_config().copy()
     from app.database import AsyncSessionLocal
+    from sqlalchemy import select
     from app.database.crud import get_enabled_thread_skills, get_thread_tool_overrides
 
     async with AsyncSessionLocal() as db:
@@ -1716,6 +1717,14 @@ async def start_discord_reply_workflow(
         thread_llm_overrides = await get_thread_llm_overrides(db, thread_id)
         if thread_llm_overrides:
             llm_config = apply_thread_llm_overrides(llm_config, thread_llm_overrides)
+        if "osrs_loadout" not in llm_config:
+            from app.models.models import Thread
+            from app.services.osrs_loadouts import resolve_thread_loadout, to_mcp_calculate_dps_loadout
+            thread = await db.scalar(select(Thread).where(Thread.id == thread_id))
+            if thread:
+                selected_loadout, _ = await resolve_thread_loadout(db, thread.workspace_id, thread_id)
+                if selected_loadout:
+                    llm_config["osrs_loadout"] = to_mcp_calculate_dps_loadout(selected_loadout)
     llm_config["discord"] = {
         "enabled": config.get("enabled"),
         "bot_token": config.get("bot_token"),

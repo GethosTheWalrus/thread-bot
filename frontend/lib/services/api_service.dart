@@ -6,6 +6,7 @@ import 'package:threadbot/models/thread.dart';
 import 'package:threadbot/models/mcp_server.dart';
 import 'package:threadbot/models/skill.dart';
 import 'package:threadbot/models/security.dart';
+import 'package:threadbot/models/osrs_loadout.dart';
 import 'package:flutter/foundation.dart'; // For kIsWeb
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -28,6 +29,172 @@ class ApiService {
     final uri = Uri.parse(baseUrl);
     final scheme = uri.scheme == 'https' ? 'wss' : 'ws';
     return uri.replace(scheme: scheme).toString();
+  }
+
+  // ── OSRS loadouts ──────────────────────────────────────────────────
+  Future<List<OsrsLoadout>> getOsrsLoadouts() async {
+    final r = await _client.get(Uri.parse('$baseUrl/api/osrs/loadouts'));
+    if (r.statusCode == 200)
+      return (jsonDecode(r.body) as List)
+          .map((x) => OsrsLoadout.fromJson(Map<String, dynamic>.from(x)))
+          .toList();
+    throw Exception('Failed to load OSRS loadouts: ${r.statusCode}');
+  }
+
+  Future<OsrsLoadout> getOsrsLoadout(String id) async =>
+      _osrsLoadoutRequest('GET', '/loadouts/$id');
+  Future<OsrsLoadout> createOsrsLoadout({
+    required String name,
+    String? description,
+    required OsrsLoadoutPayload loadout,
+    bool isDefault = false,
+    String sourceType = 'manual',
+    String? sourceRef,
+  }) async => _osrsLoadoutRequest(
+    'POST',
+    '/loadouts',
+    body: {
+      'name': name,
+      'description': description,
+      'loadout': loadout.toJson(),
+      'is_default': isDefault,
+      'source_type': sourceType,
+      'source_ref': sourceRef,
+    },
+  );
+  Future<OsrsLoadout> updateOsrsLoadout(
+    String id, {
+    required int expectedRevision,
+    String? name,
+    String? description,
+    OsrsLoadoutPayload? loadout,
+    bool? isDefault,
+  }) async => _osrsLoadoutRequest(
+    'PUT',
+    '/loadouts/$id',
+    body: {
+      'expected_revision': expectedRevision,
+      if (name != null) 'name': name,
+      if (description != null) 'description': description,
+      if (loadout != null) 'loadout': loadout.toJson(),
+      if (isDefault != null) 'is_default': isDefault,
+    },
+  );
+  Future<OsrsLoadout> cloneOsrsLoadout(String id, String name) async =>
+      _osrsLoadoutRequest('POST', '/loadouts/$id/clone', body: {'name': name});
+  Future<OsrsLoadout> setOsrsDefault(String id) async =>
+      _osrsLoadoutRequest('POST', '/loadouts/$id/default');
+  Future<void> deleteOsrsLoadout(String id) async {
+    final r = await _client.delete(Uri.parse('$baseUrl/api/osrs/loadouts/$id'));
+    if (r.statusCode != 200)
+      throw Exception('Failed to delete loadout: ${r.statusCode}');
+  }
+
+  Future<Map<String, dynamic>> getOsrsMetadata() async {
+    final data = await _jsonOsrs('GET', '/metadata');
+    return data is Map
+        ? Map<String, dynamic>.from(data)
+        : <String, dynamic>{'items': data};
+  }
+
+  Future<List<Map<String, dynamic>>> searchOsrsEquipment(
+    String q, {
+    String? slot,
+  }) async {
+    final data = await _jsonOsrs(
+      'GET',
+      '/equipment/search?q=${Uri.encodeQueryComponent(q)}${slot == null ? '' : '&slot=$slot'}',
+    );
+    final list = data is List
+        ? data
+        : data is Map
+        ? (data['items'] ?? data['results'] ?? data['candidates'] ?? [])
+        : const [];
+    return (list is List ? list : const [])
+        .whereType<Map>()
+        .map((x) => Map<String, dynamic>.from(x))
+        .toList();
+  }
+
+  Future<dynamic> previewOsrsWiki(String link) async =>
+      _jsonOsrs('POST', '/wiki/preview', body: {'link': link});
+  Future<List<OsrsLoadout>> commitOsrsWiki(
+    List<Map<String, dynamic>> loadouts,
+  ) async {
+    final data = await _jsonOsrs(
+      'POST',
+      '/wiki/commit',
+      body: {'loadouts': loadouts},
+    );
+    return (data as List)
+        .map((x) => OsrsLoadout.fromJson(Map<String, dynamic>.from(x)))
+        .toList();
+  }
+
+  Future<List<String>> getThreadOsrsLoadouts(String threadId) async {
+    final data = await _jsonOsrs('GET', '/threads/$threadId/loadouts');
+    return (data as List).map((x) => '$x').toList();
+  }
+
+  Future<OsrsLoadout> getThreadOsrsLoadout(String threadId) async =>
+      _osrsLoadoutRequest('GET', '/threads/$threadId/loadout');
+  Future<OsrsLoadout> bindThreadOsrsLoadout(
+    String threadId,
+    String loadoutId,
+  ) async => _osrsLoadoutRequest(
+    'PUT',
+    '/threads/$threadId/loadout',
+    body: {'loadout_id': loadoutId},
+  );
+  Future<void> unbindThreadOsrsLoadout(String threadId) async {
+    final r = await _client.delete(
+      Uri.parse('$baseUrl/api/osrs/threads/$threadId/loadout'),
+    );
+    if (r.statusCode != 200)
+      throw Exception('Failed to unbind loadout: ${r.statusCode}');
+  }
+
+  Future<dynamic> _jsonOsrs(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/osrs$path');
+    final r = method == 'POST'
+        ? await _client.post(
+            uri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+        : await _client.get(uri);
+    if (r.statusCode < 200 || r.statusCode >= 300)
+      throw Exception('OSRS request failed: ${r.statusCode} ${r.body}');
+    return jsonDecode(r.body);
+  }
+
+  Future<OsrsLoadout> _osrsLoadoutRequest(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+  }) async {
+    final uri = Uri.parse('$baseUrl/api/osrs$path');
+    final r = switch (method) {
+      'GET' => await _client.get(uri),
+      'PUT' => await _client.put(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ),
+      'POST' => await _client.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(body),
+      ),
+      _ => throw Exception('Unsupported request'),
+    };
+    if (r.statusCode < 200 || r.statusCode >= 300)
+      throw Exception('OSRS request failed: ${r.statusCode} ${r.body}');
+    return OsrsLoadout.fromJson(Map<String, dynamic>.from(jsonDecode(r.body)));
   }
 
   // ── Threads ───────────────────────────────────────────────────────

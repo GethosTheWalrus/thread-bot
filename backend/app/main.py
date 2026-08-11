@@ -8,6 +8,7 @@ from app.api.autonomy import router as autonomy_router
 from app.api.phase2 import router as phase2_router, public_router as phase2_public_router
 from app.api.phase3 import router as phase3_router
 from app.api.phase4 import router as phase4_router
+from app.api.osrs import router as osrs_router
 
 
 @asynccontextmanager
@@ -132,6 +133,7 @@ app.include_router(phase2_router)
 app.include_router(phase2_public_router)
 app.include_router(phase3_router)
 app.include_router(phase4_router)
+app.include_router(osrs_router)
 
 
 @app.get("/health")

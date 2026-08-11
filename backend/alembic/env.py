@@ -12,6 +12,7 @@ from app.models import agent_models, run_models, policy_models, budget_models, r
 from app.models import phase2_models  # noqa: F401
 from app.models import phase3_models  # noqa: F401
 from app.models import phase4_models  # noqa: F401
+from app.models import osrs_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

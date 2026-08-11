@@ -974,6 +974,7 @@ async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -
         from app.database import AsyncSessionLocal
         from app.database.crud import get_thread_llm_overrides
         from app.config import apply_thread_llm_overrides
+        from app.services.osrs_loadouts import resolve_thread_loadout, to_mcp_calculate_dps_loadout
 
         async with AsyncSessionLocal() as setup_db:
             try:
@@ -986,6 +987,12 @@ async def _start_thread_turn(thread_id: str, prompt: str, reachy_config: dict) -
                 llm_config = apply_thread_llm_overrides(llm_config, thread_overrides)
             else:
                 print(f"[reachy] No thread LLM overrides found for {thread_id}", flush=True)
+            if "osrs_loadout" not in llm_config:
+                selected_loadout, _ = await resolve_thread_loadout(
+                    setup_db, thread.workspace_id, UUID(thread_id)
+                )
+                if selected_loadout:
+                    llm_config["osrs_loadout"] = to_mcp_calculate_dps_loadout(selected_loadout)
     except Exception as exc:
         print(f"[reachy] failed to apply thread LLM overrides: {exc}", flush=True)
 

@@ -28,6 +28,7 @@ from app.models import (  # noqa: F401
     policy_models,
     run_models,
     runtime_models,
+    osrs_models,
 )
 
 

@@ -17,6 +17,8 @@ def test_reachy_chat_and_agent_threads_use_distinct_execution_paths():
     assert "input_message_id=input_message.id" in source
     assert "TriggerDispatchWorkflow.run" in source
     assert "RunThreadWorkflow.run" in source
+    assert "thread.workspace_id" in source
+    assert "resolve_thread_loadout" in source
 
 
 def test_reachy_agent_turn_waits_for_durable_agent_result():

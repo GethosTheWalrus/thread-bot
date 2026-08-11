@@ -1,8 +1,13 @@
 import asyncio
+import json
 
 from temporalio.client import Client as TemporalClient
 
 from app.config import get_discord_config
+
+
+def escape_like_pattern(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 async def run_discord_bot(temporal_client: TemporalClient) -> None:
@@ -23,6 +28,14 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
     except ImportError as exc:
         print(f"[discord] slash commands disabled; discord.py is not installed: {exc}", flush=True)
         return
+
+    from app.database import AsyncSessionLocal
+    from app.security import LOCAL_WORKSPACE_ID
+    from app.models.osrs_models import OsrsLoadout
+    from app.services import osrs_loadouts as loadout_service
+    from app import discord_loadouts as loadouts
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
 
     intents = discord.Intents.default()
     intents.message_content = True
@@ -121,6 +134,197 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         except Exception as exc:
             print(f"[discord] slash command failed: {exc}", flush=True)
             await interaction.followup.send(f"Failed to start ThreadBot thread: {exc}", ephemeral=True)
+
+    loadout_group = app_commands.Group(name="loadout", description="Manage OSRS DPS loadouts")
+    bot.tree.add_command(loadout_group)
+
+    async def _name_autocomplete(interaction, current: str):
+        async with AsyncSessionLocal() as db:
+            rows = (await db.scalars(select(OsrsLoadout.name).where(
+                OsrsLoadout.workspace_id == LOCAL_WORKSPACE_ID,
+                OsrsLoadout.name.ilike(
+                    f"%{escape_like_pattern(current)}%", escape="\\"
+                )).order_by(OsrsLoadout.name).limit(25))).all()
+        return [app_commands.Choice(name=name[:100], value=name) for name in rows]
+
+    def _thread_id(interaction):
+        return str(interaction.channel.id) if isinstance(interaction.channel, discord.Thread) else None
+
+    @loadout_group.command(name="list", description="List your loadouts")
+    async def loadout_list(interaction):
+        await interaction.response.defer(ephemeral=True)
+        async with AsyncSessionLocal() as db:
+            rows = await loadout_service.list_loadouts(db, LOCAL_WORKSPACE_ID)
+        text = "\n".join(f"• **{row['name']}** (revision {row['revision']})" for row in rows) or "No loadouts yet."
+        await interaction.followup.send(text, ephemeral=True)
+
+    @loadout_group.command(name="create", description="Create a safe empty starter loadout")
+    @app_commands.describe(name="Unique loadout name")
+    async def loadout_create(interaction, name: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            async with AsyncSessionLocal() as db:
+                row = await loadouts.create(db, LOCAL_WORKSPACE_ID, name.strip(), interaction.user.id)
+                await db.commit()
+            await interaction.followup.send(f"Created **{row['name']}**.", ephemeral=True)
+        except IntegrityError:
+            await interaction.followup.send("A loadout with that name already exists.", ephemeral=True)
+
+    @loadout_group.command(name="import", description="Import loadouts from an OSRS Wiki DPS link")
+    @app_commands.describe(link="OSRS Wiki DPS calculator link")
+    async def loadout_import(interaction, link: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            async with AsyncSessionLocal() as db:
+                rows = await loadouts.import_link(db, LOCAL_WORKSPACE_ID, link.strip(), interaction.user.id)
+                await db.commit()
+            await interaction.followup.send("Imported: " + (", ".join(f"**{x['name']}**" for x in rows) if rows else "no loadouts found."), ephemeral=True)
+        except Exception as exc:
+            await interaction.followup.send(f"Import failed: {exc}", ephemeral=True)
+
+    @loadout_group.command(name="show", description="Show a loadout")
+    @app_commands.describe(name="Loadout name")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    async def loadout_show(interaction, name: str):
+        await interaction.response.defer(ephemeral=True)
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+        if not row:
+            await interaction.followup.send("Loadout not found.", ephemeral=True); return
+        await interaction.followup.send(f"**{row.name}** · revision {row.revision}\nSource: `{row.source_type}`\n```json\n{json.dumps(row.payload, default=str)[:1800]}\n```", ephemeral=True)
+
+    @loadout_group.command(name="use", description="Bind a loadout to this Discord thread")
+    @app_commands.describe(name="Loadout name")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    async def loadout_use(interaction, name: str):
+        await interaction.response.defer(ephemeral=True)
+        thread_id = _thread_id(interaction)
+        if not thread_id:
+            await interaction.followup.send("Use `/loadout use` inside a linked ThreadBot Discord thread.", ephemeral=True); return
+        async with AsyncSessionLocal() as db:
+            local_thread = await loadouts.workspace_thread(db, LOCAL_WORKSPACE_ID, thread_id)
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+            if not local_thread:
+                await interaction.followup.send("This Discord thread is not linked to a ThreadBot thread.", ephemeral=True); return
+            if not row:
+                await interaction.followup.send("Loadout not found.", ephemeral=True); return
+            await loadout_service.bind_thread(db, LOCAL_WORKSPACE_ID, local_thread, row.id)
+            await db.commit()
+        await interaction.followup.send(f"Using **{row.name}** in this thread.", ephemeral=True)
+
+    @loadout_group.command(name="clone", description="Clone a loadout")
+    @app_commands.describe(source="Existing loadout", new_name="Name for the clone")
+    @app_commands.autocomplete(source=_name_autocomplete)
+    async def loadout_clone(interaction, source: str, new_name: str):
+        await interaction.response.defer(ephemeral=True)
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, source)
+            if not row:
+                await interaction.followup.send("Source loadout not found.", ephemeral=True); return
+            try:
+                result = await loadout_service.clone_loadout(db, LOCAL_WORKSPACE_ID, row.id, new_name.strip(), loadouts.discord_actor(str(interaction.user.id)))
+                await db.commit()
+            except IntegrityError:
+                await interaction.followup.send("A loadout with that name already exists.", ephemeral=True); return
+        await interaction.followup.send(f"Cloned **{result['name']}**.", ephemeral=True)
+
+    @loadout_group.command(name="delete", description="Delete a loadout")
+    @app_commands.describe(name="Loadout name")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    async def loadout_delete(interaction, name: str):
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+        if not row:
+            await interaction.response.send_message("Loadout not found.", ephemeral=True); return
+        view = discord.ui.View(timeout=60)
+        async def confirm(i):
+            if i.user.id != interaction.user.id:
+                await i.response.send_message("Only the invoking user can confirm this deletion.", ephemeral=True); return
+            async with AsyncSessionLocal() as db:
+                deleted = await loadout_service.delete_loadout(db, LOCAL_WORKSPACE_ID, row.id); await db.commit()
+            await i.response.edit_message(content="Deleted." if deleted else "Loadout was already deleted.", view=None)
+        async def cancel(i):
+            if i.user.id != interaction.user.id:
+                await i.response.send_message("Only the invoking user can cancel this request.", ephemeral=True); return
+            await i.response.edit_message(content="Cancelled.", view=None)
+        yes = discord.ui.Button(label="Delete", style=discord.ButtonStyle.danger); no = discord.ui.Button(label="Cancel")
+        yes.callback = confirm; no.callback = cancel; view.add_item(yes); view.add_item(no)
+        await interaction.response.send_message(f"Delete **{row.name}**?", view=view, ephemeral=True)
+
+    @loadout_group.command(name="equip", description="Search and equip an item")
+    @app_commands.describe(name="Loadout name", slot="Equipment slot", query="Item search")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    @app_commands.choices(slot=[app_commands.Choice(name=slot, value=slot) for slot in loadouts.SLOTS])
+    async def loadout_equip(interaction, name: str, slot: str, query: str):
+        await interaction.response.defer(ephemeral=True)
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+            candidates = await loadouts.equip_candidates(db, slot, query) if row else []
+        if not row:
+            await interaction.followup.send("Loadout not found.", ephemeral=True); return
+        if not candidates:
+            await interaction.followup.send("No exact equipment candidates found.", ephemeral=True); return
+        select_menu = discord.ui.Select(placeholder=f"Choose {slot}", options=[discord.SelectOption(label=str(x.get("name") or x["id"])[:100], value=str(i)) for i, x in enumerate(candidates)])
+        view = discord.ui.View(timeout=60); view.add_item(select_menu)
+        async def chosen(i):
+            if i.user.id != interaction.user.id:
+                await i.response.send_message("Only the invoking user can use this menu.", ephemeral=True); return
+            raw = candidates[int(select_menu.values[0])]
+            item = {"id": raw["id"], "version": raw.get("version"), "name": raw.get("name"), "item_vars": raw.get("item_vars", raw.get("itemVars", {})) or {}}
+            async with AsyncSessionLocal() as db:
+                updated, error = await loadouts.equip(db, LOCAL_WORKSPACE_ID, row.id, row.revision, slot, item)
+                if error: await i.response.edit_message(content="Loadout changed; run equip again.", view=None); return
+                await db.commit()
+            await i.response.edit_message(content=f"Equipped **{item.get('name') or item['id']}** in `{slot}` (revision {updated['revision']}).", view=None)
+        select_menu.callback = chosen
+        await interaction.followup.send("Select an exact candidate:", view=view, ephemeral=True)
+
+    @loadout_group.command(name="stat", description="Set one player skill level")
+    @app_commands.describe(name="Loadout name", stat="Skill", value="Level (1-126)")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    @app_commands.choices(stat=[app_commands.Choice(name=key, value=key) for key in loadouts.STAT_KEYS])
+    async def loadout_stat(interaction, name: str, stat: str, value: int):
+        await interaction.response.defer(ephemeral=True)
+        if not 1 <= value <= 126:
+            await interaction.followup.send("Skill levels must be between 1 and 126.", ephemeral=True); return
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+            if not row:
+                await interaction.followup.send("Loadout not found.", ephemeral=True); return
+            updated, error = await loadouts.update_stats(
+                db, LOCAL_WORKSPACE_ID, row.id, row.revision, {stat: value})
+            if error:
+                await interaction.followup.send("Loadout changed; run the command again.", ephemeral=True); return
+            await db.commit()
+        await interaction.followup.send(f"Set **{stat}** to `{value}` in **{name}** (revision {updated['revision']}).", ephemeral=True)
+
+    @loadout_group.command(name="preset", description="Set combat style and common OSRS buffs")
+    @app_commands.describe(name="Loadout name", stance="Combat stance", attack_type="Attack type",
+                           spell="Spell name", on_slayer_task="On a Slayer task", in_wilderness="In the Wilderness")
+    @app_commands.autocomplete(name=_name_autocomplete)
+    @app_commands.choices(
+        stance=[app_commands.Choice(name=value, value=value) for value in
+                ("Accurate", "Aggressive", "Autocast", "Controlled", "Defensive", "Defensive Autocast", "Longrange", "Rapid", "Manual Cast")],
+        attack_type=[app_commands.Choice(name=value, value=value) for value in ("stab", "slash", "crush", "magic", "ranged")],
+    )
+    async def loadout_preset(interaction, name: str, stance: str | None = None,
+                             attack_type: str | None = None, spell: str | None = None,
+                             on_slayer_task: bool | None = None, in_wilderness: bool | None = None):
+        await interaction.response.defer(ephemeral=True)
+        combat = {key: value for key, value in {"stance": stance, "attack_type": attack_type, "spell": spell}.items() if value is not None}
+        buffs = {key: value for key, value in {"on_slayer_task": on_slayer_task, "in_wilderness": in_wilderness}.items() if value is not None}
+        if not combat and not buffs:
+            await interaction.followup.send("Provide at least one combat or buff setting.", ephemeral=True); return
+        async with AsyncSessionLocal() as db:
+            row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
+            if not row:
+                await interaction.followup.send("Loadout not found.", ephemeral=True); return
+            updated, error = await loadouts.update_preset(
+                db, LOCAL_WORKSPACE_ID, row.id, row.revision, combat=combat, buffs=buffs)
+            if error:
+                await interaction.followup.send("Loadout changed; run the command again.", ephemeral=True); return
+            await db.commit()
+        await interaction.followup.send(f"Updated **{name}** (revision {updated['revision']}).", ephemeral=True)
 
     @bot.event
     async def on_ready():

@@ -3,7 +3,11 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from app.models.models import Base
-from app.models import foundation_models, runtime_models, approval_models, run_models  # noqa: F401
+from app.models import (  # noqa: F401
+    models, foundation_models, agent_models, runtime_models, approval_models,
+    run_models, policy_models, budget_models, phase2_models, phase3_models,
+    phase4_models, osrs_models,
+)
 
 
 ROOT = Path(__file__).parents[1]
@@ -12,7 +16,7 @@ ROOT = Path(__file__).parents[1]
 def test_alembic_has_one_linear_head():
     config = Config(str(ROOT / "alembic.ini"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["0030_osrs_dps_gear_optimizer"]
+    assert scripts.get_heads() == ["0032_osrs_runtime_loadout_rules"]
     assert scripts.get_revision("0001_schema_baseline").down_revision is None
     assert scripts.get_revision("0002_require_created_timestamps").down_revision == "0001_schema_baseline"
     assert scripts.get_revision("0003_foundation").down_revision == "0002_require_created_timestamps"
@@ -43,6 +47,8 @@ def test_alembic_has_one_linear_head():
     assert scripts.get_revision("0028_osrs_dps_skill").down_revision == "0027_mcp_tool_safety_overrides"
     assert scripts.get_revision("0029_osrs_dps_high_level_tool").down_revision == "0028_osrs_dps_skill"
     assert scripts.get_revision("0030_osrs_dps_gear_optimizer").down_revision == "0029_osrs_dps_high_level_tool"
+    assert scripts.get_revision("0031_osrs_shared_loadouts").down_revision == "0030_osrs_dps_gear_optimizer"
+    assert scripts.get_revision("0032_osrs_runtime_loadout_rules").down_revision == "0031_osrs_shared_loadouts"
 
 
 def test_phase4_revision_widens_alembic_version_before_stamping():
@@ -188,6 +194,13 @@ def test_osrs_dps_gear_optimizer_revision_preserves_custom_skill_content():
     ):
         assert expected in revision
     assert 'RuntimeError("OSRS DPS gear optimizer migration is forward-only")' in revision
+
+def test_shared_osrs_loadout_revision_and_metadata_match():
+    revision = (ROOT / "alembic/versions/0031_osrs_shared_loadouts.py").read_text()
+    assert "schema_version" in revision
+    assert "uq_osrs_loadouts_workspace_default" in revision
+    assert "uq_thread_osrs_loadout_thread" in revision
+    assert {"osrs_loadouts", "thread_osrs_loadouts"} <= set(Base.metadata.tables)
 
 
 def test_timestamp_revision_backfills_before_not_null_and_is_non_destructive():

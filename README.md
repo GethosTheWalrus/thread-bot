@@ -28,6 +28,7 @@ Project background: <https://miketoscano.com/blog/threadbot-temporal.html>. The 
 | Replay, canary/shadow, forecasts, and SLOs | **Implemented** | Recorded/effect-free replays, canary promotion/rollback, P50/P90 forecasts, alerts, and queue controls. |
 | MCP and built-in tools | **Implemented** | Chat uses per-Thread overrides; Agents use immutable version selections and server-side execution checks. |
 | Skills | **Implemented** | Global management, Thread controls, and immutable Agent runtime snapshots. |
+| OSRS DPS loadouts | **Implemented, optional** | Named workspace loadouts, Wiki DPS imports, full web editing, per-Thread selection, Discord `/loadout` commands, and exact MCP-backed calculations. |
 | Context dashboard and compaction | **Implemented** | Token estimates, context composition, summaries, and token-aware compaction. |
 | Image upload, vision, and media generation | **Implemented, provider-dependent** | OpenAI-compatible APIs, ComfyUI, TTS, ffmpeg, and model assets may be required. |
 | Discord | **Implemented, optional** | Linked Threads, textual Agent handles under one bot identity, media synchronization, and safe mention handling. |
@@ -53,6 +54,7 @@ Thread settings are consolidated in the composer control surface:
 - Context
 - Response/LLM overrides
 - MCP tool overrides
+- Active OSRS DPS loadout
 - Links to global Settings, MCP servers, Skills, and the all-Agents view
 
 ### Multi-agent routing
@@ -324,6 +326,10 @@ Image upload/vision and image, video, audio, and lip-sync generation are provide
 ## Discord
 
 Discord integration is optional. Configure a bot token, guild/default channel, gateway intents, slash-command permissions, Thread permissions, and attachment permissions.
+
+When the OSRS DPS MCP server is configured, `/loadout` commands can create,
+import, inspect, equip, clone, delete, and select named loadouts for linked
+Discord Threads. The same workspace loadouts are available in the Flutter UI.
 
 ThreadBot can:
 

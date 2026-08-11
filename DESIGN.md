@@ -128,6 +128,8 @@ Core tables:
 | `discord_thread_links` | Links ThreadBot threads to Discord threads and stores indexing state/cursors. |
 | `discord_servers` | Discord guild metadata discovered from integration use. |
 | `discord_server_tool_overrides` | MCP server/tool overrides applied to Discord-originated turns for a guild. |
+| `osrs_loadouts` | Versioned, workspace-scoped OSRS equipment, stats, boosts, prayers, potions, buffs, and combat configuration. |
+| `thread_osrs_loadouts` | Optional explicit OSRS loadout binding for a Thread; otherwise the workspace default applies. |
 
 `ensure_database_schema()` in `app/database/__init__.py` is the additive schema compatibility layer until a migration framework exists. It creates missing tables and adds newer columns such as `llm_overrides`, `registry_credentials`, `cached_tools_at`, generated media tables, and Discord tables.
 
@@ -272,6 +274,7 @@ Main worker activities are registered in `app/worker.py`:
 - `compact_history` and `delete_messages_before`: summarize old context and remove compacted messages.
 - `discover_tools`: reads active MCP servers, decrypts secrets, discovers/caches tools, applies thread or Discord override filters.
 - `execute_agent_tool_activity`: executes one tool call, including MCP, built-in tools, media tools, context tools, and Discord-normalized tools.
+- Exact duplicate tool calls within one Agents SDK run share one in-flight execution and then return the cached result with a suppression notice; different calls remain concurrent.
 - `run_agent_response`: legacy/support activity for agent response execution.
 - `generate_title` and `generate_and_update_title`: create/update thread titles.
 - `sync_discord_title`: syncs title changes to Discord.
@@ -374,6 +377,7 @@ Backend background tasks:
 
 - `discord_poll_loop(client)` periodically checks active `discord_thread_links` for new messages.
 - `run_discord_bot(client)` connects a `discord.py` bot with `/threadbot` and mention handling when `discord.py` is installed and Discord is configured.
+- The bot also exposes ephemeral `/loadout` commands for shared OSRS loadout creation, Wiki import, editing, cloning, deletion, and linked-Thread selection.
 
 Discord workflows:
 
@@ -430,6 +434,7 @@ Key files:
 
 - `ApiService`: REST and WebSocket client. Uses `Uri.base.origin` on web and derives `ws`/`wss` URLs for streaming.
 - `ChatScreen`: thread loading, message sending, stream processing, reconnect, image upload, Discord share/new thread dialogs, Reachy binding, tool overrides, LLM overrides.
+- `OsrsLoadoutsScreen`: named OSRS loadout creation, Wiki DPS import, equipment search, stats/buffs/combat editing, cloning, defaults, and deletion. `ChatScreen` selects an explicit or inherited loadout for the active Thread.
 - `SettingsScreen`: global LLM/context/media/Discord settings.
 - `MCPScreen`: MCP server CRUD, test/discovery, registry credentials, env vars, args.
 - `Sidebar`: grouped thread list, thread actions, navigation, integration markers.

@@ -15,6 +15,7 @@ class Sidebar extends StatefulWidget {
   final VoidCallback onSkills;
   final VoidCallback onSettings;
   final VoidCallback onAgents;
+  final VoidCallback onOsrsLoadouts;
 
   const Sidebar({
     super.key,
@@ -31,6 +32,7 @@ class Sidebar extends StatefulWidget {
     required this.onSkills,
     required this.onSettings,
     required this.onAgents,
+    required this.onOsrsLoadouts,
   });
 
   @override
@@ -296,6 +298,36 @@ class _SidebarState extends State<Sidebar> {
                           const SizedBox(width: 10),
                           const Text(
                             'Skills',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFFE4E4E7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: widget.onOsrsLoadouts,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.shield_outlined,
+                            size: 18,
+                            color: const Color(
+                              0xFF34D399,
+                            ).withValues(alpha: 0.8),
+                          ),
+                          const SizedBox(width: 10),
+                          const Text(
+                            'OSRS Loadouts',
                             style: TextStyle(
                               fontSize: 13,
                               color: Color(0xFFE4E4E7),

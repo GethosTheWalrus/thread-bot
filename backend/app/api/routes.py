@@ -1016,6 +1016,12 @@ async def chat_websocket(websocket: WebSocket):
         if thread_llm_overrides:
             llm_config = apply_thread_llm_overrides(llm_config, thread_llm_overrides)
 
+        if "osrs_loadout" not in llm_config:
+            from app.services.osrs_loadouts import resolve_thread_loadout, to_mcp_calculate_dps_loadout
+            selected_loadout, _ = await resolve_thread_loadout(setup_db, actor.workspace_id, thread_id)
+            if selected_loadout:
+                llm_config["osrs_loadout"] = to_mcp_calculate_dps_loadout(selected_loadout)
+
         discord_link = await get_discord_link(setup_db, thread_id)
         workflow_discord_config = _build_workflow_discord_config(get_discord_config(), discord_link)
         if workflow_discord_config:

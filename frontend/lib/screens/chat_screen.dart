@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:threadbot/models/message.dart';
 import 'package:threadbot/models/thread.dart';
+import 'package:threadbot/models/osrs_loadout.dart';
 import 'package:threadbot/services/api_service.dart';
 import 'package:threadbot/services/autonomy_api.dart';
 import 'package:threadbot/services/phase2_api.dart';
@@ -173,6 +174,10 @@ class _ChatScreenState extends State<ChatScreen>
   bool _sidebarOpen = true;
   bool _hasToolOverrides = false;
   bool _hasLlmOverrides = false;
+  List<OsrsLoadout> _osrsLoadouts = const [];
+  OsrsLoadout? _activeOsrsLoadout;
+  bool _activeOsrsLoadoutExplicit = false;
+  bool _isLoadingOsrsLoadout = false;
   DiscordThreadLink? _discordLink;
   ReachyBinding? _reachyBinding;
   bool _isTogglingReachy = false;
@@ -519,6 +524,9 @@ class _ChatScreenState extends State<ChatScreen>
       _error = null;
       _hasToolOverrides = false;
       _hasLlmOverrides = false;
+      _activeOsrsLoadout = null;
+      _activeOsrsLoadoutExplicit = false;
+      _isLoadingOsrsLoadout = false;
       if (switchingThread) _isAtBottom = true;
     });
     try {
@@ -578,6 +586,7 @@ class _ChatScreenState extends State<ChatScreen>
         // Check if this thread has any tool overrides
         _loadToolOverrideStatus(threadId);
         _loadLlmOverrideStatus(threadId);
+        _loadThreadOsrsLoadout(threadId, generation);
         _loadReachyBinding();
 
         // If this thread is still generating (e.g., page was refreshed mid-response),
@@ -594,6 +603,135 @@ class _ChatScreenState extends State<ChatScreen>
           _error = 'Failed to load thread';
           _isLoadingMessages = false;
         });
+    }
+  }
+
+  Future<void> _loadThreadOsrsLoadout(String threadId, int generation) async {
+    if (!mounted || _activeThreadId != threadId) return;
+    setState(() => _isLoadingOsrsLoadout = true);
+    try {
+      final loadouts = await _api.getOsrsLoadouts();
+      final bindingIds = await _api.getThreadOsrsLoadouts(threadId);
+      OsrsLoadout? resolved;
+      try {
+        resolved = await _api.getThreadOsrsLoadout(threadId);
+      } catch (_) {
+        // A thread may not have a binding or workspace default.
+      }
+      if (!mounted ||
+          _activeThreadId != threadId ||
+          generation != _threadGeneration)
+        return;
+      setState(() {
+        _osrsLoadouts = loadouts;
+        _activeOsrsLoadout = resolved;
+        _activeOsrsLoadoutExplicit = bindingIds.isNotEmpty;
+        _isLoadingOsrsLoadout = false;
+      });
+    } catch (_) {
+      if (mounted && _activeThreadId == threadId) {
+        setState(() => _isLoadingOsrsLoadout = false);
+      }
+    }
+  }
+
+  Future<void> _selectOsrsLoadout(OsrsLoadout? loadout) async {
+    final threadId = _activeThreadId;
+    if (threadId == null || _isLoadingOsrsLoadout) return;
+    setState(() => _isLoadingOsrsLoadout = true);
+    try {
+      if (loadout == null) {
+        await _api.unbindThreadOsrsLoadout(threadId);
+      } else {
+        await _api.bindThreadOsrsLoadout(threadId, loadout.id);
+      }
+      final resolved = loadout == null
+          ? await _tryGetThreadOsrsLoadout(threadId)
+          : loadout;
+      if (mounted && _activeThreadId == threadId) {
+        setState(() {
+          _activeOsrsLoadout = resolved;
+          _activeOsrsLoadoutExplicit = loadout != null;
+          _isLoadingOsrsLoadout = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingOsrsLoadout = false);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Loadout update failed: $e')));
+      }
+    }
+  }
+
+  Future<OsrsLoadout?> _tryGetThreadOsrsLoadout(String threadId) async {
+    try {
+      return await _api.getThreadOsrsLoadout(threadId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _showOsrsLoadoutSelector() async {
+    if (_activeThreadId == null || _isLoadingOsrsLoadout) return;
+    final selected = await showModalBottomSheet<OsrsLoadout?>(
+      context: context,
+      backgroundColor: const Color(0xFF16161E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(width: 36, height: 4, color: Colors.white24),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'OSRS loadout',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.auto_awesome_outlined),
+                title: const Text('Workspace default'),
+                subtitle: Text(
+                  _activeOsrsLoadoutExplicit
+                      ? 'Use the default for this workspace'
+                      : 'Inherited when configured',
+                ),
+                selected: !_activeOsrsLoadoutExplicit,
+                onTap: () => Navigator.pop(context, null),
+              ),
+              ..._osrsLoadouts.map(
+                (loadout) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    loadout.isDefault ? Icons.star : Icons.shield_outlined,
+                  ),
+                  title: Text(loadout.name),
+                  subtitle: Text(
+                    loadout.isDefault
+                        ? 'Default loadout'
+                        : 'Explicit thread option',
+                  ),
+                  selected: _activeOsrsLoadout?.id == loadout.id,
+                  onTap: () => Navigator.pop(context, loadout),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected != null || _activeOsrsLoadoutExplicit) {
+      await _selectOsrsLoadout(selected);
     }
   }
 
@@ -2045,6 +2183,10 @@ class _ChatScreenState extends State<ChatScreen>
     Navigator.of(context).pushNamed('/settings');
   }
 
+  void _openOsrsLoadouts() {
+    Navigator.of(context).pushNamed('/osrs-loadouts');
+  }
+
   Future<void> _toggleDiscordShare() async {
     if (_activeThreadId == null) return;
 
@@ -2234,6 +2376,7 @@ class _ChatScreenState extends State<ChatScreen>
                   onSkills: _openSkills,
                   onSettings: _openSettings,
                   onAgents: () => Navigator.pushNamed(context, '/agents-list'),
+                  onOsrsLoadouts: _openOsrsLoadouts,
                 ),
 
               // Main chat area
@@ -2321,6 +2464,10 @@ class _ChatScreenState extends State<ChatScreen>
                     Navigator.pop(context);
                     Navigator.pushNamed(context, '/agents-list');
                   },
+                  onOsrsLoadouts: () {
+                    Navigator.pop(context);
+                    _openOsrsLoadouts();
+                  },
                 ),
               ),
             )
@@ -2390,6 +2537,28 @@ class _ChatScreenState extends State<ChatScreen>
                 ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            Tooltip(
+              message: _activeOsrsLoadout == null
+                  ? 'Choose OSRS loadout'
+                  : 'OSRS: ${_activeOsrsLoadout!.name} · ${_activeOsrsLoadoutExplicit ? 'explicit' : 'inherited'}',
+              child: IconButton(
+                onPressed: _showOsrsLoadoutSelector,
+                icon: _isLoadingOsrsLoadout
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        _activeOsrsLoadoutExplicit
+                            ? Icons.shield
+                            : Icons.shield_outlined,
+                        color: _activeOsrsLoadout == null
+                            ? const Color(0xFFA1A1AA)
+                            : const Color(0xFFC4B5FD),
+                      ),
               ),
             ),
             Tooltip(

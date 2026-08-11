@@ -132,12 +132,11 @@ def test_live_agent_tools_use_replay_safe_durable_approval_gate():
     assert "Denied by approver" in gate_source
 
 
-def test_live_agent_tool_gate_serializes_concurrent_tool_callbacks():
-    init_source = inspect.getsource(RunThreadWorkflow.__init__)
+def test_live_agent_tools_coordinate_duplicate_callbacks_per_key():
     tools_source = inspect.getsource(RunThreadWorkflow._agent_tools)
 
-    assert "asyncio.Lock()" in init_source
-    assert "async with self._agent_tool_lock" in tools_source
+    assert "_agent_tool_coordinator.run(key, operation)" in tools_source
+    assert "_agent_tool_lock" not in tools_source
 
 
 def test_shared_heartbeat_requires_fresh_successful_tool_evidence_by_default():
