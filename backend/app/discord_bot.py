@@ -251,33 +251,67 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
         yes.callback = confirm; no.callback = cancel; view.add_item(yes); view.add_item(no)
         await interaction.response.send_message(f"Delete **{row.name}**?", view=view, ephemeral=True)
 
-    @loadout_group.command(name="equip", description="Search and equip an item")
-    @app_commands.describe(name="Loadout name", slot="Equipment slot", query="Item search")
+    def _equipment_autocomplete(slot):
+        async def callback(interaction, current: str):
+            try:
+                items = await loadouts.equipment_catalog()
+                choices = loadouts.equipment_choices(items, slot, current)
+                result = []
+                for item in choices:
+                    token = loadouts.encode_equipment_choice(item)
+                    if len(token) > 100:
+                        continue
+                    version = f" [{item['version']}]" if item.get("version") else ""
+                    result.append(app_commands.Choice(
+                        name=f"{item['name']}{version} (id {item['id']})"[:100], value=token
+                    ))
+                return result + [
+                    app_commands.Choice(name=f"Clear {slot}", value=loadouts.CLEAR_TOKEN)]
+            except Exception:
+                return []
+        return callback
+
+    @loadout_group.command(name="equip", description="Equip or clear one or more items")
+    @app_commands.describe(name="Loadout name", head="Head item", cape="Cape item", neck="Neck item",
+                           ammo="Ammunition", weapon="Weapon", body="Body item", shield="Shield item",
+                           legs="Legs item", hands="Gloves item", feet="Boots item", ring="Ring item")
     @app_commands.autocomplete(name=_name_autocomplete)
-    @app_commands.choices(slot=[app_commands.Choice(name=slot, value=slot) for slot in loadouts.SLOTS])
-    async def loadout_equip(interaction, name: str, slot: str, query: str):
+    @app_commands.autocomplete(**{slot: _equipment_autocomplete(slot) for slot in loadouts.SLOTS})
+    async def loadout_equip(interaction, name: str, head: str | None = None, cape: str | None = None,
+                            neck: str | None = None, ammo: str | None = None, weapon: str | None = None,
+                            body: str | None = None, shield: str | None = None, legs: str | None = None,
+                            hands: str | None = None, feet: str | None = None, ring: str | None = None):
         await interaction.response.defer(ephemeral=True)
+        supplied = {slot: value for slot, value in zip(loadouts.SLOTS,
+                    (head, cape, neck, ammo, weapon, body, shield, legs, hands, feet, ring)) if value is not None}
+        if not supplied:
+            await interaction.followup.send("Provide at least one equipment slot to equip or clear.", ephemeral=True)
+            return
         async with AsyncSessionLocal() as db:
             row = await loadouts.resolve_name(db, LOCAL_WORKSPACE_ID, name)
-            candidates = await loadouts.equip_candidates(db, slot, query) if row else []
         if not row:
             await interaction.followup.send("Loadout not found.", ephemeral=True); return
-        if not candidates:
-            await interaction.followup.send("No exact equipment candidates found.", ephemeral=True); return
-        select_menu = discord.ui.Select(placeholder=f"Choose {slot}", options=[discord.SelectOption(label=str(x.get("name") or x["id"])[:100], value=str(i)) for i, x in enumerate(candidates)])
-        view = discord.ui.View(timeout=60); view.add_item(select_menu)
-        async def chosen(i):
-            if i.user.id != interaction.user.id:
-                await i.response.send_message("Only the invoking user can use this menu.", ephemeral=True); return
-            raw = candidates[int(select_menu.values[0])]
-            item = {"id": raw["id"], "version": raw.get("version"), "name": raw.get("name"), "item_vars": raw.get("item_vars", raw.get("itemVars", {})) or {}}
-            async with AsyncSessionLocal() as db:
-                updated, error = await loadouts.equip(db, LOCAL_WORKSPACE_ID, row.id, row.revision, slot, item)
-                if error: await i.response.edit_message(content="Loadout changed; run equip again.", view=None); return
-                await db.commit()
-            await i.response.edit_message(content=f"Equipped **{item.get('name') or item['id']}** in `{slot}` (revision {updated['revision']}).", view=None)
-        select_menu.callback = chosen
-        await interaction.followup.send("Select an exact candidate:", view=view, ephemeral=True)
+        try:
+            items = await loadouts.equipment_catalog()
+        except Exception:
+            await interaction.followup.send("Equipment catalog is temporarily unavailable; try again shortly.", ephemeral=True)
+            return
+        updates = {}
+        labels = []
+        for slot, token in supplied.items():
+            item = loadouts.resolve_equipment_choice(token, slot, items)
+            if item is False:
+                await interaction.followup.send(f"Invalid {slot} item selection. Use autocomplete and try again.", ephemeral=True)
+                return
+            updates[slot] = item
+            labels.append(f"{slot}: {'cleared' if item is None else item['name']}")
+        async with AsyncSessionLocal() as db:
+            updated, error = await loadouts.equip_many(db, LOCAL_WORKSPACE_ID, row.id, row.revision, updates)
+            if error:
+                await interaction.followup.send("Loadout changed; run the command again.", ephemeral=True)
+                return
+            await db.commit()
+        await interaction.followup.send(f"Updated **{row.name}** ({'; '.join(labels)}), revision {updated['revision']}.", ephemeral=True)
 
     @loadout_group.command(name="stat", description="Set one player skill level")
     @app_commands.describe(name="Loadout name", stat="Skill", value="Level (1-126)")
@@ -329,6 +363,12 @@ async def run_discord_bot(temporal_client: TemporalClient) -> None:
     @bot.event
     async def on_ready():
         print(f"[discord] slash command bot connected as {bot.user}", flush=True)
+        async def warm_equipment_catalog():
+            try:
+                await loadouts.equipment_catalog()
+            except Exception as exc:
+                print(f"[discord] equipment catalog warmup failed: {exc}", flush=True)
+        asyncio.create_task(warm_equipment_catalog())
         try:
             if config.get("guild_id"):
                 guild = discord.Object(id=int(config["guild_id"]))

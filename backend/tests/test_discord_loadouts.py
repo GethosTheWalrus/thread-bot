@@ -1,6 +1,12 @@
 from app.contracts.osrs import OsrsLoadoutPayload
-from app.discord_loadouts import SLOTS, canonical_imported_loadout, starter_payload
+from app.discord_loadouts import (CLEAR_TOKEN, SLOTS, canonical_imported_loadout,
+                                  decode_equipment_choice, encode_equipment_choice,
+                                  equip_many, equipment_choices, resolve_equipment_choice,
+                                  starter_payload)
 import inspect
+from types import SimpleNamespace
+
+import pytest
 
 from app.services import osrs_loadouts
 from app.services.osrs_loadouts import to_mcp_calculate_dps_loadout
@@ -55,3 +61,70 @@ def test_thread_binding_uses_postgresql_upsert():
     source = inspect.getsource(osrs_loadouts.bind_thread)
     assert "on_conflict_do_update" in source
     assert "index_elements=[\"workspace_id\", \"thread_id\"]" in source
+
+
+def test_equipment_choices_are_slot_isolated_and_prefix_ranked():
+    items = [
+        {"id": 2, "version": 1, "name": "Dragon sword", "slot": ["weapon"]},
+        {"id": 1, "version": 2, "name": "Dragonfire shield", "slot": ["shield"]},
+        {"id": 3, "version": 1, "name": "Abyssal whip", "slot": ["weapon"]},
+    ]
+    assert [x["name"] for x in equipment_choices(items, "weapon", "dragon")] == ["Dragon sword"]
+    assert equipment_choices(items, "shield", "dragon")[0]["name"] == "Dragonfire shield"
+
+
+def test_equipment_choice_round_trip_includes_version_and_clear():
+    item = {"id": 4151, "version": "v2", "name": "Abyssal whip", "slot": ["weapon"]}
+    token = encode_equipment_choice(item)
+    assert len(token) <= 100
+    assert decode_equipment_choice(token) == (4151, "v2")
+    assert resolve_equipment_choice(token, "weapon", [item])["version"] == "v2"
+    assert resolve_equipment_choice(CLEAR_TOKEN, "weapon", [item]) is None
+
+
+def test_equipment_choice_rejects_wrong_slot_or_unknown_item():
+    item = {"id": 4151, "version": None, "name": "Abyssal whip", "slot": ["weapon"]}
+    token = encode_equipment_choice(item)
+    assert resolve_equipment_choice(token, "head", [item]) is False
+    assert resolve_equipment_choice("not-a-token", "weapon", [item]) is False
+
+
+def test_equipment_choices_leave_room_for_clear_choice():
+    items = [
+        {"id": index, "version": None, "name": f"Item {index:02d}", "slot": ["weapon"]}
+        for index in range(1, 31)
+    ]
+    assert len(equipment_choices(items, "weapon", "")) == 24
+
+
+@pytest.mark.asyncio
+async def test_equip_many_updates_all_slots_once(monkeypatch):
+    stored = OsrsLoadoutPayload.model_validate(starter_payload())
+    row = {"revision": 3, "loadout": stored}
+    calls = []
+
+    async def fake_get(*_args):
+        return row
+
+    async def fake_update(_db, _workspace_id, _loadout_id, body):
+        calls.append(body)
+        return {"revision": 4}, None
+
+    monkeypatch.setattr("app.discord_loadouts.service.get_loadout", fake_get)
+    monkeypatch.setattr("app.discord_loadouts.service.update_loadout", fake_update)
+    weapon = {"id": 4151, "version": None, "name": "Abyssal whip", "item_vars": {}}
+    head = {"id": 11865, "version": None, "name": "Slayer helmet (i)", "item_vars": {}}
+    result, error = await equip_many(
+        SimpleNamespace(), "workspace", "loadout", 3, {"weapon": weapon, "head": head}
+    )
+
+    assert error is None and result["revision"] == 4
+    assert len(calls) == 1 and calls[0].expected_revision == 3
+    assert calls[0].loadout.equipment.weapon.id == 4151
+    assert calls[0].loadout.equipment.head.id == 11865
+    assert calls[0].loadout.equipment.cape is None
+
+
+@pytest.mark.asyncio
+async def test_equip_many_rejects_empty_update():
+    assert await equip_many(SimpleNamespace(), "workspace", "loadout", 1, {}) == (None, "no-op")

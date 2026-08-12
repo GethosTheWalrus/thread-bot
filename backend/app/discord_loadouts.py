@@ -1,7 +1,12 @@
 """Discord command helpers for OSRS loadouts."""
 
+import asyncio
+import base64
+import json
+import time
 from typing import Any
 
+import aiohttp
 from sqlalchemy import select
 
 from app.api.osrs import _mcp
@@ -12,6 +17,115 @@ from app.services import osrs_loadouts as service
 
 SLOTS = ("head", "cape", "neck", "ammo", "weapon", "body", "shield", "legs", "hands", "feet", "ring")
 STAT_KEYS = ("atk", "str", "def", "hp", "ranged", "magic", "prayer", "mining", "herblore")
+EQUIPMENT_URL = (
+    "https://raw.githubusercontent.com/weirdgloop/osrs-dps-calc/"
+    "91218d63e71927e99748a50d008975336025a88e/cdn/json/equipment.json"
+)
+EQUIPMENT_CACHE_TTL = 6 * 60 * 60
+EQUIPMENT_MAX_BYTES = 4 * 1024 * 1024
+_equipment_cache: tuple[float, list[dict[str, Any]]] | None = None
+_equipment_load: asyncio.Task | None = None
+_equipment_lock = asyncio.Lock()
+CLEAR_TOKEN = "clear"
+
+
+def encode_equipment_choice(item: dict[str, Any]) -> str:
+    """Encode the authoritative identity, rather than a display name, for Discord."""
+    raw = json.dumps([item["id"], item.get("version")], separators=(",", ":"), ensure_ascii=True).encode()
+    return "i:" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_equipment_choice(value: str) -> tuple[Any, Any] | None:
+    if not isinstance(value, str) or not value.startswith("i:"):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(value[2:] + "=" * (-len(value[2:]) % 4))
+        decoded = json.loads(raw)
+        return (decoded[0], decoded[1]) if isinstance(decoded, list) and len(decoded) == 2 else None
+    except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def _normalise_item(raw: dict[str, Any]) -> dict[str, Any] | None:
+    if raw.get("id") is None or not isinstance(raw.get("name"), str) or not isinstance(raw.get("slot"), (str, list, tuple)):
+        return None
+    slots = raw["slot"] if isinstance(raw["slot"], (list, tuple)) else [raw["slot"]]
+    slots = [str(slot).lower() for slot in slots]
+    return {"id": raw["id"], "version": raw.get("version"), "name": raw["name"],
+            "slot": slots, "itemVars": raw.get("itemVars", raw.get("item_vars", {})) or {}}
+
+
+async def _fetch_equipment() -> list[dict[str, Any]]:
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(EQUIPMENT_URL) as response:
+            response.raise_for_status()
+            body = await response.content.read(EQUIPMENT_MAX_BYTES + 1)
+            if len(body) > EQUIPMENT_MAX_BYTES:
+                raise ValueError("equipment catalog is too large")
+    payload = json.loads(body)
+    if not isinstance(payload, list):
+        raise ValueError("equipment catalog is not a list")
+    result = [_normalise_item(item) for item in payload if isinstance(item, dict)]
+    result = [item for item in result if item is not None]
+    if not result:
+        raise ValueError("equipment catalog is empty")
+    return result
+
+
+async def equipment_catalog() -> list[dict[str, Any]]:
+    global _equipment_cache, _equipment_load
+    now = time.monotonic()
+    if _equipment_cache and now - _equipment_cache[0] < EQUIPMENT_CACHE_TTL:
+        return _equipment_cache[1]
+    async with _equipment_lock:
+        now = time.monotonic()
+        if _equipment_cache and now - _equipment_cache[0] < EQUIPMENT_CACHE_TTL:
+            return _equipment_cache[1]
+        if _equipment_load is None:
+            _equipment_load = asyncio.create_task(_fetch_equipment())
+        task = _equipment_load
+    try:
+        items = await task
+        _equipment_cache = (time.monotonic(), items)
+        return items
+    except Exception:
+        if _equipment_cache:
+            return _equipment_cache[1]
+        raise
+    finally:
+        async with _equipment_lock:
+            if _equipment_load is task:
+                _equipment_load = None
+
+
+def reset_equipment_catalog(items: list[dict[str, Any]] | None = None) -> None:
+    """Reset/inject the catalog for tests and operational refreshes."""
+    global _equipment_cache, _equipment_load
+    _equipment_cache = (time.monotonic(), items) if items is not None else None
+    _equipment_load = None
+
+
+def equipment_choices(items: list[dict[str, Any]], slot: str, current: str) -> list[dict[str, Any]]:
+    query = (current or "").casefold()
+    candidates = [item for item in items if slot in item.get("slot", []) and query in item["name"].casefold()]
+    candidates.sort(key=lambda item: (not item["name"].casefold().startswith(query), item["name"].casefold(),
+                                      str(item.get("version") or ""), str(item["id"])))
+    return candidates[:24]
+
+
+def resolve_equipment_choice(value: str, slot: str, items: list[dict[str, Any]]) -> dict[str, Any] | None | bool:
+    if value == CLEAR_TOKEN:
+        return None
+    identity = decode_equipment_choice(value)
+    if identity is None:
+        return False
+    item_id, version = identity
+    for item in items:
+        if slot in item.get("slot", []) and item["id"] == item_id and item.get("version") == version:
+            return {"id": item["id"], "version": item.get("version"), "name": item["name"],
+                    "item_vars": item.get("itemVars", {})}
+    return False
 
 
 def starter_payload() -> dict:
@@ -111,20 +225,17 @@ async def import_link(db, workspace_id, link, actor_id):
     return imported
 
 
-async def equip_candidates(db, slot, query):
-    result = await _mcp(db, "search_equipment", {"query": query, "slot": slot, "limit": 25})
-    values = (result.get("items", result.get("candidates", [])) if isinstance(result, dict)
-              else result if isinstance(result, list) else [])
-    return [value for value in values if isinstance(value, dict) and value.get("id") is not None][:25]
-
-
-async def equip(db, workspace_id, loadout_id, revision, slot, item):
+async def equip_many(db, workspace_id, loadout_id, revision, updates):
+    if not updates:
+        return None, "no-op"
     row = await service.get_loadout(db, workspace_id, loadout_id)
     if not row or row["revision"] != revision:
         return None, "conflict" if row else "missing"
-    payload = row["loadout"].model_copy(update={"equipment": row["loadout"].equipment.model_copy(update={slot: item})})
+    payload_data = row["loadout"].model_dump(mode="python", by_alias=True)
+    payload_data["equipment"].update(updates)
+    payload = OsrsLoadoutPayload.model_validate(payload_data)
     return await service.update_loadout(db, workspace_id, loadout_id,
-                                       LoadoutUpdate(expected_revision=revision, loadout=payload))
+                                        LoadoutUpdate(expected_revision=revision, loadout=payload))
 
 
 async def update_stats(db, workspace_id, loadout_id, revision, stats):
