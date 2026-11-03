@@ -1,0 +1,149 @@
+name: Docker
+
+# Builds and publishes the ThreadBot images to GHCR.
+#
+# backend and worker are published from the same Dockerfile as two
+# repositories, matching upstream's own CI (.gitlab-ci.yml / deploy.sh),
+# which tags one backend build as both `backend` and `worker`. The worker
+# entrypoints are `python -m app.worker` and friends, so a single image
+# serves both roles.
+
+on:
+  push:
+    branches: ["main"]
+    # Publish semver tags as releases.
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: backend
+            file: backend/Dockerfile
+            # One build, two image repositories (backend + worker).
+            images: |
+              ghcr.io/${{ github.repository_owner }}/thread-bot-backend
+              ghcr.io/${{ github.repository_owner }}/thread-bot-worker
+          - name: frontend
+            context: frontend
+            file: docker/Dockerfile.frontend
+            images: |
+              ghcr.io/${{ github.repository_owner }}/thread-bot-frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # fetch all history and tags, required by semantic-version
+
+      - name: Set Semantic Version
+        id: semver
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          # The prefix to use to identify tags
+          tag_prefix: "v"
+          # A string which, if present in a git commit, indicates that a change
+          # represents a major (breaking) change, supports regular expressions
+          # wrapped with '/'
+          major_pattern: "/!:|BREAKING CHANGE:/"
+          # A string which indicates the flags used by the `major_pattern` regular
+          # expression. Supported flags: idgs
+          major_regexp_flags: ""
+          # Same as above except indicating a minor change
+          minor_pattern: "/feat(\\(.+\\))?:/"
+          # A string which indicates the flags used by the `minor_pattern` regular
+          # expression. Supported flags: idgs
+          minor_regexp_flags: ""
+          # A string to determine the format of the version output
+          version_format: "${major}.${minor}.${patch}"
+
+      # The first release of this repository is 1.0.0. semantic-version implies
+      # 0.0.1 when no tags exist yet, and its version_tag output cannot be
+      # overridden, so seed both values here. Once the v1.0.0 tag exists, later
+      # runs pass through unchanged and normal semver takes over.
+      - name: Resolve Version
+        id: version
+        env:
+          SEMVER_VERSION: ${{ steps.semver.outputs.version }}
+          SEMVER_VERSION_TAG: ${{ steps.semver.outputs.version_tag }}
+        run: |
+          if [ -z "$(git tag --list 'v*' | head -n 1)" ]; then
+            echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+            echo "version_tag=v1.0.0" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$SEMVER_VERSION" >> "$GITHUB_OUTPUT"
+            echo "version_tag=$SEMVER_VERSION_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release/Tag
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' # Only tag on the main branch
+        with:
+          # Use the version_tag output from the previous step
+          tag_name: ${{ steps.version.outputs.version_tag }}
+          generate_release_notes: true
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Set up BuildKit Docker container builder to be able to build
+      # multi-platform images and export cache
+      # https://github.com/docker/setup-buildx-action
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.images }}
+          tags: |
+            # This automatically uses the current git tag
+            type=raw,value=${{ steps.version.outputs.version }}
+            # Optional: also tag as 'latest' for every new git tag
+            type=raw,value=latest
+
+      # Login against a Docker registry except on PR
+      # https://github.com/docker/login-action
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
