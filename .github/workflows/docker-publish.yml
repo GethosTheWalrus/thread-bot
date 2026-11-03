@@ -77,12 +77,30 @@ jobs:
           # A string to determine the format of the version output
           version_format: "${major}.${minor}.${patch}"
 
+      # The first release of this repository is 1.0.0. semantic-version implies
+      # 0.0.1 when no tags exist yet, and its version_tag output cannot be
+      # overridden, so seed both values here. Once the v1.0.0 tag exists, later
+      # runs pass through unchanged and normal semver takes over.
+      - name: Resolve Version
+        id: version
+        env:
+          SEMVER_VERSION: ${{ steps.semver.outputs.version }}
+          SEMVER_VERSION_TAG: ${{ steps.semver.outputs.version_tag }}
+        run: |
+          if [ -z "$(git tag --list 'v*' | head -n 1)" ]; then
+            echo "version=1.0.0" >> "$GITHUB_OUTPUT"
+            echo "version_tag=v1.0.0" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$SEMVER_VERSION" >> "$GITHUB_OUTPUT"
+            echo "version_tag=$SEMVER_VERSION_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release/Tag
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main' # Only tag on the main branch
         with:
           # Use the version_tag output from the previous step
-          tag_name: ${{ steps.semver.outputs.version_tag }}
+          tag_name: ${{ steps.version.outputs.version_tag }}
           generate_release_notes: true
 
       - name: Set up QEMU
@@ -101,7 +119,7 @@ jobs:
           images: ${{ matrix.images }}
           tags: |
             # This automatically uses the current git tag
-            type=raw,value=${{ steps.semver.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.version }}
             # Optional: also tag as 'latest' for every new git tag
             type=raw,value=latest
 
